@@ -1,0 +1,56 @@
+▶ Q1… ✔ 15/15 (27s) — GPT-6-Astra implementa código com teste (Claude cérebro → Codex executor)
+   ok  ponte: succeeded
+   ok  aceite npm test executado pela ponte e aprovado
+   ok  só src/preco.js alterado
+   ok  independente: npm test passa no repositório
+   ok  rollout do Codex existe e é desta sessão (mesmo ID e diretório)
+   ok  rollout: modelo gpt-6-astra, provedor openai, originador codex_exec
+   ok  rollout: IDs de resposta emitidos pelo servidor da OpenAI (resp_…)
+   ok  ponte registrou o mesmo modelo via rollout
+   ok  executor rodou com hooks/plugins do usuário desligados
+▶ Q2… ✔ 15/15 (42s) — GPT-6-Astra cria arte com a ferramenta de imagem do Codex
+   ok  ponte: succeeded com imagem verificada
+   ok  independente: assets/foguete.png é PNG real
+   ok  rollout: modelo gpt-6-astra via openai
+   ok  rollout: chamada à ferramenta image_gen__imagegen
+   ok  independente: SHA-256 do asset = imagem gerada pelo Codex nesta sessão
+   ok  ponte: generatedByExecutorTool=true
+▶ Q3… ✔ 10/10 (29s) — Troca de modelo é real: pedido gpt-6-sol ⇒ Codex executa gpt-6-sol
+   ok  ponte: succeeded
+   ok  rollout: modelo gpt-6-sol
+   ok  args da invocação continham --model gpt-6-sol
+   ok  sessão diferente da Q1 com modelo diferente (não é placebo)
+▶ Q4… ✔ 10/10 (12s) — Revisão cruzada somente leitura pelo GPT (acha bug plantado)
+   ok  ponte: succeeded
+   ok  nenhum arquivo alterado (ponte e git)
+   ok  rollout: sandbox read-only imposto
+   ok  rollout: modelo gpt-6-astra via openai
+   ok  achou o bug (percentual não dividido por 100)
+▶ Q5… ✔ 10/10 (12s) — Sentido inverso: Codex cérebro → Claude Opus 5.5 executor
+   ok  ponte: succeeded com aceite aprovado
+   ok  modelo efetivo claude-opus-5-5 informado nativamente pelo Claude
+   ok  IDs de mensagem emitidos pela Anthropic (msg_…) no stream
+   ok  independente: npm test passa
+▶ Q6… ✔ 10/10 (24s) — Segurança: aceite impossível nunca vira sucesso; plugins do usuário isolados
+   ok  ponte: não succeeded
+   ok  teste não foi alterado
+   ok  executor com --disable hooks --disable plugins
+   ok  nenhum arquivo de plugin (.claude-flow, proven-config) em nenhum repositório do teste
+▶ Q7… ✔ 10/10 (97s) — Fluxo completo pela skill: Claude cérebro faz o código e delega a arte ao GPT
+   ok  sessão do cérebro (Opus 5.5) terminou sem erro
+   ok  arte delegada ao Codex e verificada pela ponte
+   ok  rollout da arte: gpt-6-astra via openai + ferramenta de imagem
+   ok  SHA-256 de assets/hero.png = imagem gerada pelo Codex
+   ok  código: node check.mjs passa
+   ok  resposta do cérebro cita Opus e Astra
+▶ Q8… ✔ 10/10 (0s) — Bateria E2E real completa (T1–T15 + A1)
+   ok  todos os 16 cenários aprovados
+▶ Q9… ✔ 5/5 (34s) — Suíte offline completa
+   ok  npm test: todos passam, nenhuma falha
+▶ Q10… ✔ 5/5 (0s) — Higiene: sem processos órfãos, sem segredos, sem dados de conta
+   ok  nenhum executor sobrevivente
+   ok  nenhum token/segredo nos artefatos .duo
+   ok  catálogos sem e-mail/dados de conta
+
+NOTA: 100/100 — detalhes e provas em <tmp>/quality/qt/quality-2026-09-26T21-49-56-480Z.json
+exit=0

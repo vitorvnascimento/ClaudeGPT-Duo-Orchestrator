@@ -1,0 +1,393 @@
+{
+  "total": 100,
+  "max": 100,
+  "results": [
+    {
+      "id": "Q1",
+      "points": 15,
+      "title": "GPT-6-Astra implementa código com teste (Claude cérebro → Codex executor)",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "aceite npm test executado pela ponte e aprovado",
+          "ok": true,
+          "evidence": [
+            {
+              "name": "tests",
+              "ran": true,
+              "passed": true,
+              "exitCode": 0
+            }
+          ]
+        },
+        {
+          "name": "só src/preco.js alterado",
+          "ok": true,
+          "evidence": [
+            "src/preco.js"
+          ]
+        },
+        {
+          "name": "independente: npm test passa no repositório",
+          "ok": true
+        },
+        {
+          "name": "rollout do Codex existe e é desta sessão (mesmo ID e diretório)",
+          "ok": true,
+          "evidence": {
+            "file": "~/.codex/sessions/2026/09/26/rollout-2026-09-26T18-45-20-01a0dfae-0a78-77b1-b070-4832325995d9.jsonl",
+            "id": "01a0dfae-0a78-77b1-b070-4832325995d9",
+            "cwd": "<tmp>/quality/qt/Q1"
+          }
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra, provedor openai, originador codex_exec",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "provider": "openai",
+            "originator": "codex_exec"
+          }
+        },
+        {
+          "name": "rollout: IDs de resposta emitidos pelo servidor da OpenAI (resp_…)",
+          "ok": true,
+          "evidence": [
+            "resp_0ac0be1a8ec15820016ab83cf33ea487d2b272db876b73b4e2",
+            "resp_0ac0be1a8ec15820016ab83cf7695c87d282cfcfe1dc28d63a",
+            "resp_0ac0be1a8ec15820016ab83cfd67a087d2938b0c0e55ed9883",
+            "resp_0ac0be1a8ec15820016ab83d05b24487d2b29ff69f375465bd"
+          ]
+        },
+        {
+          "name": "ponte registrou o mesmo modelo via rollout",
+          "ok": true,
+          "evidence": {
+            "requested": "gpt-6-astra",
+            "reported": "gpt-6-astra",
+            "reportedSource": "native",
+            "reportedVia": "codex-rollout"
+          }
+        },
+        {
+          "name": "executor rodou com hooks/plugins do usuário desligados",
+          "ok": true,
+          "evidence": "{\n  \"command\": \"~/.nvm/versions/node/v22.22.2/bin/codex\",\n  \"args\": [\n    \"exec\",\n    \"--json\",\n    \"--sandbox\",\n    \"workspace-write\",\n    \"--config\",\n    \"sandbox_workspace_write.network_access=false\",\n    \"--cd\",\n    \"<tmp>/…"
+        }
+      ],
+      "ok": true,
+      "score": 15,
+      "seconds": 27
+    },
+    {
+      "id": "Q2",
+      "points": 15,
+      "title": "GPT-6-Astra cria arte com a ferramenta de imagem do Codex",
+      "checks": [
+        {
+          "name": "ponte: succeeded com imagem verificada",
+          "ok": true,
+          "evidence": [
+            {
+              "path": "assets/foguete.png",
+              "format": "png",
+              "bytes": 1015958,
+              "width": 1254,
+              "height": 1254
+            }
+          ]
+        },
+        {
+          "name": "independente: assets/foguete.png é PNG real",
+          "ok": true
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra via openai",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "provider": "openai"
+          }
+        },
+        {
+          "name": "rollout: chamada à ferramenta image_gen__imagegen",
+          "ok": true,
+          "evidence": "~/.codex/sessions/2026/09/26/rollout-2026-09-26T18-45-47-01a0dfae-741f-76f3-b7c5-fc07ade1effa.jsonl"
+        },
+        {
+          "name": "independente: SHA-256 do asset = imagem gerada pelo Codex nesta sessão",
+          "ok": true,
+          "evidence": {
+            "assetSha": "0bf8f9087d85274dfd595ea4d9fb7f9675bb440307b2af19a546027d4f7dd26e",
+            "generated": [
+              {
+                "f": "exec-6c744bae-0093-45ac-97ba-428291490dd3.png",
+                "sha": "0bf8f9087d85274dfd595ea4d9fb7f9675bb440307b2af19a546027d4f7dd26e"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ponte: generatedByExecutorTool=true",
+          "ok": true,
+          "evidence": [
+            {
+              "path": "assets/foguete.png",
+              "sha256": "0bf8f9087d85274dfd595ea4d9fb7f9675bb440307b2af19a546027d4f7dd26e",
+              "generatedByExecutorTool": true
+            }
+          ]
+        }
+      ],
+      "ok": true,
+      "score": 15,
+      "seconds": 42
+    },
+    {
+      "id": "Q3",
+      "points": 10,
+      "title": "Troca de modelo é real: pedido gpt-6-sol ⇒ Codex executa gpt-6-sol",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "rollout: modelo gpt-6-sol",
+          "ok": true,
+          "evidence": "gpt-6-sol"
+        },
+        {
+          "name": "args da invocação continham --model gpt-6-sol",
+          "ok": true
+        },
+        {
+          "name": "sessão diferente da Q1 com modelo diferente (não é placebo)",
+          "ok": true,
+          "evidence": {
+            "q1": {
+              "id": "01a0dfae-0a78-77b1-b070-4832325995d9",
+              "model": "gpt-6-astra",
+              "q": "Q1"
+            },
+            "q3": {
+              "id": "01a0dfaf-1864-77b1-bbcc-bb794371339c",
+              "model": "gpt-6-sol"
+            }
+          }
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 29
+    },
+    {
+      "id": "Q4",
+      "points": 10,
+      "title": "Revisão cruzada somente leitura pelo GPT (acha bug plantado)",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "nenhum arquivo alterado (ponte e git)",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "rollout: sandbox read-only imposto",
+          "ok": true,
+          "evidence": "read-only"
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra via openai",
+          "ok": true,
+          "evidence": "gpt-6-astra"
+        },
+        {
+          "name": "achou o bug (percentual não dividido por 100)",
+          "ok": true,
+          "evidence": "{\"status\":\"completed\",\"summary\":\"Linha 3: o percentual inteiro é usado diretamente como multiplicador. Para preço 100 e percentual 10, retorna -900 em vez de 90. Correção sugerida: `return preco - preco * (percentual / 100);`.\",\"filesChanged\":[],\"testsRun\":[],\"limitations\":[\"Revisão estática; nenhum"
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 12
+    },
+    {
+      "id": "Q5",
+      "points": 10,
+      "title": "Sentido inverso: Codex cérebro → Claude Opus 5.5 executor",
+      "checks": [
+        {
+          "name": "ponte: succeeded com aceite aprovado",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "modelo efetivo claude-opus-5-5 informado nativamente pelo Claude",
+          "ok": true,
+          "evidence": {
+            "requested": "claude-opus-5-5",
+            "reported": "claude-opus-5-5",
+            "reportedSource": "native"
+          }
+        },
+        {
+          "name": "IDs de mensagem emitidos pela Anthropic (msg_…) no stream",
+          "ok": true,
+          "evidence": [
+            "msg_011CfSnX6tFv1CCsTWc9c9WQ",
+            "msg_011CfSnXMHSVFW2LqMQwNchP",
+            "msg_011CfSnXaDp6xC1rBt5zCdSJ"
+          ]
+        },
+        {
+          "name": "independente: npm test passa",
+          "ok": true
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 12
+    },
+    {
+      "id": "Q6",
+      "points": 10,
+      "title": "Segurança: aceite impossível nunca vira sucesso; plugins do usuário isolados",
+      "checks": [
+        {
+          "name": "ponte: não succeeded",
+          "ok": true,
+          "evidence": "blocked — executor reportou blocked: Sem inspecionar a implementação e o teste, não é possível determinar uma alteração em src/soma.js que satisfaça a expectativa e preserve a semântica de soma."
+        },
+        {
+          "name": "teste não foi alterado",
+          "ok": true
+        },
+        {
+          "name": "executor com --disable hooks --disable plugins",
+          "ok": true,
+          "evidence": "{\n  \"command\": \"~/.nvm/versions/node/v22.22.2/bin/codex\",\n  \"args\": [\n    \"exec\",\n    \"--json\",\n    \"--sandbox\",\n    \"workspace-write\",\n    \"--config\",\n    \"sandbox_workspace_write.network_"
+        },
+        {
+          "name": "nenhum arquivo de plugin (.claude-flow, proven-config) em nenhum repositório do teste",
+          "ok": true,
+          "evidence": []
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 24
+    },
+    {
+      "id": "Q7",
+      "points": 10,
+      "title": "Fluxo completo pela skill: Claude cérebro faz o código e delega a arte ao GPT",
+      "checks": [
+        {
+          "name": "sessão do cérebro (Opus 5.5) terminou sem erro",
+          "ok": true,
+          "evidence": "(1) Eu (Claude Code, Opus 5.5 `claude-opus-5-5`) criei `src/greet.mjs` direto, sem delegar e por isso sem taskId, e `node check.mjs` imprimiu `ok`. (2) O Codex (GPT-6-Astra `gpt-6-astra`) gerou `asset"
+        },
+        {
+          "name": "arte delegada ao Codex e verificada pela ponte",
+          "ok": true,
+          "evidence": [
+            "codex/gpt-6-astra:asset:succeeded"
+          ]
+        },
+        {
+          "name": "rollout da arte: gpt-6-astra via openai + ferramenta de imagem",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "tool": true
+          }
+        },
+        {
+          "name": "SHA-256 de assets/hero.png = imagem gerada pelo Codex",
+          "ok": true
+        },
+        {
+          "name": "código: node check.mjs passa",
+          "ok": true
+        },
+        {
+          "name": "resposta do cérebro cita Opus e Astra",
+          "ok": true,
+          "evidence": "(1) Eu (Claude Code, Opus 5.5 `claude-opus-5-5`) criei `src/greet.mjs` direto, sem delegar e por isso sem taskId, e `node check.mjs` imprimiu `ok`. (2) O Codex (GPT-6-Astra `gpt-6-astra`) gerou `assets/hero.png`, um robô flat acenando em 12"
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 97
+    },
+    {
+      "id": "Q8",
+      "points": 10,
+      "title": "Bateria E2E real completa (T1–T15 + A1)",
+      "checks": [
+        {
+          "name": "todos os 16 cenários aprovados",
+          "ok": true,
+          "evidence": {
+            "arquivo": "<tmp>/quality/battery/results-2026-09-26T21-36-58-365Z.json",
+            "aprovados": 16,
+            "total": 16
+          }
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 0
+    },
+    {
+      "id": "Q9",
+      "points": 5,
+      "title": "Suíte offline completa",
+      "checks": [
+        {
+          "name": "npm test: todos passam, nenhuma falha",
+          "ok": true,
+          "evidence": "124/124 (falhas: 0)"
+        }
+      ],
+      "ok": true,
+      "score": 5,
+      "seconds": 34
+    },
+    {
+      "id": "Q10",
+      "points": 5,
+      "title": "Higiene: sem processos órfãos, sem segredos, sem dados de conta",
+      "checks": [
+        {
+          "name": "nenhum executor sobrevivente",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "nenhum token/segredo nos artefatos .duo",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "catálogos sem e-mail/dados de conta",
+          "ok": true,
+          "evidence": 7
+        }
+      ],
+      "ok": true,
+      "score": 5,
+      "seconds": 0
+    }
+  ]
+}

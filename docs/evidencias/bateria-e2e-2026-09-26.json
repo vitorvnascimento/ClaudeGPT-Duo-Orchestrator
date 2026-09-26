@@ -1,0 +1,544 @@
+[
+  {
+    "id": "T1",
+    "pass": true,
+    "seconds": 21,
+    "checks": [
+      {
+        "name": "state succeeded",
+        "ok": true,
+        "detail": "concluído e verificado"
+      },
+      {
+        "name": "nenhum arquivo alterado (ponte e git)",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "achou o bug de porcentagem",
+        "ok": true,
+        "detail": "src/discount.mjs:3 — Severidade alta: percent é documentado entre 0 e 100, mas usado como fração. applyDiscount(100, 10) retorna -900 em vez de 90. Correção sugerida: return price - price * (percent /"
+      },
+      {
+        "name": "sandbox read-only aplicado",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T2",
+    "pass": true,
+    "seconds": 12,
+    "checks": [
+      {
+        "name": "state succeeded",
+        "ok": true,
+        "detail": "concluído e verificado"
+      },
+      {
+        "name": "nenhum arquivo alterado",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "achou o bug de porcentagem",
+        "ok": true,
+        "detail": "I read src/discount.mjs (4 lines of code) and found one high-severity bug and one medium-severity robustness issue.\n\n1. [HIGH] src/discount.mjs:3 — The discount is 100 times too large. The comment on "
+      },
+      {
+        "name": "ferramentas só de leitura",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "modelo efetivo = claude-opus-5-5",
+        "ok": true,
+        "detail": "{\"requested\":\"claude-opus-5-5\",\"reported\":\"claude-opus-5-5\",\"reportedSource\":\"native\"}"
+      }
+    ]
+  },
+  {
+    "id": "T3",
+    "pass": true,
+    "seconds": 36,
+    "checks": [
+      {
+        "name": "não marcou sucesso com teste impossível",
+        "ok": true,
+        "detail": "failed: critério de aceite falhou apesar do relatório \"completed\": check (exit 1)"
+      },
+      {
+        "name": "falha explicada por aceite ou pelo próprio executor",
+        "ok": true,
+        "detail": "[{\"name\":\"check\",\"ran\":true,\"passed\":false,\"exitCode\":1}]"
+      },
+      {
+        "name": "se check.mjs mudou, é violação reportada",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T4",
+    "pass": true,
+    "seconds": 10,
+    "checks": [
+      {
+        "name": "arquivos detectados = alterações reais (git)",
+        "ok": true,
+        "detail": "{\"actual\":[],\"reported\":[]}"
+      },
+      {
+        "name": "fora do escopo ⇒ failed",
+        "ok": true,
+        "detail": "{\"oos\":[],\"state\":\"blocked\"}"
+      },
+      {
+        "name": "succeeded ⇒ sem violação e aceite aprovado",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "nada revertido pela ponte",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T5",
+    "pass": true,
+    "seconds": 35,
+    "checks": [
+      {
+        "name": "1ª invocação bloqueada por timeout",
+        "ok": true,
+        "detail": "blocked: timeout do executor; processo encerrado. Retome com duo delegate --resume task-20260926212541-8c8bc9."
+      },
+      {
+        "name": "sessão nativa registrada antes do timeout",
+        "ok": true,
+        "detail": "01a0df9c-1256-7743-945d-74a3db39ebcb"
+      },
+      {
+        "name": "sem processo do executor sobrando após o timeout",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "retomada succeeded",
+        "ok": true,
+        "detail": "succeeded: concluído e verificado"
+      },
+      {
+        "name": "retomada usou a sessão nativa",
+        "ok": true,
+        "detail": "exec resume --json --config sandbox_mode=\"workspace-write\" --config sandbox_workspace_write.network_access=false --output-schema --output-last-message --disable hooks --disable plugins 01a0df9c-1256-7743-945d-74a3db39ebcb -"
+      },
+      {
+        "name": "2 invocações contadas",
+        "ok": true,
+        "detail": "2"
+      },
+      {
+        "name": "check passa",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T6",
+    "pass": true,
+    "seconds": 22,
+    "checks": [
+      {
+        "name": "1ª invocação bloqueada por timeout",
+        "ok": true,
+        "detail": "blocked: timeout do executor; processo encerrado. Há trabalho parcial no escopo (ver diff); nada foi revertido. Retome com duo delegate --resume task-20260926212616-bebb2f."
+      },
+      {
+        "name": "sessão nativa registrada antes do timeout",
+        "ok": true,
+        "detail": "2077f4bc-cdc8-45b4-bc73-5cd1e9411fe9"
+      },
+      {
+        "name": "sem processo do executor sobrando após o timeout",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "retomada succeeded",
+        "ok": true,
+        "detail": "succeeded: concluído e verificado"
+      },
+      {
+        "name": "retomada usou a sessão nativa",
+        "ok": true,
+        "detail": "-p --output-format stream-json --verbose --json-schema --permission-mode dontAsk --permission-prompts none --tools Read,Grep,Glob,Edit,Write,Bash --allowedTools Bash(node check.mjs) Bash(node check.mjs *) --disallowedTools Bash(claude *) Bash(codex *) Bash(duo *) Bash(npx duo*) Bash(npm exec duo*) Bash(node *duo-orchestrator*) Bash(git reset *) Bash(git clean *) Bash(git stash *) Bash(git checkout *) Bash(git push *) Bash(git commit *) --setting-sources user --strict-mcp-config --disable-slash-commands --append-system-prompt --model claude-opus-5-5 --resume 2077f4bc-cdc8-45b4-bc73-5cd1e9411fe9"
+      },
+      {
+        "name": "2 invocações contadas",
+        "ok": true,
+        "detail": "2"
+      },
+      {
+        "name": "check passa",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T7",
+    "pass": true,
+    "seconds": 5,
+    "checks": [
+      {
+        "name": "executor chegou a iniciar",
+        "ok": true,
+        "detail": "90205"
+      },
+      {
+        "name": "duo cancel ok",
+        "ok": true,
+        "detail": "{\n  \"ok\": true,\n  \"message\": \"run run-20260926212638-68978d cancelado\",\n  \"cancelled\": [\n    \"task-20260926212638-964aac\"\n  ]\n}\n"
+      },
+      {
+        "name": "delegate saiu com código 4",
+        "ok": true,
+        "detail": "4"
+      },
+      {
+        "name": "task cancelled",
+        "ok": true,
+        "detail": "cancelled"
+      },
+      {
+        "name": "processo do executor encerrado",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "nenhum processo do cenário sobrando",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "lock liberado",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T8",
+    "pass": true,
+    "seconds": 24,
+    "checks": [
+      {
+        "name": "state succeeded no worktree",
+        "ok": true,
+        "detail": "concluído e verificado no worktree; integre com duo apply --task-id task-20260926212643-958f8f"
+      },
+      {
+        "name": "working tree principal intocado antes do apply",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "duo apply ok",
+        "ok": true,
+        "detail": "{\n  \"ok\": true,\n  \"message\": \"patch aplicado ao working tree (sem commit). O worktree descartável continua em <tmp>/…"
+      },
+      {
+        "name": "check passa no working tree principal",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T9",
+    "pass": true,
+    "seconds": 43,
+    "checks": [
+      {
+        "name": "[executor claude] nenhuma delegação aninhada criada",
+        "ok": true,
+        "detail": "[\"codex->claude:succeeded\"]"
+      },
+      {
+        "name": "[executor claude] ponte terminou com estado final",
+        "ok": true,
+        "detail": "succeeded: I added `export function double(n) { return n * 2; }` to src/math.mjs. `node check.mjs` passes: exit code 0, output \"check: ok\". I did not run the first step th"
+      },
+      {
+        "name": "[executor codex] nenhuma delegação aninhada criada",
+        "ok": true,
+        "detail": "[\"claude->codex:succeeded\"]"
+      },
+      {
+        "name": "[executor codex] ponte terminou com estado final",
+        "ok": true,
+        "detail": "succeeded: Added exported double(n), returning n * 2. node check.mjs exited 0 with output: check: ok. Requested delegation command was not run; exit code and output are un"
+      }
+    ]
+  },
+  {
+    "id": "T10",
+    "pass": true,
+    "seconds": 54,
+    "checks": [
+      {
+        "name": "sessão do Claude (cérebro) terminou sem erro",
+        "ok": true,
+        "detail": "taskId: `task-20260926212811-72b8ee` · state: `succeeded`. O Codex (`gpt-6-astra`) alterou só `src/math.mjs`, `node check.mjs` passou e registrei o aceite na ponte."
+      },
+      {
+        "name": "cérebro delegou pela ponte (task claude→codex succeeded)",
+        "ok": true,
+        "detail": "[\"claude->codex:succeeded:concluído e verificado\"]"
+      },
+      {
+        "name": "mudança feita pelo executor, não pelo cérebro",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "check passa no repositório",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta do cérebro cita o taskId",
+        "ok": true,
+        "detail": "taskId: `task-20260926212811-72b8ee` · state: `succeeded`. O Codex (`gpt-6-astra`) alterou só `src/math.mjs`, `node check.mjs` passou e registrei o aceite na ponte."
+      }
+    ]
+  },
+  {
+    "id": "T12",
+    "pass": true,
+    "seconds": 17,
+    "checks": [
+      {
+        "name": "sessão do Claude (cérebro) terminou sem erro",
+        "ok": true,
+        "detail": "DECISÃO=eu mesmo — o `recommend` da ponte duo mandou \"FAZER VOCÊ MESMO\" (claude-opus-5-5 teve 4 de 4 sucessos verificados em implement/mjs, score 0.883), então adicionei `double(n)` só em `src/math.mj"
+      },
+      {
+        "name": "cérebro consultou a evidência (duo recommend)",
+        "ok": true,
+        "detail": "[\"self\"]"
+      },
+      {
+        "name": "recomendação: fazer você mesmo",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "não delegou (nenhuma task real)",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "tarefa concluída pelo próprio cérebro (check passa)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta explica a decisão",
+        "ok": true,
+        "detail": "DECISÃO=eu mesmo — o `recommend` da ponte duo mandou \"FAZER VOCÊ MESMO\" (claude-opus-5-5 teve 4 de 4 sucessos verificados em implement/mjs, score 0.883), então adicionei `double(n)` só em `src/math.mj"
+      }
+    ]
+  },
+  {
+    "id": "T13",
+    "pass": true,
+    "seconds": 85,
+    "checks": [
+      {
+        "name": "sessão do Codex (cérebro) completou o turno",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "cérebro consultou a evidência (duo recommend)",
+        "ok": true,
+        "detail": "[\"delegate:claude\"]"
+      },
+      {
+        "name": "recomendação: delegar ao Claude",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "delegou ao Claude (claude-opus-5-5) e a ponte verificou",
+        "ok": true,
+        "detail": "[\"claude:claude-opus-5-5:succeeded\"]"
+      },
+      {
+        "name": "mudança feita pelo executor",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "check passa",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta explica a decisão",
+        "ok": true,
+        "detail": "DECISÃO=delegar — recommend indicou Claude Opus 5.5 por 4/4 sucessos comparáveis; somente src/math.mjs alterado, node check.mjs passou e aceite registrado."
+      }
+    ]
+  },
+  {
+    "id": "A1",
+    "pass": true,
+    "seconds": 46,
+    "checks": [
+      {
+        "name": "state succeeded",
+        "ok": true,
+        "detail": "succeeded: concluído e verificado"
+      },
+      {
+        "name": "modelo gpt-6-astra pedido",
+        "ok": true,
+        "detail": "{\"requested\":\"gpt-6-astra\",\"reported\":\"gpt-6-astra\",\"reportedSource\":\"native\",\"reportedVia\":\"codex-rollout\"}"
+      },
+      {
+        "name": "imagem válida verificada pela ponte em assets/",
+        "ok": true,
+        "detail": "[{\"path\":\"assets/mascot.png\",\"format\":\"png\",\"bytes\":952498,\"width\":1254,\"height\":1254}]"
+      },
+      {
+        "name": "imagem com tamanho plausível (> 1 KB)",
+        "ok": true,
+        "detail": "[{\"path\":\"assets/mascot.png\",\"format\":\"png\",\"bytes\":952498,\"width\":1254,\"height\":1254}]"
+      },
+      {
+        "name": "nada fora do escopo",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  },
+  {
+    "id": "T14",
+    "pass": true,
+    "seconds": 121,
+    "checks": [
+      {
+        "name": "sessão do cérebro terminou sem erro",
+        "ok": true,
+        "detail": "Eu (Claude Code, claude-opus-5-5) criei `src/greet.mjs` sem delegar, por isso essa parte não tem taskId (`node check.mjs` passou); o Codex (gpt-6-astra) gerou `assets/hero.png`, que revisei e aceitei,"
+      },
+      {
+        "name": "arte delegada ao codex/gpt-6-astra e verificada",
+        "ok": true,
+        "detail": "[\"codex/gpt-6-astra:asset:succeeded:concluído e verificado\"]"
+      },
+      {
+        "name": "assets/hero.png é imagem válida",
+        "ok": true,
+        "detail": "[\"hero.png\"]"
+      },
+      {
+        "name": "código com Opus 5.5 (o próprio cérebro), não delegado a outro modelo",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "check do código passa",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta cita os modelos de cada parte",
+        "ok": true,
+        "detail": "Eu (Claude Code, claude-opus-5-5) criei `src/greet.mjs` sem delegar, por isso essa parte não tem taskId (`node check.mjs` passou); o Codex (gpt-6-astra) gerou `assets/hero.png`, que revisei e aceitei, com taskId `task-20260926213143-294c59`"
+      }
+    ]
+  },
+  {
+    "id": "T15",
+    "pass": true,
+    "seconds": 141,
+    "checks": [
+      {
+        "name": "sessão do Codex completou o turno",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "recommend consultado para as duas partes",
+        "ok": true,
+        "detail": "[\"asset:self:codex/gpt-6-astra\",\"implement:delegate:claude/claude-opus-5-5\"]"
+      },
+      {
+        "name": "código delegado ao claude/claude-opus-5-5 (evidência) e verificado",
+        "ok": true,
+        "detail": "[\"claude/claude-opus-5-5:implement:succeeded\"]"
+      },
+      {
+        "name": "assets/hero.png é imagem válida (feita por modelo com image_generation)",
+        "ok": true,
+        "detail": "[\"hero.png\"]"
+      },
+      {
+        "name": "nenhuma parte foi para um modelo sem a capacidade",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "check do código passa",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta cita os modelos",
+        "ok": true,
+        "detail": "Parte 1: Claude / claude-opus-5-5, taskId `task-20260926213419-5d95e6` — `node check.mjs` passou; parte 2: Codex / gpt-6-astra via imagegen, sem taskId (execução direta recomendada) — salva em `assets/hero.png`."
+      }
+    ]
+  },
+  {
+    "id": "T11",
+    "pass": true,
+    "seconds": 85,
+    "checks": [
+      {
+        "name": "sessão do Codex (cérebro) completou o turno",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "cérebro delegou pela ponte (task codex→claude succeeded)",
+        "ok": true,
+        "detail": "[\"codex->claude:succeeded:concluído e verificado\"]"
+      },
+      {
+        "name": "mudança feita pelo executor, não pelo cérebro",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "check passa no repositório",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "resposta do cérebro cita o taskId",
+        "ok": true,
+        "detail": "taskId: task-20260926213627-e332dd — state: succeeded"
+      }
+    ]
+  }
+]

@@ -20,7 +20,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
 <details>
 <summary><strong>English summary</strong></summary>
 
-`duo-orchestrator` is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys, no gateway). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `npm install -g github:vitorvnascimento/duo-orchestrator`, run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
+`duo-orchestrator` is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys, no gateway). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
 
 </details>
 
@@ -47,28 +47,35 @@ Você pode usar só uma das duas contas, mas o objetivo do projeto é combinar a
 
 ## Instalação rápida
 
-**Opção 1 — direto do GitHub (recomendado):**
-
-```bash
-npm install -g github:vitorvnascimento/duo-orchestrator
-duo --version
-```
-
-O npm baixa, compila (script `prepare`) e coloca o comando `duo` no PATH.
-
-**Opção 2 — clonando o repositório** (para desenvolver ou rodar os testes):
+**Opção 1 — clonar e linkar (recomendado; fácil de atualizar):**
 
 ```bash
 git clone https://github.com/vitorvnascimento/duo-orchestrator.git
 cd duo-orchestrator
-npm ci          # instala só typescript e @types/node (compila sozinho)
-npm test        # 125 testes offline, nenhum modelo é invocado
-npm link        # opcional: expõe o comando duo no PATH
+npm ci          # instala só typescript e @types/node e compila
+npm link        # coloca o comando duo no PATH
+duo --version
 ```
 
-Sem `npm link`, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`.
+Para atualizar depois: `git pull && npm ci`. Para rodar os testes offline (nenhum modelo é invocado): `npm test`.
 
-**Atualizar:** repita o `npm install -g github:…` (ou `git pull && npm ci` no clone). **Remover:** `npm uninstall -g duo-orchestrator`.
+**Opção 2 — pacote pronto da release (sem compilar):**
+
+```bash
+npm install -g https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.1.0/duo-orchestrator-0.1.0.tgz
+duo --version
+```
+
+Se o repositório estiver privado para você, baixe o pacote com o GitHub CLI e instale o arquivo local:
+
+```bash
+gh release download v0.1.0 -R vitorvnascimento/duo-orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.1.0.tgz
+```
+
+Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
+
+> `npm install -g github:vitorvnascimento/duo-orchestrator` **não** é recomendado: nesse modo o npm 10 não prepara corretamente pacotes que precisam compilar. Use uma das opções acima.
 
 ## Primeiro uso (5 minutos)
 
@@ -120,7 +127,7 @@ Quando o cérebro pedir permissão para rodar `duo delegate`, aprove esse comand
 - **Ou nomeie os modelos:** *"use Opus 5.5 no código e GPT-6-Astra na arte"*. O cérebro segue a sua escolha, desde que o modelo exista na sua conta (`duo models`).
 - **Revisão cruzada:** *"implemente X e peça ao Codex para revisar"*. A revisão roda em modo somente leitura.
 - **Trocar o cérebro no meio do trabalho:** `duo handoff --to codex --next "..."` gera um documento em `.duo/handoffs/` para abrir na outra IA.
-- **Outro computador:** instale o duo (Opção 1), faça login nas duas CLIs e pronto. Se o projeto já tem as skills versionadas e o `duo` está no PATH, não precisa rodar `init` de novo.
+- **Outro computador:** instale o duo (Opção 1 ou 2), faça login nas duas CLIs e pronto. Se o projeto já tem as skills versionadas e o `duo` está no PATH, não precisa rodar `init` de novo.
 
 Dicas:
 - No Codex com muitas skills instaladas, ele pode não achar a skill sozinho ("Exceeded skills context budget"). Invoque `$duo-delegate` explicitamente.

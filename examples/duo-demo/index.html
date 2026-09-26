@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Duo Demo</title>
+  <style>
+    :root {
+      --bg: #f6f8fc;
+      --card: #ffffff;
+      --text: #1d2433;
+      --muted: #5b6477;
+      --blue: #2f6fed;
+      --orange: #ff8a3d;
+      --radius: 20px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 20px 64px; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 40px;
+      align-items: center;
+    }
+    .tag {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: #e6edff;
+      color: var(--blue);
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.15; margin: 16px 0; }
+    h1 span { color: var(--orange); }
+    .lead { color: var(--muted); font-size: 1.1rem; margin: 0 0 28px; }
+    .cta {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 12px;
+      background: var(--blue);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .cta { border: 0; cursor: pointer; font: inherit; font-weight: 600; }
+    .cta:hover { background: #2459c4; }
+    .cta:focus-visible { outline: 3px solid var(--orange); outline-offset: 3px; }
+    .cta .seta { display: inline-block; margin-left: 6px; transition: transform 0.25s ease; }
+    .cta[aria-expanded="true"] .seta { transform: rotate(180deg); }
+    .detalhes {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition: grid-template-rows 0.35s ease, opacity 0.35s ease, margin-top 0.35s ease;
+      margin-top: 0;
+    }
+    .detalhes.aberto { grid-template-rows: 1fr; opacity: 1; margin-top: 48px; }
+    .detalhes > div { overflow: hidden; }
+    .painel {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      box-shadow: 0 6px 16px rgba(29, 36, 51, 0.06);
+    }
+    .painel h2 { margin: 0 0 16px; font-size: 1.4rem; }
+    .passos { margin: 0; padding: 0; list-style: none; counter-reset: passo; }
+    .passos li {
+      counter-increment: passo;
+      position: relative;
+      padding: 0 0 18px 48px;
+    }
+    .passos li::before {
+      content: counter(passo);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #e6edff;
+      color: var(--blue);
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+    }
+    .passos strong { display: block; }
+    .passos span { color: var(--muted); }
+    .exemplo {
+      margin-top: 8px;
+      padding: 16px 20px;
+      border-left: 4px solid var(--orange);
+      background: #fff6ef;
+      border-radius: 12px;
+      color: var(--text);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .detalhes, .cta .seta { transition: none; }
+    }
+    .hero img {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      border-radius: var(--radius);
+      background: var(--card);
+      box-shadow: 0 20px 40px rgba(29, 36, 51, 0.12);
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 64px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: 0 6px 16px rgba(29, 36, 51, 0.06);
+    }
+    .card h2 { font-size: 1.1rem; margin: 0 0 8px; }
+    .card p { margin: 0; color: var(--muted); }
+    footer { text-align: center; color: var(--muted); font-size: 0.9rem; margin-top: 56px; }
+    @media (max-width: 720px) {
+      .hero, .cards { grid-template-columns: 1fr; }
+      .hero img { order: -1; max-width: 360px; margin: 0 auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <span class="tag">Claude Code + Codex</span>
+        <h1>Duas IAs, <span>um só trabalho</span></h1>
+        <p class="lead">Cada parte da tarefa vai para o modelo que faz melhor: o código com um, a arte com outro, tudo verificado antes de chegar até você.</p>
+        <button class="cta" type="button" aria-expanded="false" aria-controls="detalhes">Como funciona <span class="seta" aria-hidden="true">▾</span></button>
+      </div>
+      <img src="assets/robo.png" alt="Ilustração flat de um robô simpático acenando">
+    </section>
+
+    <section class="detalhes" id="detalhes" aria-hidden="true">
+      <div>
+        <div class="painel">
+          <h2>Como funciona, passo a passo</h2>
+          <ol class="passos">
+            <li><strong>Você faz o pedido</strong><span>No Claude Code ou no Codex, com a skill <code>duo-delegate</code>. Pode nomear modelos ("GPT na arte") ou deixar a escolha automática.</span></li>
+            <li><strong>O cérebro divide a tarefa</strong><span>A IA que você abriu separa as partes: código, testes, revisão, arte.</span></li>
+            <li><strong>Cada parte vai para o melhor modelo</strong><span>O <code>duo recommend</code> compara os modelos disponíveis nas suas contas pelo histórico do projeto, sem preferência de marca. Arte só vai para quem gera imagem.</span></li>
+            <li><strong>A ponte executa e confere</strong><span>Arquivos fora do escopo, testes que falham ou imagens inválidas fazem a tarefa falhar, mesmo que a IA diga que terminou.</span></li>
+            <li><strong>Você recebe o resultado verificado</strong><span>O cérebro integra as partes, e o aceite ou a recusa melhora as próximas escolhas.</span></li>
+          </ol>
+          <p class="exemplo"><strong>Nesta página:</strong> o texto e o layout foram feitos pelo Claude (Opus 5.5); o robô foi desenhado pelo GPT-6-Astra, via Codex, e conferido pela ponte como PNG válido de 1254×1254.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cards" id="como-funciona">
+      <article class="card">
+        <h2>1. Você pede</h2>
+        <p>Descreva a tarefa no Claude Code ou no Codex, do jeito que preferir.</p>
+      </article>
+      <article class="card">
+        <h2>2. O cérebro divide</h2>
+        <p>Cada parte vai para o melhor modelo disponível, escolhido pela evidência.</p>
+      </article>
+      <article class="card">
+        <h2>3. A ponte confere</h2>
+        <p>Escopo, testes e imagens são verificados antes de o resultado ser aceito.</p>
+      </article>
+    </section>
+
+    <footer>
+      Página feita pelo Claude (Opus 5.5) · ilustração feita pelo GPT-6-Astra (Codex)
+    </footer>
+  </main>
+  <script>
+    const botao = document.querySelector(".cta");
+    const detalhes = document.getElementById("detalhes");
+    botao.addEventListener("click", () => {
+      const abrir = botao.getAttribute("aria-expanded") !== "true";
+      botao.setAttribute("aria-expanded", String(abrir));
+      detalhes.setAttribute("aria-hidden", String(!abrir));
+      detalhes.classList.toggle("aberto", abrir);
+      if (abrir) setTimeout(() => detalhes.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+    });
+  </script>
+</body>
+</html>

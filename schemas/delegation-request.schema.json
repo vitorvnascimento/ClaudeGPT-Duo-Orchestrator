@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "duo-orchestrator/delegation-request",
+  "title": "Pedido de delegação emitido pelo cérebro",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "brain",
+    "executor",
+    "kind",
+    "objective",
+    "reason",
+    "rationale",
+    "scope",
+    "acceptance"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-[a-z0-9-]{6,64}$"
+    },
+    "taskKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,80}$"
+    },
+    "brain": {
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "executor": {
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "implement",
+        "review",
+        "test",
+        "investigate",
+        "asset"
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 4000
+    },
+    "reason": {
+      "enum": [
+        "user_requested",
+        "clear_benefit",
+        "blocked_or_failure",
+        "second_opinion",
+        "cross_review"
+      ]
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 600
+    },
+    "risk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:\\[\\]-]{1,80}$"
+    },
+    "brainModel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:\\[\\]-]{1,80}$"
+    },
+    "needs": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "enum": [
+          "code",
+          "image_generation"
+        ]
+      }
+    },
+    "isolation": {
+      "enum": [
+        "in-place",
+        "worktree"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedPaths"
+      ],
+      "properties": {
+        "allowedPaths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interfaces": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "decisions": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 6000
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criteria"
+      ],
+      "properties": {
+        "criteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500
+          }
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "argv"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,40}$"
+              },
+              "argv": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutSec": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 3600
+        }
+      }
+    }
+  }
+}

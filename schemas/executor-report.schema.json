@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "duo-orchestrator/executor-report",
+  "title": "Relatório estruturado devolvido pelo executor (autodeclarado; a ponte verifica)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "filesChanged", "testsRun", "limitations", "blockedReason"],
+  "properties": {
+    "status": { "type": "string", "enum": ["completed", "partial", "blocked", "failed"] },
+    "summary": { "type": "string" },
+    "filesChanged": { "type": "array", "items": { "type": "string" } },
+    "testsRun": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exitCode", "passed"],
+        "properties": {
+          "command": { "type": "string" },
+          "exitCode": { "type": ["integer", "null"] },
+          "passed": { "type": "boolean" }
+        }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "blockedReason": { "type": ["string", "null"] }
+  }
+}

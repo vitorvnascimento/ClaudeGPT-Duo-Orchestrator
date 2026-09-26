@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "brain": "claude",
+  "executor": "codex",
+  "kind": "implement",
+  "objective": "Implementar a função slugify(title) em src/lib/slug.ts (minúsculas, sem acentos, espaços viram hífen, sem hífens duplicados) e testes em tests/slug.test.ts.",
+  "reason": "clear_benefit",
+  "rationale": "Função isolada com critério objetivo; o cérebro segue integrando o formulário que vai usá-la.",
+  "scope": { "allowedPaths": ["src/lib/slug.ts", "tests/slug.test.ts"] },
+  "constraints": ["Não adicionar dependências", "Exportar apenas slugify"],
+  "context": {
+    "interfaces": "export function slugify(title: string): string",
+    "decisions": ["Normalizar com String.prototype.normalize('NFD') e remover diacríticos"]
+  },
+  "acceptance": {
+    "criteria": ["slugify('Olá  Mundo!') === 'ola-mundo'", "Suite de testes passa"],
+    "commands": [{ "name": "tests", "argv": ["npm", "test"] }]
+  },
+  "taskKey": "slugify-v1"
+}

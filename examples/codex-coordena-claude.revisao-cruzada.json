@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "brain": "codex",
+  "executor": "claude",
+  "kind": "review",
+  "objective": "Revisar a troca de cookies de sessão por tokens rotativos em src/auth/: procurar regressões de segurança, condições de corrida na rotação e casos de expiração não tratados.",
+  "reason": "user_requested",
+  "rationale": "Mudança de alto risco em autenticação; o usuário pediu uma leitura independente antes do commit.",
+  "scope": { "allowedPaths": ["src/auth/", "tests/auth/"] },
+  "constraints": ["Somente leitura", "Relatar achados com arquivo:linha e severidade no summary"],
+  "acceptance": {
+    "criteria": ["Nenhum arquivo modificado", "Cada achado tem arquivo, linha, severidade e sugestão"]
+  }
+}

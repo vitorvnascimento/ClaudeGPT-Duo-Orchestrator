@@ -1,0 +1,302 @@
+#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ConfigError, loadConfig, type Provider } from "../config.js";
+import { repoRoot } from "../git.js";
+import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
+import { delegate, EXIT } from "../orchestration/delegate.js";
+import { writeHandoff } from "../orchestration/handoff.js";
+import { formatCatalog, loadCatalog, type Capability } from "../adapters/catalog.js";
+import { deriveTags, formatRecommendation, liveAvailability, recommend, type Risk } from "../orchestration/router.js";
+import { validateScope } from "../permissions/scope.js";
+import { codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
+import type { TaskKind } from "../state/types.js";
+import { packageRoot } from "../paths.js";
+import { Store } from "../state/store.js";
+import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
+import { doctor, formatDoctor } from "./doctor.js";
+import { applyInit, planInit, previewDiff } from "./init.js";
+
+const HELP = `duo — ponte local entre Codex e Claude Code (CLIs oficiais, assinatura individual)
+
+Uso:
+  duo doctor [--json]                         diagnóstico sem inferência
+  duo init [--brain claude|codex] [--apply] [--overwrite]
+                                              gera config e skills do projeto (preview por padrão)
+  duo delegate --request <arquivo.json>       executa um pedido do cérebro
+  duo delegate --resume <taskId> [--timeout-sec N]
+                                              retoma uma task bloqueada/interrompida (opcionalmente com mais tempo)
+  duo models [--refresh] [--json]             modelos disponíveis nas contas conectadas (sem inferência)
+  duo recommend --kind implement|review|test|investigate|asset [--needs image_generation] [--paths a,b]
+                [--risk low|medium|high] [--brain claude|codex] [--brain-model <id>] [--json]
+                                              melhor modelo disponível para a subtarefa (evidência, sem preferência de marca)
+  duo status [--run-id <id>] [--json]
+  duo report [--run-id <id>] [--json]         métricas determinísticas
+  duo cancel --run-id <id>
+  duo apply --task-id <id>                    integra patch de task em worktree
+  duo accept --task-id <id> [--reject] [--note <texto>]
+  duo handoff --to claude|codex [--run-id <id>] [--next <texto>]
+  duo quota show
+  duo quota set --provider claude|codex [--used-percent N] [--resets-at ISO8601] [--note <texto>]
+
+Códigos de saída de delegate: 0 succeeded, 1 failed, 2 pedido inválido, 3 blocked, 4 cancelled.`;
+
+type Args = { _: string[]; flags: Record<string, string | true> };
+
+const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh"]);
+
+/** Opções aceitas por comando: uma opção desconhecida é erro (evita flags ignoradas em silêncio). */
+const COMMAND_FLAGS: Record<string, string[]> = {
+  doctor: [],
+  init: ["brain", "apply", "overwrite"],
+  delegate: ["request", "resume", "timeout-sec"],
+  models: ["refresh"],
+  recommend: ["kind", "needs", "paths", "risk", "brain", "brain-model"],
+  status: ["run-id"],
+  report: ["run-id"],
+  cancel: ["run-id"],
+  apply: ["task-id"],
+  accept: ["task-id", "reject", "note"],
+  handoff: ["to", "run-id", "next"],
+  quota: ["provider", "used-percent", "resets-at", "note"],
+};
+const GLOBAL_FLAGS = ["json", "help", "version"];
+
+export function unknownFlags(cmd: string, flags: Record<string, string | true>): string[] {
+  const allowed = COMMAND_FLAGS[cmd];
+  if (!allowed) return [];
+  return Object.keys(flags).filter((k) => !allowed.includes(k) && !GLOBAL_FLAGS.includes(k));
+}
+
+export function parseArgs(argv: string[]): Args {
+  const out: Args = { _: [], flags: {} };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] as string;
+    if (a.startsWith("--")) {
+      const [k, inline] = a.slice(2).split("=", 2) as [string, string | undefined];
+      if (inline !== undefined) out.flags[k] = inline;
+      else if (BOOLEAN_FLAGS.has(k)) out.flags[k] = true;
+      else {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("--")) throw new Error(`--${k} requer um valor`);
+        out.flags[k] = next;
+        i++;
+      }
+    } else out._.push(a);
+  }
+  return out;
+}
+
+function str(args: Args, k: string): string | undefined {
+  const v = args.flags[k];
+  return typeof v === "string" ? v : undefined;
+}
+
+function provider(v: string | undefined, flag: string): Provider {
+  if (v !== "claude" && v !== "codex") throw new Error(`${flag} deve ser claude ou codex`);
+  return v;
+}
+
+function projectRootOf(cwd: string): string {
+  return repoRoot(cwd) ?? cwd;
+}
+
+function print(obj: unknown): void {
+  process.stdout.write(`${typeof obj === "string" ? obj : JSON.stringify(obj, null, 2)}\n`);
+}
+
+async function main(argv: string[]): Promise<number> {
+  const args = parseArgs(argv);
+  const cmd = args._[0];
+  const cwd = process.cwd();
+  if (args.flags.version) {
+    const pkg = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version: string };
+    print(pkg.version);
+    return 0;
+  }
+  if (!cmd || args.flags.help || cmd === "help") {
+    print(HELP);
+    return cmd ? 0 : 2;
+  }
+
+  const unknown = unknownFlags(cmd, args.flags);
+  if (unknown.length) {
+    const accepted = [...(COMMAND_FLAGS[cmd] ?? []), ...GLOBAL_FLAGS].map((f) => `--${f}`).join(", ");
+    throw new Error(`opção desconhecida para duo ${cmd}: ${unknown.map((f) => `--${f}`).join(", ")} (aceitas: ${accepted})`);
+  }
+
+  switch (cmd) {
+    case "doctor": {
+      const r = doctor(cwd);
+      print(args.flags.json ? r : formatDoctor(r));
+      return 0;
+    }
+    case "init": {
+      const root = repoRoot(cwd);
+      if (!root) {
+        print("duo init requer um repositório Git (rode `git init` você mesmo se desejar).");
+        return 2;
+      }
+      const brain = provider(str(args, "brain") ?? "claude", "--brain");
+      const plan = planInit(root, brain);
+      for (const f of plan) print(previewDiff(root, f));
+      if (!args.flags.apply) {
+        print("\nPreview apenas. Rode novamente com --apply para criar os arquivos (conflitos exigem --overwrite; backups vão para .duo/backups/).");
+        return 0;
+      }
+      const res = applyInit(root, plan, Boolean(args.flags.overwrite));
+      print({ written: res.written, skippedConflicts: res.skipped, backups: res.backups });
+      print(
+        "\nPróximos passos: revise .duo/config.json (acceptance.allowedCommands e billing.acknowledgeUnverifiableExtraUsage) e rode `duo doctor`.",
+      );
+      return 0;
+    }
+    case "delegate": {
+      const controller = new AbortController();
+      let signals = 0;
+      const onSignal = () => {
+        signals++;
+        if (signals === 1) controller.abort();
+        else process.exit(EXIT.cancelled);
+      };
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
+      const requestPath = str(args, "request");
+      const resumeTaskId = str(args, "resume");
+      const timeoutRaw = str(args, "timeout-sec");
+      const out = await delegate({
+        cwd,
+        ...(requestPath ? { requestPath } : {}),
+        ...(resumeTaskId ? { resumeTaskId } : {}),
+        ...(timeoutRaw !== undefined ? { timeoutSecOverride: Number(timeoutRaw) } : {}),
+        signal: controller.signal,
+      });
+      print(out.summary);
+      return out.exitCode;
+    }
+    case "models": {
+      const root = projectRootOf(cwd);
+      const catalog = await loadCatalog(new Store(root), loadConfig(root), { refresh: Boolean(args.flags.refresh) });
+      print(args.flags.json ? catalog : formatCatalog(catalog));
+      return catalog.providers.claude.ok || catalog.providers.codex.ok ? 0 : 1;
+    }
+    case "recommend": {
+      const root = projectRootOf(cwd);
+      const cfg = loadConfig(root);
+      const kind = str(args, "kind");
+      if (!kind || !["implement", "review", "test", "investigate", "asset"].includes(kind)) throw new Error("--kind deve ser implement, review, test, investigate ou asset");
+      const needs = (str(args, "needs") ?? "").split(",").map((x) => x.trim()).filter(Boolean) as Capability[];
+      if (needs.some((n) => !["code", "image_generation"].includes(n))) throw new Error("--needs aceita: code, image_generation");
+      const brainModel = str(args, "brain-model") ?? null;
+      const risk = (str(args, "risk") ?? "medium") as Risk;
+      if (!["low", "medium", "high"].includes(risk)) throw new Error("--risk deve ser low, medium ou high");
+      const brainArg = str(args, "brain");
+      const brain = brainArg === undefined ? null : provider(brainArg, "--brain");
+      const paths = (str(args, "paths") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+      let tags: string[] = [];
+      if (paths.length) {
+        const scope = validateScope(root, paths, cfg.scope.deny, { allowWholeProject: true });
+        if (!scope.ok) throw new Error(`--paths inválido: ${scope.errors.join("; ")}`);
+        tags = deriveTags(root, scope.entries);
+      }
+      const store = new Store(root);
+      let catalog = null;
+      try {
+        catalog = await loadCatalog(store, cfg);
+      } catch {
+        catalog = null;
+      }
+      const defaults = { claude: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env) };
+      const rec = recommend(store, cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs }, liveAvailability(store, cfg), catalog, defaults);
+      store.telemetry({ event: "recommend", query: rec.query, decision: rec.decision });
+      print(args.flags.json ? rec : formatRecommendation(rec));
+      return 0;
+    }
+    case "status": {
+      const store = new Store(projectRootOf(cwd));
+      const interrupted = refreshInterrupted(store);
+      const runId = str(args, "run-id");
+      const runs = store.listRuns().filter((r) => !runId || r.runId === runId);
+      const data = runs.map((r) => ({
+        runId: r.runId,
+        brain: r.brain,
+        policy: r.policy,
+        cancelled: r.cancelled,
+        invocations: r.invocations,
+        nextStep: r.nextStep,
+        tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt })),
+      }));
+      if (args.flags.json) print({ interrupted, runs: data });
+      else {
+        if (!data.length) print("nenhum run registrado neste projeto");
+        for (const r of data) {
+          print(`${r.runId} cérebro=${r.brain} política=${r.policy} invocações=${r.invocations}${r.cancelled ? " CANCELADO" : ""}`);
+          for (const t of r.tasks) print(`  ${t.taskId} ${t.executor}/${t.kind} ${t.state}${t.outcome ? ` — ${t.outcome.slice(0, 160)}` : ""}`);
+        }
+        for (const i of interrupted) print(`interrupção detectada: ${i.taskId}${i.orphanChild ? ` (executor órfão pid ${i.orphanChild})` : ""}`);
+      }
+      return 0;
+    }
+    case "report": {
+      const r = buildReport(new Store(projectRootOf(cwd)), str(args, "run-id"));
+      print(args.flags.json ? r : formatReportText(r));
+      return 0;
+    }
+    case "cancel": {
+      const runId = str(args, "run-id");
+      if (!runId) throw new Error("informe --run-id");
+      const r = await cancelRun(projectRootOf(cwd), runId);
+      print(r);
+      return r.ok ? 0 : 1;
+    }
+    case "apply": {
+      const taskId = str(args, "task-id");
+      if (!taskId) throw new Error("informe --task-id");
+      const r = applyTask(projectRootOf(cwd), taskId);
+      print(r);
+      return r.ok ? 0 : 1;
+    }
+    case "accept": {
+      const taskId = str(args, "task-id");
+      if (!taskId) throw new Error("informe --task-id");
+      const r = acceptTask(projectRootOf(cwd), taskId, !args.flags.reject, str(args, "note") ?? "");
+      print(r);
+      return r.ok ? 0 : 1;
+    }
+    case "handoff": {
+      const to = provider(str(args, "to"), "--to");
+      const r = writeHandoff(projectRootOf(cwd), to, str(args, "run-id"), str(args, "next"));
+      print(r.content);
+      print(`handoff salvo em ${r.path}`);
+      return 0;
+    }
+    case "quota": {
+      const store = new Store(projectRootOf(cwd));
+      if (args._[1] === "set") {
+        const p = provider(str(args, "provider"), "--provider");
+        const pct = str(args, "used-percent");
+        const used = pct === undefined ? null : Number(pct);
+        if (used !== null && (!Number.isFinite(used) || used < 0 || used > 100)) throw new Error("--used-percent deve estar entre 0 e 100");
+        const resets = str(args, "resets-at") ?? null;
+        if (resets !== null && Number.isNaN(Date.parse(resets))) throw new Error("--resets-at deve ser uma data ISO 8601");
+        print(setQuota(store, { provider: p, usedPercent: used, resetsAt: resets, note: str(args, "note") ?? "" }));
+        return 0;
+      }
+      print(quotaView(store));
+      return 0;
+    }
+    default:
+      print(`comando desconhecido: ${cmd}\n\n${HELP}`);
+      return 2;
+  }
+}
+
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (e: unknown) => {
+    process.stderr.write(`erro: ${e instanceof ConfigError || e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 2;
+  },
+);

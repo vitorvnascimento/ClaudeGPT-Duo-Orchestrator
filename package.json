@@ -1,0 +1,50 @@
+{
+  "name": "duo-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ponte local para Claude Code e Codex trabalharem juntos pelas CLIs oficiais e suas assinaturas: o melhor modelo para cada parte da tarefa, com verificação independente.",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "orchestration",
+    "multi-model",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "vitorvnascimento",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vitorvnascimento/duo-orchestrator.git"
+  },
+  "homepage": "https://github.com/vitorvnascimento/duo-orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/vitorvnascimento/duo-orchestrator/issues"
+  },
+  "type": "module",
+  "bin": {
+    "duo": "dist/src/cli/main.js"
+  },
+  "files": [
+    "dist/src",
+    "schemas",
+    "skills",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 \"dist/tests/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "duo": "node dist/src/cli/main.js",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}

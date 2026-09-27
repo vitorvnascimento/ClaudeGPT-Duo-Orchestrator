@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { cancelRun } from "../src/orchestration/control.js";
+import { duoCliCommand } from "../src/cli/init.js";
 import { Store } from "../src/state/store.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
@@ -70,7 +71,8 @@ describe("duo init", () => {
     assert.equal(applied.status, 0, applied.stderr);
     assert.equal(readFileSync(join(s.root, ".duo", "config.json"), "utf8"), '{"policy":"equilibrado"}\n');
     const skill = readFileSync(join(s.root, ".claude", "skills", "duo-delegate", "SKILL.md"), "utf8");
-    assert.match(skill, /dist\/src\/cli\/main\.js/);
+    // `duo` quando o PATH aponta para esta instalação (npm link), senão o caminho absoluto: não depende da máquina.
+    assert.ok(skill.includes(`${duoCliCommand(s.env)} models`), "skill deve chamar o duo desta instalação");
     assert.ok(!skill.includes("{{DUO_CLI}}"));
     assert.ok(existsSync(join(s.root, ".agents", "skills", "duo-delegate", "references", "request-format.md")));
     assert.match(readFileSync(join(s.root, ".agents", "skills", "duo-delegate", "references", "request-format.md"), "utf8"), /"brain": "codex"/);

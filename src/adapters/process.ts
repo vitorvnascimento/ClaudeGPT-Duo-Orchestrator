@@ -38,7 +38,7 @@ export class LineSplitter {
     }
     if (!this.discarding) {
       this.pending += text.slice(start);
-      if (Buffer.byteLength(this.pending) > this.maxLineBytes) {
+      if (Buffer.byteLength(this.pending.replace(/\r$/, "")) > this.maxLineBytes) {
         this.oversizeLines++;
         this.discarding = true;
         this.pending = "";
@@ -61,8 +61,14 @@ class TailBuffer {
   push(b: Buffer): void {
     this.chunks.push(b);
     this.size += b.length;
-    while (this.size > this.limit && this.chunks.length > 1) {
-      this.size -= (this.chunks.shift() as Buffer).length;
+    while (this.size > this.limit) {
+      const first = this.chunks[0] as Buffer;
+      const excess = this.size - this.limit;
+      if (first.length <= excess) this.size -= (this.chunks.shift() as Buffer).length;
+      else {
+        this.chunks[0] = first.subarray(excess);
+        this.size -= excess;
+      }
     }
   }
   toString(): string {
@@ -188,7 +194,7 @@ process.on("exit", () => {
 
 export function runProcess(opts: RunOptions): Promise<RunResult> {
   const started = Date.now();
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
       child = spawn(opts.command, opts.args, {
@@ -215,11 +221,24 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     let outputLimitExceeded = false;
     let spawnError: string | undefined;
     let stopping = false;
-    const splitter = new LineSplitter((line) => opts.onLine?.(line), opts.maxLineBytes);
+    let callbackFailed = false;
+    let callbackError: unknown;
+    const callCallback = <Value>(callback: ((value: Value) => void) | undefined, value: Value): void => {
+      if (callbackFailed || !callback) return;
+      try {
+        callback(value);
+      } catch (error) {
+        callbackFailed = true;
+        callbackError = error;
+        stop();
+      }
+    };
+    const splitter = new LineSplitter((line) => callCallback(opts.onLine, line), opts.maxLineBytes);
 
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      clearTimeout(timer);
       const state = live.get(child);
       if (!state) return;
       signalTree(child, opts.firstSignal ?? "SIGTERM");
@@ -242,12 +261,14 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     };
 
     const timer = setTimeout(() => {
+      if (stopping) return;
       timedOut = true;
       stop();
     }, opts.timeoutMs);
     timer.unref();
 
     const onAbort = (): void => {
+      if (stopping) return;
       cancelled = true;
       stop();
     };
@@ -257,7 +278,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     }
 
     child.on("spawn", () => {
-      if (child.pid !== undefined) opts.onSpawn?.(child.pid);
+      if (child.pid !== undefined) callCallback(opts.onSpawn, child.pid);
     });
     child.on("error", (e) => {
       spawnError = e.message;
@@ -265,7 +286,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     child.stdout?.on("data", (b: Buffer) => {
       stdoutBytes += b.length;
       if (stdoutBytes > opts.maxOutputBytes) {
-        if (!outputLimitExceeded) {
+        if (!stopping) {
           outputLimitExceeded = true;
           stop();
         }
@@ -294,6 +315,10 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
       if (IS_WINDOWS) forgetTree(child);
       else onLeaderEnd();
       if (!outputLimitExceeded) splitter.end();
+      if (callbackFailed) {
+        reject(callbackError);
+        return;
+      }
       resolve({
         exitCode: code,
         signal: sig,
@@ -329,7 +354,7 @@ function emptyResult(started: number, extra: Partial<RunResult>): RunResult {
   };
 }
 
-/** Execução curta e síncrona para diagnósticos (--version, --help, status). */
+/** Execução curta e síncrona para diagnósticos; timeout usa SIGKILL e limpa o grupo POSIX, inclusive pipes herdados. */
 export function runQuick(
   command: string,
   args: string[],
@@ -340,11 +365,18 @@ export function runQuick(
     env: opts.env ?? process.env,
     shell: false,
     windowsHide: true,
+    ...(IS_WINDOWS ? {} : { detached: true }),
     timeout: opts.timeoutMs ?? 15000,
+    killSignal: "SIGKILL",
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  if (!IS_WINDOWS && r.error && r.pid > 0) {
+    try {
+      process.kill(-r.pid, "SIGKILL");
+    } catch {}
+  }
   return {
     ok: r.status === 0 && !r.error,
     code: r.status,

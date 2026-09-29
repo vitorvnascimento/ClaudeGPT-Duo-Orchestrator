@@ -159,6 +159,14 @@ export function loadConfig(projectRoot: string): DuoConfig {
   if (!["balance", "preserve-codex", "preserve-claude"].includes(cfg.quotaPreference)) problems.push("quotaPreference");
   if (!Number.isInteger(cfg.limits.maxDelegationsPerRun) || cfg.limits.maxDelegationsPerRun < 1) problems.push("limits.maxDelegationsPerRun");
   if (cfg.limits.maxConcurrentExecutors !== 1) problems.push("limits.maxConcurrentExecutors (o MVP só aceita 1)");
+  for (const field of ["timeoutSec", "acceptanceTimeoutSec"] as const) {
+    const value = cfg.limits[field];
+    if (!Number.isInteger(value) || value < 1 || value > 86400) problems.push(`limits.${field} (inteiro de 1 a 86400 segundos)`);
+  }
+  for (const field of ["maxOutputBytes", "maxPromptBytes", "maxSnapshotBytes"] as const) {
+    const value = cfg.limits[field];
+    if (!Number.isInteger(value) || value < 1 || value > 1024 * 1024 * 1024) problems.push(`limits.${field} (inteiro de 1 a 1073741824 bytes)`);
+  }
   if (cfg.billing.profile !== "subscription-only") problems.push("billing.profile (o MVP só implementa subscription-only)");
   if (!Array.isArray(cfg.acceptance.allowedCommands) || !cfg.acceptance.allowedCommands.every((c) => Array.isArray(c) && c.every((x) => typeof x === "string"))) {
     problems.push("acceptance.allowedCommands");

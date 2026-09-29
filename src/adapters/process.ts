@@ -103,17 +103,49 @@ export type RunResult = {
   durationMs: number;
 };
 
-const live = new Set<ChildProcess>();
+const live = new Map<ChildProcess, { killTimer?: NodeJS.Timeout; watchTimer?: NodeJS.Timeout }>();
+
+function forgetTree(child: ChildProcess): void {
+  const state = live.get(child);
+  clearTimeout(state?.killTimer);
+  clearInterval(state?.watchTimer);
+  live.delete(child);
+}
+
+function groupIsAlive(child: ChildProcess): boolean {
+  if (!live.has(child)) return false;
+  // Spawn que falhou (ENOENT, EACCES, cwd inválido) nunca criou grupo: nada a vigiar.
+  if (child.pid === undefined) {
+    forgetTree(child);
+    return false;
+  }
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      forgetTree(child);
+      return false;
+    }
+    return true;
+  }
+}
 
 function signalTree(child: ChildProcess, sig: NodeJS.Signals): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  if (!live.has(child) || child.pid === undefined) return;
+  if (IS_WINDOWS && (child.exitCode !== null || child.signalCode !== null)) return;
+  if (!IS_WINDOWS && !groupIsAlive(child)) return;
   try {
     if (IS_WINDOWS) {
       spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     } else {
       process.kill(-child.pid, sig);
     }
-  } catch {
+  } catch (error) {
+    if (!IS_WINDOWS && (error as NodeJS.ErrnoException).code === "ESRCH") {
+      forgetTree(child);
+      return;
+    }
     try {
       child.kill(sig);
     } catch {
@@ -151,7 +183,7 @@ export function isPidAlive(pid: number): boolean {
 
 // Nenhum executor pode sobreviver à ponte: ao sair, a árvore de cada filho vivo é encerrada.
 process.on("exit", () => {
-  for (const child of live) signalTree(child, "SIGKILL");
+  for (const child of live.keys()) signalTree(child, "SIGKILL");
 });
 
 export function runProcess(opts: RunOptions): Promise<RunResult> {
@@ -171,7 +203,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
       resolve(emptyResult(started, { spawnError: (e as Error).message }));
       return;
     }
-    live.add(child);
+    live.set(child, {});
 
     const head: Buffer[] = [];
     let headSize = 0;
@@ -188,8 +220,25 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      const state = live.get(child);
+      if (!state) return;
       signalTree(child, opts.firstSignal ?? "SIGTERM");
-      setTimeout(() => signalTree(child, "SIGKILL"), opts.killGraceMs ?? 5000).unref();
+      if (!live.has(child)) return;
+      state.killTimer = setTimeout(() => {
+        signalTree(child, "SIGKILL");
+        forgetTree(child);
+      }, opts.killGraceMs ?? 5000).unref();
+    };
+
+    const onLeaderEnd = (): void => {
+      if (IS_WINDOWS) return;
+      // Mesmo sem encerramento em curso, descendentes podem seguir no grupo segurando os pipes:
+      // o registro só é esquecido quando o grupo é observado vazio, para que timeout/cancelamento ainda o alcancem.
+      if (!groupIsAlive(child)) return;
+      const state = live.get(child);
+      if (state && !state.watchTimer) {
+        state.watchTimer = setInterval(() => { groupIsAlive(child); }, 50).unref();
+      }
     };
 
     const timer = setTimeout(() => {
@@ -238,10 +287,12 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     if (opts.stdin !== undefined) child.stdin?.end(opts.stdin, "utf8");
     else child.stdin?.end();
 
+    child.on("exit", onLeaderEnd);
     child.on("close", (code, sig) => {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
-      live.delete(child);
+      if (IS_WINDOWS) forgetTree(child);
+      else onLeaderEnd();
       if (!outputLimitExceeded) splitter.end();
       resolve({
         exitCode: code,

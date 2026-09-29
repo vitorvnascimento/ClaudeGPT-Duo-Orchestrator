@@ -247,6 +247,21 @@ describe("timeout, interrupção, retomada e idempotência", () => {
     assert.equal(isPidAlive(pids.grandchild), false);
   });
 
+  it("falha ao registrar eventos encerra o executor e deixa a task retomável, não running", async () => {
+    const s = setup({ limits: { timeoutSec: 30 } });
+    const pidfile = join(s.tmp, "pids.json");
+    const started = Date.now();
+    const out = await run(s, baseRequest("claude"), { FAKE_SCENARIO: "events-unwritable", FAKE_PIDFILE: pidfile });
+    assert.ok(Date.now() - started < 10_000, "não deve esperar o timeout");
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /falha ao registrar o andamento/);
+    assert.equal(task(s, out.summary.taskId).state, "blocked");
+    const pids = JSON.parse(readFileSync(pidfile, "utf8")) as { self: number; grandchild: number };
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(isPidAlive(pids.self), false);
+    assert.equal(isPidAlive(pids.grandchild), false);
+  });
+
   it("retomada usa a sessão nativa, informa arquivos já alterados e não repete a base", async () => {
     const s = setup({ limits: { timeoutSec: 2 } });
     const partial = JSON.stringify({ "src/app.ts": "export const app = 1;\nexport const parcial = true;\n" });

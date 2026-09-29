@@ -430,29 +430,40 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const parser = adapter.parser();
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   let loggedBytes = 0;
-  const result = await runProcess({
-    command: plan.command,
-    args: plan.args,
-    cwd: plan.cwd,
-    env: plan.env,
-    stdin: plan.stdin,
-    timeoutMs: ctx.timeoutSec * 1000,
-    maxOutputBytes: cfg.limits.maxOutputBytes,
-    firstSignal: plan.firstSignal,
-    ...(ctx.signal ? { signal: ctx.signal } : {}),
-    onSpawn: (pid) => {
-      task.pids.child = pid;
-      store.saveTask(task);
-    },
-    onLine: (line) => {
-      parser.onLine(line);
-      if (loggedBytes < MAX_EVENT_LOG_BYTES) {
-        const safe = sanitizeEventLine(task.executor, line);
-        loggedBytes += safe.length + 1;
-        appendFileSync(eventsPath, `${safe}\n`);
-      }
-    },
-  });
+  let result: Awaited<ReturnType<typeof runProcess>>;
+  try {
+    result = await runProcess({
+      command: plan.command,
+      args: plan.args,
+      cwd: plan.cwd,
+      env: plan.env,
+      stdin: plan.stdin,
+      timeoutMs: ctx.timeoutSec * 1000,
+      maxOutputBytes: cfg.limits.maxOutputBytes,
+      firstSignal: plan.firstSignal,
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      onSpawn: (pid) => {
+        task.pids.child = pid;
+        store.saveTask(task);
+      },
+      onLine: (line) => {
+        parser.onLine(line);
+        if (loggedBytes < MAX_EVENT_LOG_BYTES) {
+          const safe = sanitizeEventLine(task.executor, line);
+          loggedBytes += safe.length + 1;
+          appendFileSync(eventsPath, `${safe}\n`);
+        }
+      },
+    });
+  } catch (e) {
+    // Falha ao registrar o andamento (ex.: disco cheio): o executor já foi encerrado; a task não pode ficar "running".
+    task.pids.child = null;
+    try {
+      return block(`falha ao registrar o andamento do executor (${(e as Error).message}); o executor foi encerrado`);
+    } catch {
+      throw e;
+    }
+  }
   if (result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;
   const outcome = parser.finish(lastMessage);

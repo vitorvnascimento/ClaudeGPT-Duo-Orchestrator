@@ -221,6 +221,13 @@ switch (scenario) {
     emit({ type: "thread.started", thread_id: thread });
     await sleep(60_000);
     break;
+  case "events-unwritable":
+    // Simula falha ao gravar o log de eventos (como disco cheio): events.jsonl vira diretório.
+    spawnGrandchild();
+    mkdirSync(join(process.cwd(), ".duo", "runs", process.env.DUO_RUN_ID, "tasks", process.env.DUO_TASK_ID, "events.jsonl"), { recursive: true });
+    emit({ type: "thread.started", thread_id: thread });
+    await sleep(60_000);
+    break;
   case "recursive": {
     emit({ type: "thread.started", thread_id: thread });
     const code = tryRecursiveDelegate();

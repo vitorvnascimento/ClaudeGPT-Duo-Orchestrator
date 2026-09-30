@@ -88,11 +88,12 @@ The version query is disabled with `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `CI`, `
 | Feature | Contract |
 | --- | --- |
 | `duo recommend` | Returns `tier`, `effort`, and `selection` with the executor/model decision. `--request <pedido.json>` supplies objective, scope, and real acceptance; `--kind` without acceptance keeps a `standard` floor. Without `model` in the request, chooses within the specified `executor`. |
-| Floors | High or sensitive risk requires an effective `deep` model, including explicit/configured/resumed; unknown default, presumed level, or explicit effort below high blocks at this floor. Capability and level are required together. `light` requires low risk, limited files, no directory in scope, and acceptance commands. |
+| Floors | With adaptive enabled, `confirmFloor` confirms the effective model, eligibility and effort during selection/recommend, execution and native observation. Deep requires a fresh catalog and advertised explicit effort ≥ high; stale/missing/unknown data blocks execution. Automatic choices (including fallbacks) confirm extra usage/include/exclude/capability. The entire authorized tree is inspected for sensitivity; incomplete inspection requires deep. |
 | Downgrade | Only with enough evidence, success equal to or greater than `routing.adaptive.downgradeMinSuccess`, and respect for floors. |
 | Escalation | Verification failure escalates `light → standard → deep`; `maxAttempts` counts the first attempt; `deep` uses `xhigh` when supported. Explicit `model` does not switch; explicit `effort` remains and, without it, only increases with support. Infrastructure failure does not escalate. |
-| Isolation | Each new `worktree` attempt uses a new worktree and preserves the previous one. `in-place` retries only without changes left by the executor. |
-| Resumption and identity | `request.json` preserves the original request; automatic selection remains scalable. `chainRoot`/`attempt` maintain the budget even without a base. Reached effort does not decrease in fallback or resumption. Original `taskKey`/hash identify the chain and reuse its final success. Old tasks without origin use the root request to distinguish explicit fields. |
+| Isolation | Escalation/fallback uses a new worktree and preserves the previous one. Explicit resumption preserves worktree/session/base/snapshot and partial work. `in-place` only escalates/falls back without changes left by the executor. |
+| Native model | An observed model below the floor, or unconfirmable under deep, produces failed without acceptance, integration or automatic escalation. Claude is interrupted on reporting an incompatible init. Files already changed remain for review. |
+| Resumption and identity | `request.json` preserves the original request. `Chain.attempts.length` determines the budget; `minTier`/`minEffort` do not decrease. Original `taskKey`/hash reuse the final Chain success. A superseded ancestor is refused with the current status and ID. Old tasks receive a single-attempt Chain without rewriting the task. |
 | Forcing behavior | `model`, `effort`, `complexity` (`light`, `standard`, or `deep`), `adaptive: false`, and `duo delegate --no-adaptive`; explicit `model`/`effort` remain during escalation. |
 | Extra usage | Requires `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` and the model in `routing.include`. Quota fallback requires a model at an equal or higher level and all gates. |
 
@@ -104,6 +105,7 @@ The phase 1 test count below is historical; the current tree has 424 offline tes
 
 | Test | Type | Result |
 | --- | --- | --- |
+| Third-round structural fix (`npm run typecheck` + `env -u CODEX_SANDBOX -u CODEX_SANDBOX_NETWORK_DISABLED npm test`) | Offline, including regressions, concurrent processes, floor/effort sequences, interruption between attempts and termination of monitored processes | Clean typecheck; **481/481**, without failures, cancellations or skipped tests |
 | 298 phase 1 tests (`npm test`) | Offline, simulated CLIs with outputs in the documented **and observed** format (including app-server JSON-RPC, with failure, unexpected format, hang, schema change, and sandbox) | 298/298 |
 | Real `duo doctor` | Without inference | Claude 2.1.114 and Codex 0.157.1: authenticated by subscription, all required features present; blocked only by confirmation of extra usage, as expected |
 | **Real Codex→Claude smoke test** | 1 invocation of `claude -p` (authorized) in a disposable repository | **succeeded** in 17 s; only `src/math.mjs` changed; `check.mjs` run by the bridge (exit 0); model `claude-opus-4-7`; native usage `input 9 / output 976 / cache_creation 19.081 / cache_read 72.960`; client estimate US$ 0.18 (not a subscription charge); `thinking` not recorded |
@@ -131,9 +133,32 @@ The real smoke test validated acceptance of the flags, event format, and end-to-
 | Exhausted | Entire account unavailable, except a specific slug mapped to a single model. Multiple specific limits combine models; any ambiguity blocks the entire account. |
 | Fallback I4 | Same or higher level, other models from the same provider first only when the limit is specific. Then another provider; complete gates, maxAttempts, and run invocation limit. New worktree; in-place only without changes. |
 | Explicit model | Preserved in quality escalation; may change in quota fallback. Explicit effort remains subject to destination support. |
-| Loopback proxy | Opt-in billing.allowLoopbackProxy (false). Only client settings/config, literal host 127.0.0.1/localhost/::1, HTTP/HTTPS; Codex requires requires_openai_auth=true without credential keys. Billing environment remains filtered. |
+| Loopback proxy | Opt-in billing.allowLoopbackProxy (false). Claude uses only sources from the effective `--setting-sources`, plus managed; `user` does not include user settings.local or project/local sources. Codex `--ignore-user-config` excludes `$CODEX_HOME/config.toml`; system and local policies remain inspected. The final gate uses flags and cwd from the plan, including worktree; settings in the brain directory do not veto selection in advance. Only literal host 127.0.0.1/localhost/::1, HTTP/HTTPS; Codex requires requires_openai_auth=true without credential keys. Unsafe overlays or unverifiable routing syntax block execution; billing environment remains filtered. |
 
 The account is the active subscription for each CLI; this phase does not manage multiple identities or validate proxy implementation. Without a known reset, it does not invent a time. Fallback and quota/proxy cases were exercised with simulated CLIs; they do not demonstrate Headroom operation or exhausted quota in real accounts. Proxy risks and discarded data are in [SECURITY.md](../SECURITY.md).
+
+
+In Codex, local inspection includes `/etc/codex/config.toml`, `managed_config.toml` and `requirements.toml` (equivalents under `%ProgramData%/OpenAI/Codex` on Windows). System sits below user/project; managed/requirements are checked separately. Without proof that project configuration is trusted/loaded, its overlay cannot authorize an unsafe route from lower layers. This may conservatively block a valid overlay. macOS MDM preferences and cloud EnterpriseManaged bundles are not inspected by this checker; local-source coverage does not validate these managed environments.
+
+## Persisted Chain — third adversarial round
+
+File: `.duo/runs/<runId>/chains/<chainId>.json`; `chainId` is the first task's ID.
+
+| Fields | Contract |
+| --- | --- |
+| `version: 1`, `chainId`, `runId`, `taskKey`, `requestHash`, `originalRequestPath` | Identity and hash of the brain's original request, before resolving executor/model/effort. |
+| `floorTier`, `minTier`, `minEffort`, `origin` | Initial floor, highest required tier, highest reached effort and explicit/automatic origin of model/effort. Store prevents decreases. |
+| `attempts[]` | `taskId`, `attempt`, `executor`, `model`, `effort`, `tier`, `reason` (`initial`, `escalation`, `quota`, `capacity`, `resume`), `state`; `capacityUntil` on the attempt without capacity. |
+| `status`, `latestTaskId`, `updatedAt` | Current result and attempt for the entire chain. |
+| `owner: {pid, nonce} \| null` | Reservation persisted between gates/attempts; prevents two resumptions. A dead PID allows recovery; already saved success is reconciled without another execution. |
+
+`Store.updateChain` and `Store.updateRun` reread JSON under `<arquivo>.lock` (`O_EXCL`, mode 0600), run a synchronous callback and publish through a temporary file + rename. No executor process runs inside this short lock. Acquisition waits up to 5 s; a dead PID's lock can be recovered, and a reservation without metadata expires in 10 min. Release checks the nonce; a live PID does not lose its lock due to age. When both transactions are needed, the order is run → Chain.
+
+`chainPolicy` supplies floor/effort for selection and both confirmations, automatic origin/eligibility, budget, resumption/reuse decisions and cooldowns. Fallback history, origin and `escalatedFrom` are no longer copied into new tasks. Ancestor-based reconstruction and the inter-iteration variables `quotaChoice`, `previous` and `escalateToMax` were removed: the next attempt's choice is persisted before execution and survives interruption in that interval. `selection.chainId` links the attempt; `attempt`, `attemptOf` and `chainRoot` are only derived data for legacy reads. `adaptive=false` keeps a single attempt and pre-adaptive resumption.
+
+Offline regressions in `tests/chain-regressions.test.ts` reproduce findings about native confirmation, ancestors and loss of concurrent tasks, as well as effective cwd/flags; `tests/chain.test.ts` covers updates by concurrent processes, floor/effort sequences, simultaneous resumption, migration, recovery between attempts and cooldown without a global cache. Proxy/source cases are in `tests/auth-loopback.test.ts`. In archived copies of `4c2f483`, the five Chain reproductions failed (two native confirmations, ancestor, success reuse and concurrent task loss), as did the two Claude reproductions (remote user/loopback project and the reverse with `settingSources=user`). The comparison neither modified HEAD nor called providers.
+
+Limits: locks are cooperative on the local filesystem, not a barrier against manual changes to `.duo`. Task, Chain and run JSON files have individual transactions, not a database transaction across three files. Validation of this change is offline on macOS; it does not prove real proxy traffic, billing, provider behavior or Windows/Linux behavior.
 
 ---
 

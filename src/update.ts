@@ -10,8 +10,11 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { cliEntry, packageRoot } from "./paths.js";
 
-export const UPDATE_REPO = "vitorvnascimento/duo-orchestrator";
-const LATEST_URL = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+export const UPDATE_REPO = "vitorvnascimento/ClaudeGPT-Duo-Orchestrator";
+/** ID numérico do repositório no GitHub: não muda com renomeação (o nome antigo responde 301, que a consulta recusa). */
+export const UPDATE_REPO_ID = 1389886707;
+const UPDATE_OWNER = "vitorvnascimento";
+const LATEST_URL = `https://api.github.com/repositories/${UPDATE_REPO_ID}/releases/latest`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** Uma reserva (lock) mais velha que isto é de um processo que morreu: pode ser retomada. */
 const STALE_LOCK_MS = 10 * 60 * 1000;
@@ -48,10 +51,16 @@ export function parseLatestRelease(body: unknown): LatestRelease | null {
   const tag = /^v(\d{1,6}\.\d{1,6}\.\d{1,6})$/.exec(r.tag_name);
   if (!tag) return null;
   const version = tag[1] as string;
-  const tarballUrl = `https://github.com/${UPDATE_REPO}/releases/download/v${version}/duo-orchestrator-${version}.tgz`;
+  // O repositório é fixado pelo ID na consulta; o nome atual vem do próprio asset, sempre do mesmo dono e com o
+  // caminho e o nome de arquivo exatos desta versão (renomear o repositório não quebra o aviso).
+  const expected = new RegExp(`^https://github\\.com/${UPDATE_OWNER}/([A-Za-z0-9._-]{1,100})/releases/download/v${version.replace(/\./g, "\\.")}/duo-orchestrator-${version.replace(/\./g, "\\.")}\\.tgz$`);
   const assets = Array.isArray(r.assets) ? r.assets : [];
-  if (!assets.some((a) => a && typeof a === "object" && (a as { browser_download_url?: unknown }).browser_download_url === tarballUrl)) return null;
-  return { version, tarballUrl, pageUrl: `https://github.com/${UPDATE_REPO}/releases/tag/v${version}` };
+  for (const a of assets) {
+    const url = a && typeof a === "object" ? (a as { browser_download_url?: unknown }).browser_download_url : null;
+    const m = typeof url === "string" ? expected.exec(url) : null;
+    if (m && m[1] !== "." && m[1] !== "..") return { version, tarballUrl: url as string, pageUrl: `https://github.com/${UPDATE_OWNER}/${m[1]}/releases/tag/v${version}` };
+  }
+  return null;
 }
 
 export async function fetchLatestRelease(fetchImpl: FetchLike = fetch as unknown as FetchLike, timeoutMs = 5000): Promise<LatestRelease | null> {

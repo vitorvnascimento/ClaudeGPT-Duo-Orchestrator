@@ -15,11 +15,11 @@
   "author": "vitorvnascimento",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vitorvnascimento/duo-orchestrator.git"
+    "url": "git+https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator.git"
   },
-  "homepage": "https://github.com/vitorvnascimento/duo-orchestrator#readme",
+  "homepage": "https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator#readme",
   "bugs": {
-    "url": "https://github.com/vitorvnascimento/duo-orchestrator/issues"
+    "url": "https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/issues"
   },
   "type": "module",
   "bin": {

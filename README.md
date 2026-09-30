@@ -45,7 +45,7 @@ You can use just one of the two accounts, but the project's goal is to combine b
 **Option 1 — clone and link (recommended; easy to update):**
 
 ```bash
-git clone https://github.com/vitorvnascimento/duo-orchestrator.git
+git clone https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator.git duo-orchestrator
 cd duo-orchestrator
 npm ci          # instala só typescript e @types/node e compila
 npm link        # coloca o comando duo no PATH
@@ -57,14 +57,14 @@ To update later: `git pull && npm ci`. To run the offline tests (no model is inv
 **Option 2 — prebuilt release package (no compilation):**
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.2.0/duo-orchestrator-0.2.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.2.0/duo-orchestrator-0.2.0.tgz
 duo --version
 ```
 
 Or download with the GitHub CLI and install the local file:
 
 ```bash
-gh release download v0.2.0 -R vitorvnascimento/duo-orchestrator -p "*.tgz"
+gh release download v0.2.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
 npm install -g ./duo-orchestrator-0.2.0.tgz
 ```
 
@@ -75,7 +75,7 @@ Without `npm link` or a global installation, use `node /caminho/duo-orchestrator
 `duo` notifies you when a new version is released: at most once a day, in the background, it checks this repository's latest public GitHub release and, if a newer version exists, prints a terminal message (stderr, without interfering with `--json` output):
 
 ```text
-duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/duo-orchestrator/releases/tag/v0.3.0
+duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -84,7 +84,7 @@ duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://githu
 - It does not check inside executors, in CI, in the Codex sandbox or with `DUO_NO_UPDATE_CHECK=1`.
 - Only the maintainer publishes releases; the repository is public for reading and use.
 
-> `npm install -g github:vitorvnascimento/duo-orchestrator` is **not** recommended: in this mode, npm 10 does not correctly prepare packages that require compilation. Use one of the options above.
+> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` is **not** recommended: in this mode, npm 10 does not correctly prepare packages that require compilation. Use one of the options above.
 
 ## First use (5 minutes)
 
@@ -220,7 +220,7 @@ A request may declare `"effort": "high"` (`low|medium|high|xhigh|max`). Claude r
 
 `duo recommend` passes `tier`, `effort` and `selection` into the decision. Use `--request <pedido.json>` to provide the actual objective, scope and acceptance commands; with `--kind` without acceptance criteria, the minimum tier is `standard`. When the request specifies `executor` and omits `model`, the bridge automatically chooses within that executor; it never changes the requested executor. `model`, `effort`, `complexity` (`light|standard|deep`) and `adaptive: false` force the indicated behavior. The CLI also accepts `duo delegate --no-adaptive`.
 
-Minimum tiers apply to the effective model, including explicit choices, executor configuration and resumptions: high or sensitive risk requires `deep`; `light` is only allowed for low risk, few files, no directory in scope and acceptance commands. An incompatible model, unknown default or presumed tier under a `deep` minimum, or explicit `effort` below `high` under that minimum, blocks before execution. Capability (including image generation) and tier must both be satisfied. A downgrade only occurs with sufficient evidence and success at or above `routing.adaptive.downgradeMinSuccess`, respecting minimum tiers. Verification failure escalates `light → standard → deep`; `maxAttempts` counts the first attempt, and `deep` may use `xhigh` when supported. Explicit `model` does not change; explicit `effort` remains, and without it escalation only increases effort when supported.
+Minimum tiers apply to the effective model, including explicit choices, executor configuration and resumptions: high or sensitive risk requires `deep`; `light` is only allowed for low risk, few files, no directory in scope and acceptance commands. Confirmation is mandatory before every execution, escalation, fallback and resumption: a `deep` floor requires a fresh catalog, a provider-confirmed model and explicit `high` or higher effort advertised in that catalog. An incompatible model, presumed tier, stale/missing catalog or unknown effort support blocks before execution; refresh with `duo models --refresh`. Every automatic choice, including the configured fallback or CLI default, must confirm extra usage, include/exclude and capabilities; a stale catalog never relaxes these filters. Sensitivity inspection covers all authorized paths, including ignored ones; incomplete inspection requires `deep`. If the executor reports a native model below the floor or unconfirmable under `deep`, the task becomes `failed`, without acceptance, integration or automatic escalation; in Claude, the bridge interrupts on receiving the incompatible init. Capability (including image generation) and tier must both be satisfied. A downgrade only occurs with sufficient evidence and success at or above `routing.adaptive.downgradeMinSuccess`, respecting minimum tiers. Verification failure escalates `light → standard → deep`; `maxAttempts` counts the first attempt, and `deep` may use `xhigh` when supported. Explicit `model` does not change; explicit `effort` remains, and without it escalation only increases effort when supported.
 
 Each `worktree` attempt receives a new worktree and keeps the previous one for inspection. In `in-place` mode, another attempt is allowed only if the executor left no changes. Infrastructure failures do not escalate. Extra usage is allowed only with `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` and the model included in `routing.include`. In phase 3, exhausted quota may switch executor/model to an equivalent at the same or higher tier, repeating all gates; it never lowers the tier.
 
@@ -238,7 +238,7 @@ At usage ≥ `routing.adaptive.quotaWarnPercent` (90 by default), candidates fro
 
 If quota runs out during an adaptive task, the bridge first tries other models from the same provider when the limit is model-specific, then the other provider, always at the attempt's tier or above. Each fallback counts toward `maxAttempts` and the run's policy limits, keeps the original task resumable and records the chain in `selection.fallbacks`. The bridge prompt is neutral; sandbox and permissions remain specific to each executor. Explicit `model` may be replaced **only in this quota fallback**; explicit `effort` remains subject to destination support. Without an equivalent, with changes left in-place or if the destination is the brain's own client/model, it returns `blocked`. `adaptive: false` still records quota, without automatic fallback.
 
-For a local proxy using your subscription, explicitly enable `billing.allowLoopbackProxy: true` (default `false`). The exception only accepts HTTP/HTTPS at `127.0.0.1`, `localhost` or `[::1]` in client settings/config. In Codex it also requires `requires_openai_auth = true`, with no credential keys in the custom provider. `ANTHROPIC_BASE_URL` is still removed from the process environment. `duo doctor` shows authorization or a hint to enable the option. The local proxy can see traffic and the session token; see [SECURITY.md](SECURITY.md).
+For a local proxy using your subscription, explicitly enable `billing.allowLoopbackProxy: true` (default `false`). The exception only accepts HTTP/HTTPS at `127.0.0.1`, `localhost` or `[::1]` in client settings/config. The bridge validates the effective configuration after merging Claude user/project/local sources and Codex global/project sources. In Codex it also requires `requires_openai_auth = true`, with no credential keys in the merged provider; unverifiable TOML routing forms block execution. `ANTHROPIC_BASE_URL` is still removed from the process environment. `duo doctor` shows authorization or a hint to enable the option. The local proxy can see traffic and the session token; see [SECURITY.md](SECURITY.md).
 
 ## Choosing an executor: evidence, not brand
 
@@ -380,7 +380,7 @@ Você pode usar só uma das duas contas, mas o objetivo do projeto é combinar a
 **Opção 1 — clonar e linkar (recomendado; fácil de atualizar):**
 
 ```bash
-git clone https://github.com/vitorvnascimento/duo-orchestrator.git
+git clone https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator.git duo-orchestrator
 cd duo-orchestrator
 npm ci          # instala só typescript e @types/node e compila
 npm link        # coloca o comando duo no PATH
@@ -392,14 +392,14 @@ Para atualizar depois: `git pull && npm ci`. Para rodar os testes offline (nenhu
 **Opção 2 — pacote pronto da release (sem compilar):**
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.2.0/duo-orchestrator-0.2.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.2.0/duo-orchestrator-0.2.0.tgz
 duo --version
 ```
 
 Ou baixe com o GitHub CLI e instale o arquivo local:
 
 ```bash
-gh release download v0.2.0 -R vitorvnascimento/duo-orchestrator -p "*.tgz"
+gh release download v0.2.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
 npm install -g ./duo-orchestrator-0.2.0.tgz
 ```
 
@@ -410,7 +410,7 @@ Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/
 O `duo` avisa quando sai uma versão nova: no máximo uma vez por dia, em segundo plano, ele consulta a última release pública deste repositório no GitHub e, se houver versão mais nova, mostra no terminal (stderr, sem atrapalhar saídas `--json`):
 
 ```text
-duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/duo-orchestrator/releases/tag/v0.3.0
+duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -419,7 +419,7 @@ duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://githu
 - Não consulta dentro dos executores, em CI, no sandbox do Codex nem com `DUO_NO_UPDATE_CHECK=1`.
 - Só o mantenedor publica releases; o repositório é público para leitura e uso.
 
-> `npm install -g github:vitorvnascimento/duo-orchestrator` **não** é recomendado: nesse modo o npm 10 não prepara corretamente pacotes que precisam compilar. Use uma das opções acima.
+> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` **não** é recomendado: nesse modo o npm 10 não prepara corretamente pacotes que precisam compilar. Use uma das opções acima.
 
 ## Primeiro uso (5 minutos)
 

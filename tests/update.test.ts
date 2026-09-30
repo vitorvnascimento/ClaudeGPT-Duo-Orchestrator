@@ -22,7 +22,7 @@ import {
 } from "../src/update.js";
 import { CLI } from "./helpers.js";
 
-const REPO = "https://github.com/vitorvnascimento/duo-orchestrator";
+const REPO = "https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator";
 const release = (version: string, extra: Record<string, unknown> = {}) => ({
   tag_name: `v${version}`,
   draft: false,
@@ -57,6 +57,18 @@ describe("aviso de nova versão", () => {
     assert.equal(parseLatestRelease(release("0.3.0", { tag_name: "v0.3.0\u001b[31m" })), null);
     assert.equal(parseLatestRelease(release("0.3.0", { assets: [{ browser_download_url: "https://evil.example/duo-orchestrator-0.3.0.tgz" }] })), null);
     assert.equal(parseLatestRelease(release("0.3.0", { assets: [] })), null);
+    // Nome antigo do repositório (mesmo dono) continua aceito; outro dono, outro arquivo ou traversal, não.
+    const old = "https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz";
+    assert.equal(parseLatestRelease(release("0.3.0", { assets: [{ browser_download_url: old }] }))?.pageUrl, "https://github.com/vitorvnascimento/duo-orchestrator/releases/tag/v0.3.0");
+    for (const bad of [
+      "https://github.com/outro-dono/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz",
+      `${REPO}/releases/download/v0.3.0/duo-orchestrator-0.3.1.tgz`,
+      `${REPO}/releases/download/v0.2.0/duo-orchestrator-0.3.0.tgz`,
+      "https://github.com/vitorvnascimento/../releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz",
+      "https://github.com/vitorvnascimento/x/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz?a=1",
+      "https://github.com.evil.example/vitorvnascimento/x/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz",
+      "http://github.com/vitorvnascimento/x/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz",
+    ]) assert.equal(parseLatestRelease(release("0.3.0", { assets: [{ browser_download_url: bad }] })), null, bad);
     assert.equal(parseLatestRelease(null), null);
   });
 
@@ -72,7 +84,7 @@ describe("aviso de nova versão", () => {
       });
       assert.equal(latest?.version, "0.3.0");
       assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.url, "https://api.github.com/repos/vitorvnascimento/duo-orchestrator/releases/latest");
+      assert.equal(calls[0]?.url, "https://api.github.com/repositories/1389886707/releases/latest", "consulta pelo ID: renomear o repositório não quebra o aviso");
       assert.deepEqual(Object.keys(calls[0]?.init.headers ?? {}).sort(), ["Accept", "User-Agent"]);
       assert.equal(calls[0]?.init.redirect, "error");
       assert.ok(!JSON.stringify(calls).includes("nao_pode_sair"));

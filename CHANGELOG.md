@@ -23,23 +23,25 @@ Phases 1–3: catalog, adaptive selection and quota continuity (offline validati
 - Sanitized per-provider state in `.duo/quota-state.json`, expiring at reset/6 h without reset; Claude events, quota errors and manual records update the observation.
 - Optional `account/rateLimits/read` in the Codex discovery session, without credit-consuming methods. Account/plan/credit fields are discarded; specific limits only affect models with unambiguous mapping.
 - `duo quota refresh`, `quota show` with `state` preserving previous fields and quota health in `recommend`. Warning conserves the account for deep (−0.15 only in light/standard).
-- I4 fallback at the same or higher tier with `selection.fallbacks`, new attempts/worktrees, all gates and protection of in-place changes. The original task remains resumable; adaptive disabled performs no fallback.
+- I4 fallback at the same or higher tier recorded in `Chain.attempts`, new attempts/worktrees, all gates and protection of in-place changes. Only the latest blocked attempt can be resumed; adaptive disabled performs no fallback.
 - `billing.allowLoopbackProxy` (false by default): explicit exception for a subscription-based HTTP/HTTPS loopback proxy, without API keys and with `requires_openai_auth` in Codex. Doctor reports authorization/a hint; SECURITY documents the risk.
 - Offline tests of parsing/privacy/expiration, allowed account methods, selection, fallback between simulated CLIs and loopback URL validation. No version was changed.
 - Adversarial fixes: effective model and explicit effort respect the risk/scope minimum tier; capability and tier are required together, with consistent tiers in recommend. Unknown defaults or presumed tiers cannot execute under a deep minimum.
-- Original request preserved in request.json; invocation.json records resolved execution. Resumptions preserve automatic origin, chain root/counter and the minimum effort reached; fallbacks seek destinations supporting that effort. taskKey reuses the final result by its original logical identity.
+- Original request preserved in request.json; invocation.json records resolved execution. Chain preserves origin, counter and the minimum effort reached; fallbacks seek destinations supporting that effort. taskKey reuses the latest Chain attempt by the original request hash.
+
+- **Model without capacity** ("at capacity", "overloaded", 529/503): treated as a transient model failure, not an account failure. The model becomes unavailable for 10 min in `.duo/capacity-state.json` and the task continues on another model at the same or higher tier, first from the same provider and then from the other, under the same rules as quota fallback. With `adaptive=false`: blocked, as in 0.2.0.
+
+- Second adversarial round: `confirmFloor` centralizes confirmation of model/effort/eligibility; deep requires a fresh catalog and explicit high or higher effort. Stale, unknown or ineligible automatic fallbacks block execution.
+- Scope sensitivity inspected without a 2,000-path cutoff; incomplete enumeration requires deep. A native model below the floor or unconfirmable fails without integration/escalation, with early interruption during Claude init.
+- Loopback proxy validated after merging sources loaded by the executor; unverifiable routing tables, profiles and TOML syntax fail closed, without exposing credential values.
+
+- Third adversarial round: Chain persisted in `.duo/runs/<runId>/chains/<chainId>.json`, with original request, origin, attempts, monotonic floor/effort and execution reservation. Selection, native confirmation, budget, resumption, capacity and idempotency consult this record. Superseded ancestors are refused; resuming final success reuses the result.
+- Chain and run use read-modify-write under a short file lock. Escalations/fallbacks preserve concurrent tasks, counters and cancellation; old tasks receive a single-attempt Chain on read, without rewriting the audit. Adaptive resumption records a new attempt and preserves session, base, snapshot and partial work; the next attempt's choice is already persisted if interrupted before execution.
+- Authentication validates sources and the directory of the effective plan. Claude `settingSources=user` considers user + managed; ignored project/local sources produce a warning and do not mask endpoints. Codex only ignores user configuration when `--ignore-user-config` is in the plan. Flags absent from help do not authorize source exclusion.
+
+- The repository is now `vitorvnascimento/ClaudeGPT-Duo-Orchestrator`; 0.2.0 installations do not receive the automatic notice for this version (one-time manual update: `npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz`).
 
 ### Português
-
-- Terceira rodada adversarial: Chain persistida em `.duo/runs/<runId>/chains/<chainId>.json`, com pedido original, origem, tentativas, piso/esforço monotônicos e reserva de execução. Seleção, confirmação nativa, orçamento, retomada, capacidade e idempotência consultam esse registro. Ancestrais substituídas são recusadas; retomar o sucesso final reutiliza o resultado.
-- Chain e run usam leitura-modificação-escrita sob lock curto de arquivo. Escaladas/fallbacks preservam tasks concorrentes, contadores e cancelamento; tasks antigas recebem Chain unitária ao ler, sem reescrita da auditoria. Retomada adaptativa registra nova tentativa e preserva sessão, base, snapshot e trabalho parcial; a escolha da próxima tentativa já está persistida se houver interrupção antes de executá-la.
-- Autenticação valida fontes e diretório do plano efetivo. Claude `settingSources=user` considera usuário + managed; projeto/local ignorados geram aviso e não mascaram endpoints. Codex só ignora configuração do usuário quando `--ignore-user-config` está no plano. Flags ausentes no help não autorizam exclusão de fontes.
-
-- **Modelo sem capacidade** ("at capacity", "overloaded", 529/503): tratado como falha passageira do modelo, não da conta. O modelo fica indisponível por 10 min em `.duo/capacity-state.json` e a tarefa continua em outro modelo de nível igual ou superior, primeiro do mesmo fornecedor e depois do outro, com as mesmas regras do fallback de cota. Com `adaptive=false`: blocked, como na 0.2.0.
-
-- Segunda rodada adversarial: `confirmFloor` centraliza confirmação de modelo/esforço/elegibilidade; deep exige catálogo fresco e esforço explícito high ou superior. Reservas automáticas stale, desconhecidas ou inelegíveis bloqueiam.
-- Sensibilidade de escopo inspecionada sem corte de 2.000 caminhos; enumeração incompleta exige deep. Modelo nativo abaixo do piso ou não confirmável falha sem integrar/escalar, com interrupção antecipada no init Claude.
-- Proxy loopback validado após sobreposição das fontes carregadas pelo executor; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.
 
 Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validação offline).
 
@@ -64,6 +66,18 @@ Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validaçã
 - Testes offline de parsing/privacidade/expiração, métodos account permitidos, seleção, fallback entre CLIs simuladas e validação de URLs loopback. Nenhuma versão foi alterada.
 - Correções adversariais: modelo efetivo e effort explícito respeitam o piso de risco/escopo; capacidade e nível são exigidos juntos, com tiers coerentes em recommend. Padrão desconhecido ou nível presumido não pode executar sob piso deep.
 - Pedido original preservado em request.json; invocation.json registra a execução resolvida. Chain conserva origem, contador e esforço mínimo alcançado; fallbacks procuram destinos que sustentem esse esforço. taskKey reutiliza a última tentativa da Chain pelo hash do pedido original.
+
+- **Modelo sem capacidade** ("at capacity", "overloaded", 529/503): tratado como falha passageira do modelo, não da conta. O modelo fica indisponível por 10 min em `.duo/capacity-state.json` e a tarefa continua em outro modelo de nível igual ou superior, primeiro do mesmo fornecedor e depois do outro, com as mesmas regras do fallback de cota. Com `adaptive=false`: blocked, como na 0.2.0.
+
+- Segunda rodada adversarial: `confirmFloor` centraliza confirmação de modelo/esforço/elegibilidade; deep exige catálogo fresco e esforço explícito high ou superior. Reservas automáticas stale, desconhecidas ou inelegíveis bloqueiam.
+- Sensibilidade de escopo inspecionada sem corte de 2.000 caminhos; enumeração incompleta exige deep. Modelo nativo abaixo do piso ou não confirmável falha sem integrar/escalar, com interrupção antecipada no init Claude.
+- Proxy loopback validado após sobreposição das fontes carregadas pelo executor; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.
+
+- Terceira rodada adversarial: Chain persistida em `.duo/runs/<runId>/chains/<chainId>.json`, com pedido original, origem, tentativas, piso/esforço monotônicos e reserva de execução. Seleção, confirmação nativa, orçamento, retomada, capacidade e idempotência consultam esse registro. Ancestrais substituídas são recusadas; retomar o sucesso final reutiliza o resultado.
+- Chain e run usam leitura-modificação-escrita sob lock curto de arquivo. Escaladas/fallbacks preservam tasks concorrentes, contadores e cancelamento; tasks antigas recebem Chain unitária ao ler, sem reescrita da auditoria. Retomada adaptativa registra nova tentativa e preserva sessão, base, snapshot e trabalho parcial; a escolha da próxima tentativa já está persistida se houver interrupção antes de executá-la.
+- Autenticação valida fontes e diretório do plano efetivo. Claude `settingSources=user` considera usuário + managed; projeto/local ignorados geram aviso e não mascaram endpoints. Codex só ignora configuração do usuário quando `--ignore-user-config` está no plano. Flags ausentes no help não autorizam exclusão de fontes.
+
+- O repositório agora é `vitorvnascimento/ClaudeGPT-Duo-Orchestrator`; instalações 0.2.0 não recebem o aviso automático desta versão (atualização manual única: `npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz`).
 
 ## 0.2.0 — 2026-09-29
 

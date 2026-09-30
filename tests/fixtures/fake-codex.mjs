@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-  applyWrites, emit, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
+  applyWrites, emit, emitPrivateKey, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
 } from "./fake-common.mjs";
 
 const args = process.argv.slice(2);
@@ -151,6 +151,8 @@ const finish = (rep) => {
 };
 
 switch (scenario) {
+  case "private-key":
+    emitPrivateKey();
   case "success": {
     emit({ type: "thread.started", thread_id: thread });
     writeRollout(["exec_command"]);

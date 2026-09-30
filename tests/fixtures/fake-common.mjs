@@ -84,3 +84,14 @@ export async function writeFragmented(lines) {
 export function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
+
+export function emitPrivateKey() {
+  const pem = process.env.FAKE_PRIVATE_KEY;
+  if (!pem) return;
+  for (const line of pem.trimEnd().split("\n")) {
+    if (process.env.FAKE_KEY_FORMAT === "json") {
+      emit({ type: "stream_event", event: { delta: { type: "text_delta", text: line } } });
+    } else process.stdout.write(line + "\n");
+  }
+  process.stderr.write(pem.slice(pem.indexOf("\n") + 1));
+}

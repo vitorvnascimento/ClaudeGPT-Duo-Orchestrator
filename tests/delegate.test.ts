@@ -1,5 +1,6 @@
 // Integração offline: a ponte real contra CLIs simuladas (nenhum modelo é invocado).
 import { strict as assert } from "node:assert";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -430,6 +431,33 @@ describe("preservação, verificação real e segredos", () => {
     assert.ok(!events.includes("SECRETSECRETSECRET"));
     assert.ok(!events.includes("abcdefghijklmnop123"));
   });
+
+  for (const brain of ["claude", "codex"] as const) {
+    for (const format of ["plain", "json"]) {
+      it(`PEM Ed25519 multilinha (${brain}, ${format}) não chega aos artefatos`, async () => {
+        const s = setup();
+        const pem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+        const out = await run(s, baseRequest(brain), {
+          FAKE_SCENARIO: "private-key", FAKE_PRIVATE_KEY: pem, FAKE_KEY_FORMAT: format, FAKE_WRITE: APP_EDIT,
+        });
+        assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+        const current = task(s, out.summary.taskId);
+        const events = readFileSync(join(current.artifactsDir, "events.jsonl"), "utf8");
+        const stderr = readFileSync(join(current.artifactsDir, "stderr.txt"), "utf8");
+        for (const line of pem.trim().split("\n")) {
+          assert.ok(!events.includes(line), "nenhuma linha do PEM pode ser persistida em stdout");
+          assert.ok(!stderr.includes(line), "cauda de stderr deve falhar fechado");
+        }
+        if (format === "json") {
+          for (const line of events.trim().split("\n")) assert.doesNotThrow(() => JSON.parse(line));
+        }
+        assert.ok(events.includes('"<redacted>"') || events.includes("<redacted>"));
+        assert.ok(events.includes("completed"), "eventos após END devem continuar registrados");
+        assert.equal(current.pids.child, null);
+        assert.equal(existsSync(join(s.root, ".duo", "lock.json")), false);
+      });
+    }
+  }
 
   it("status parcial do executor → blocked com trabalho parcial preservado", async () => {
     const s = setup();

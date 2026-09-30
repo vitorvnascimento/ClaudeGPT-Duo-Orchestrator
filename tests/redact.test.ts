@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { redact, redactDeep } from "../src/redact.js";
+import { createStreamRedactor, redact, redactDeep } from "../src/redact.js";
+import { sanitizeEventLine } from "../src/adapters/sanitize.js";
 
 describe("formatos adicionais de segredos", () => {
   it("redige Google API keys com exatamente 35 caracteres após AIza", () => {
@@ -57,7 +58,7 @@ describe("formatos adicionais de segredos", () => {
 
   it("não combina delimitadores PEM pertencentes a strings JSON diferentes", () => {
     const input = { begin: "-----BEGIN PRIVATE KEY-----\nYWJj", end: "-----END PRIVATE KEY-----", count: 3 };
-    assert.deepEqual(redactDeep(input), { ...input, begin: "<redacted>" });
+    assert.deepEqual(redactDeep(input), { ...input, begin: "<redacted>", end: "<redacted>" });
   });
 
   it("redige PEM truncado até o fim do texto, inclusive BEGINs repetidos", () => {
@@ -67,17 +68,33 @@ describe("formatos adicionais de segredos", () => {
     assert.equal(redact(`log: ${truncated}\n"conteúdo privado" \\`), "log: <redacted>");
   });
 
-  it("redactDeep falha fechado em PEM truncado ou com rótulos diferentes sem afetar strings vizinhas", () => {
+  it("redige cauda truncada com END sem BEGIN até o delimitador", () => {
+    for (const label of ["PRIVATE KEY", "RSA PRIVATE KEY", "OPENSSH PRIVATE KEY"]) {
+      const tail = `cHJpdmF0ZS1rZXk=\n-----END ${label}-----\npúblico`;
+      assert.equal(redact(tail), "<redacted>\npúblico");
+      assert.deepEqual(redactDeep({ tail, after: "público" }), { tail: "<redacted>\npúblico", after: "público" });
+    }
+  });
+
+  it("redactDeep falha fechado em PEM truncado: preserva o que vem antes e redige o que vem depois do bloco aberto", () => {
     for (const ending of ["", "\n-----END PRIVATE KEY-----"]) {
       const pem = `-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretbody${ending}`;
       const neighbor = 'texto "vizinho" \\';
       const input = { before: neighbor, output: `log: ${pem}`, after: neighbor, items: [pem, `${pem}\n"aspas" \\`, `${pem}\\`] };
       const suffix = ending ? '\n"aspas" \\' : "";
-      const expected = { before: neighbor, output: "log: <redacted>", after: neighbor, items: ["<redacted>", `<redacted>${suffix}`, `<redacted>${ending ? "\\" : ""}`] };
+      const expected = ending
+        ? { before: neighbor, output: "log: <redacted>", after: neighbor, items: ["<redacted>", `<redacted>${suffix}`, "<redacted>\\"] }
+        : { before: neighbor, output: "log: <redacted>", after: "<redacted>", items: ["<redacted>", "<redacted>", "<redacted>"] };
       assert.deepEqual(redactDeep(input), expected);
       assert.deepEqual(JSON.parse(redact(JSON.stringify(input))), expected);
       assert.ok(!JSON.stringify(redactDeep(input)).includes("MIIEsecretbody"));
     }
+  });
+
+  it("redactDeep não vaza o corpo de um PEM partido entre strings (ex.: array de linhas)", () => {
+    const lines = ["-----BEGIN PRIVATE KEY-----", "MIIEsecretbody1", "MIIEsecretbody2", "-----END PRIVATE KEY-----", "depois"];
+    const output = redactDeep({ antes: "antes", lines });
+    assert.deepEqual(output, { antes: "antes", lines: ["<redacted>", "<redacted>", "<redacted>", "<redacted>", "depois"] });
   });
 
   it("redige 2 MiB de BEGINs sem END em menos de um segundo", () => {
@@ -100,5 +117,79 @@ describe("formatos adicionais de segredos", () => {
       const pem = `-----BEGIN ${label}-----\nYWJj\n-----END ${label}-----`;
       assert.equal(redact(pem), pem);
     }
+  });
+});
+
+describe("redação por stream", () => {
+  const begin = "-----BEGIN PRIVATE KEY-----";
+  const end = "-----END PRIVATE KEY-----";
+
+  it("redige linhas de PEM até END e retoma redação normal no sufixo", () => {
+    const stream = createStreamRedactor();
+    assert.equal(stream(`antes ${begin}`), "antes <redacted>");
+    assert.equal(stream("cHJpdmF0ZS1rZXk="), "<redacted>");
+    assert.equal(stream(`corpo ${end} depois sk-${"a".repeat(20)}`), "<redacted> depois <redacted>");
+    assert.equal(stream("público"), "público");
+  });
+
+  it("deltas JSON dentro do bloco são marcações válidas e preservam sufixo após END", () => {
+    const stream = createStreamRedactor();
+    const delta = (text: string) => JSON.stringify({ type: "stream_event", event: { delta: { type: "text_delta", text } } });
+    assert.equal(JSON.parse(stream(delta(begin))).event.delta.text, "<redacted>");
+    assert.deepEqual(JSON.parse(stream(delta("cHJpdmF0ZS1rZXk="))), { redacted: "private-key" });
+    assert.equal(JSON.parse(stream(delta(`${end} público`))).event.delta.text, "<redacted> público");
+    assert.equal(stream(delta("público")), delta("público"));
+  });
+
+  it("EOF sem END falha fechado, sem contaminar outro stream", () => {
+    const stream = createStreamRedactor();
+    stream(JSON.stringify({ text: begin }));
+    assert.deepEqual(JSON.parse(stream(JSON.stringify({ text: "corpo" }))), { redacted: "private-key" });
+    assert.equal(stream("mesmo sem JSON"), "<redacted>");
+    assert.equal(createStreamRedactor()("outro stream"), "outro stream");
+  });
+
+  it("BEGIN além do truncamento de logs ainda inicia redação antes de cortar a linha", () => {
+    const stream = createStreamRedactor();
+    sanitizeEventLine("codex", `${"x".repeat(2100)}${begin}`, stream);
+    assert.equal(sanitizeEventLine("codex", "cHJpdmF0ZS1rZXk=", stream), "<redacted>");
+    sanitizeEventLine("codex", end, stream);
+    assert.equal(sanitizeEventLine("codex", "público", stream), "público");
+  });
+
+  it("raciocínio continua omitido quando um bloco aberto num evento anterior redige o campo type", () => {
+    const codex = createStreamRedactor();
+    const reasoning = (text: string) => JSON.stringify({ type: "item.completed", item: { id: "r1", type: "reasoning", text } });
+    for (const text of [`pensando ${begin}`, `${end} RACIOCINIO_INTERNO`]) {
+      const out = sanitizeEventLine("codex", reasoning(text), codex);
+      assert.ok(!out.includes("RACIOCINIO_INTERNO") && !out.includes("pensando"), out);
+      assert.equal(JSON.parse(out).item.omitted, true);
+    }
+    const claude = createStreamRedactor();
+    const message = (content: unknown[]) => JSON.stringify({ type: "assistant", message: { role: "assistant", content } });
+    sanitizeEventLine("claude", message([{ type: "thinking", thinking: `pensando ${begin}` }]), claude);
+    const out = sanitizeEventLine("claude", message([{ type: "thinking", thinking: `${end} RACIOCINIO_INTERNO` }, { type: "text", text: "resposta" }]), claude);
+    assert.ok(!out.includes("RACIOCINIO_INTERNO"), out);
+    assert.deepEqual(JSON.parse(out).message.content, [{ type: "thinking", omitted: true }, { type: "text", text: "resposta" }]);
+  });
+
+  it("BEGIN numa chave JSON (ex.: argumentos MCP) redige os valores seguintes", () => {
+    const event = { type: "item.completed", item: { type: "mcp_tool_call", arguments: { [begin]: "MIIEsecretbody", tail: end, depois: "público" } } };
+    for (const out of [redact(JSON.stringify(event)), createStreamRedactor()(JSON.stringify(event))]) {
+      assert.ok(!out.includes("MIIEsecretbody"), out);
+      assert.deepEqual(JSON.parse(out).item.arguments, { "<redacted>": "<redacted>", tail: "<redacted>", depois: "público" });
+    }
+  });
+
+  it("redige 1,25 MiB linearmente, inclusive múltiplos blocos na mesma linha", () => {
+    const block = `${begin}\n${"a".repeat(50)}\n${end}\n`;
+    const text = block.repeat(Math.ceil(1.25 * 1024 * 1024 / block.length));
+    const stream = createStreamRedactor();
+    const started = performance.now();
+    const output = stream(JSON.stringify({ text }));
+    const elapsed = performance.now() - started;
+    assert.ok(!output.includes(begin) && !output.includes(end) && !output.includes("a".repeat(50)));
+    assert.ok(elapsed < 1000, `redação de ${text.length} bytes levou ${elapsed.toFixed(1)} ms`);
+    assert.equal(stream("público"), "público");
   });
 });

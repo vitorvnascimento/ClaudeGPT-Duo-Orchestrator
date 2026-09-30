@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Claude Code simulado: imita `--version`, `--help`, `auth status` e `-p --output-format stream-json`.
 import {
-  applyWrites, emit, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
+  applyWrites, emit, emitPrivateKey, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
 } from "./fake-common.mjs";
 
 const args = process.argv.slice(2);
@@ -104,6 +104,8 @@ switch (scenario) {
       result: 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.114 does not support this model; version 2.1.280 or newer is required. Run \'claude update\', or update the Claude desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}}}',
     });
     process.exit(0);
+  case "private-key":
+    emitPrivateKey();
   case "success":
   case "model-fallback":
   case "overage": {

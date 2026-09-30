@@ -16,7 +16,7 @@ import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../confi
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, headCommit, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import { inScope, isDenied, validateScope, type ScopeEntry } from "../permissions/scope.js";
-import { redact, redactDeep } from "../redact.js";
+import { createStreamRedactor, redact, redactDeep } from "../redact.js";
 import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorLock, newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
@@ -429,6 +429,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
 
   const parser = adapter.parser();
   const eventsPath = join(task.artifactsDir, "events.jsonl");
+  const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
   let result: Awaited<ReturnType<typeof runProcess>>;
   try {
@@ -449,10 +450,17 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       onLine: (line) => {
         parser.onLine(line);
         if (loggedBytes < MAX_EVENT_LOG_BYTES) {
-          const safe = sanitizeEventLine(task.executor, line);
+          const safe = sanitizeEventLine(task.executor, line, redactStdout);
           loggedBytes += safe.length + 1;
           appendFileSync(eventsPath, `${safe}\n`);
         }
+      },
+      onOversizeLine: () => {
+        // A linha descartada não passou pelo redator, que pode ter perdido o início de um bloco PEM: falha fechado e para o log.
+        if (loggedBytes < MAX_EVENT_LOG_BYTES) {
+          appendFileSync(eventsPath, `${JSON.stringify({ redacted: "oversize-line", note: "linha acima do limite descartada; log de eventos interrompido" })}\n`);
+        }
+        loggedBytes = MAX_EVENT_LOG_BYTES;
       },
     });
   } catch (e) {

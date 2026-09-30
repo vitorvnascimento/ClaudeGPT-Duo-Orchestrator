@@ -41,6 +41,7 @@ Uso:
   duo apply --task-id <id>                    integra patch de task em worktree
   duo accept --task-id <id> [--reject] [--note <texto>]
   duo handoff --to claude|codex [--run-id <id>] [--next <texto>]
+  duo quota refresh
   duo quota show
   duo quota set --provider claude|codex [--used-percent N] [--resets-at ISO8601] [--note <texto>]
   duo update [--apply]                        procura nova versão (release pública, sem credenciais); --apply instala
@@ -339,6 +340,11 @@ async function main(argv: string[]): Promise<number> {
     }
     case "quota": {
       const store = new Store(projectRootOf(cwd));
+      if (args._[1] === "refresh") {
+        await loadCatalog(store, loadConfig(store.projectRoot), { refresh: true });
+        print(quotaView(store));
+        return 0;
+      }
       if (args._[1] === "set") {
         const p = provider(str(args, "provider"), "--provider");
         const pct = str(args, "used-percent");
@@ -346,7 +352,7 @@ async function main(argv: string[]): Promise<number> {
         if (used !== null && (!Number.isFinite(used) || used < 0 || used > 100)) throw new Error("--used-percent deve estar entre 0 e 100");
         const resets = str(args, "resets-at") ?? null;
         if (resets !== null && Number.isNaN(Date.parse(resets))) throw new Error("--resets-at deve ser uma data ISO 8601");
-        print(setQuota(store, { provider: p, usedPercent: used, resetsAt: resets, note: str(args, "note") ?? "" }));
+        print(setQuota(store, { provider: p, usedPercent: used, resetsAt: resets, note: str(args, "note") ?? "" }, loadConfig(store.projectRoot).routing.adaptive.quotaWarnPercent));
         return 0;
       }
       print(quotaView(store));

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Codex CLI simulado: imita `--version`, `exec --help`, `login status`, `exec --json` (JSONL), `app-server` (JSON-RPC) e `debug models`.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   applyWrites, emit, emitPrivateKey, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
@@ -21,8 +21,9 @@ if (has("--version")) {
 }
 if (args[0] === "exec" && has("--help")) {
   let flags = FLAGS;
-  if (process.env.FAKE_HELP === "missing-schema") flags = flags.filter((f) => !f.startsWith("--output-schema"));
-  if (process.env.FAKE_HELP === "missing-config") flags = flags.filter((f) => !f.includes("--config"));
+  const help = process.env.FAKE_CODEX_HELP ?? process.env.FAKE_HELP;
+  if (help === "missing-schema") flags = flags.filter((f) => !f.startsWith("--output-schema"));
+  if (help === "missing-config") flags = flags.filter((f) => !f.includes("--config"));
   process.stdout.write(`Run Codex non-interactively\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n${flags.map((f) => `  ${f}  desc`).join("\n")}\n`);
   process.exit(0);
 }
@@ -84,7 +85,17 @@ if (args[0] === "app-server") {
       buf = buf.slice(i + 1);
       if (!line || mode === "hang") continue;
       const m = JSON.parse(line);
-      if (m.method === "initialize") {
+      log({ cmd: "app-server-method", method: m.method, hasParams: "params" in m, env: sensitiveEnvSeen() });
+      if (m.method.startsWith("account/") && m.method !== "account/rateLimits/read") throw new Error("forbidden account method");
+      if (m.method === "account/rateLimits/read") {
+        if (process.env.FAKE_QUOTA === "close") process.exit(1);
+        if (process.env.FAKE_QUOTA === "hang") continue;
+        if (process.env.FAKE_QUOTA === "error") send({ id: m.id, error: { code: -32601, message: "Method not found" } });
+        else {
+          const afterExec = process.env.FAKE_QUOTA_AFTER_EXEC && process.env.FAKE_LOG && existsSync(process.env.FAKE_LOG) && readFileSync(process.env.FAKE_LOG, "utf8").split("\n").filter(Boolean).some((l) => JSON.parse(l).cmd === "exec");
+          send({ id: m.id, result: JSON.parse((afterExec ? process.env.FAKE_QUOTA_AFTER_EXEC : process.env.FAKE_QUOTA) ?? "null") });
+        }
+      } else if (m.method === "initialize") {
         send({ id: m.id, result: { userAgent: "fake/0.157.1", codexHome: "/tmp/fake-codex-home", platformFamily: "unix", platformOs: "macos" } });
         send({ method: "account/updated", params: { email: "pessoa-secreta@example.com", planType: "pro" } });
       } else if (m.method === "initialized") initialized = true;
@@ -194,6 +205,7 @@ switch (scenario) {
     emit({ type: "error", message: "stream disconnected before completion" });
     process.exit(0);
   case "rate-limit":
+    applyWrites();
     emit({ type: "thread.started", thread_id: thread });
     emit({ type: "turn.started" });
     emit({ type: "turn.failed", error: { message: "You've hit your usage limit. Try again at 3:05 PM." } });

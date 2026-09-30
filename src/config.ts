@@ -42,6 +42,8 @@ export type DuoConfig = {
   };
   billing: {
     profile: "subscription-only";
+    /** Permite apenas proxies HTTP(S) de loopback declarados nas configurações dos clientes. */
+    allowLoopbackProxy: boolean;
     /** Crédito/uso extra da conta não é verificável pelas interfaces oficiais; exige ciência explícita. */
     acknowledgeUnverifiableExtraUsage: Record<Provider, boolean>;
   };
@@ -98,6 +100,7 @@ export const DEFAULT_CONFIG: DuoConfig = {
   },
   billing: {
     profile: "subscription-only",
+    allowLoopbackProxy: false,
     acknowledgeUnverifiableExtraUsage: { claude: false, codex: false },
   },
   acceptance: { allowedCommands: [] },
@@ -181,6 +184,7 @@ export function loadConfig(projectRoot: string): DuoConfig {
     if (!Number.isInteger(value) || value < 1 || value > 1024 * 1024 * 1024) problems.push(`limits.${field} (inteiro de 1 a 1073741824 bytes)`);
   }
   if (cfg.billing.profile !== "subscription-only") problems.push("billing.profile (o MVP só implementa subscription-only)");
+  if (typeof cfg.billing.allowLoopbackProxy !== "boolean") problems.push("billing.allowLoopbackProxy (boolean)");
   if (!Array.isArray(cfg.acceptance.allowedCommands) || !cfg.acceptance.allowedCommands.every((c) => Array.isArray(c) && c.every((x) => typeof x === "string"))) {
     problems.push("acceptance.allowedCommands");
   }

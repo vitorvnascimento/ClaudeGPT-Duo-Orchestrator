@@ -14,6 +14,7 @@ import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
 import { childEnv, codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
 import { redact } from "../redact.js";
 import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
+import { parseCodexQuota, saveQuota, type QuotaState } from "../orchestration/quota.js";
 import { parseVersion } from "./capabilities.js";
 import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
@@ -49,6 +50,7 @@ export type ProviderCatalog = {
   sourceKind?: SourceKind;
   /** A fonte usada é uma superfície contratual/estável da CLI (false = fallback frágil). */
   stable?: boolean;
+  quota?: QuotaState;
   /** Catálogo reaproveitado de uma descoberta anterior porque as fontes atuais falharam. */
   stale?: boolean;
   staleSince?: string;
@@ -234,7 +236,7 @@ function claudeInitialize(resolved: Resolved & { ok: true }, env: NodeJS.Process
   });
 }
 
-type AppServerResult = { models: Record<string, unknown>[]; imageGeneration: boolean | null; capabilitiesError?: string };
+type AppServerResult = { models: Record<string, unknown>[]; imageGeneration: boolean | null; capabilitiesError?: string; quotaRaw?: unknown };
 
 /**
  * Cliente JSON-RPC mínimo do `codex app-server` (stdio, uma mensagem JSON por linha).
@@ -243,6 +245,7 @@ type AppServerResult = { models: Record<string, unknown>[]; imageGeneration: boo
 function codexAppServer(resolved: Resolved & { ok: true }, env: NodeJS.ProcessEnv, cwd: string, timeoutMs = 20_000): Promise<AppServerResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(resolved.command, [...resolved.prefixArgs, "app-server"], { cwd, env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let readable: AppServerResult | undefined;
     const pending = new Map<number, (msg: { result?: unknown; error?: { message?: string; code?: number } }) => void>();
     let nextId = 0;
     let buf = "";
@@ -251,6 +254,8 @@ function codexAppServer(resolved: Resolved & { ok: true }, env: NodeJS.ProcessEn
     const finish = (err: Error | null, value?: AppServerResult) => {
       if (done) return;
       done = true;
+      // A leitura opcional de cota nunca invalida o catálogo já obtido.
+      if (err && readable) { err = null; value = readable; }
       clearTimeout(timer);
       pending.clear();
       child.stdin.end();
@@ -288,11 +293,12 @@ function codexAppServer(resolved: Resolved & { ok: true }, env: NodeJS.ProcessEn
         }
       }
     });
-    const call = (method: string, params: Record<string, unknown>) =>
+    const call = (method: string, params?: Record<string, unknown>, optionalTimeout?: number) =>
       new Promise<unknown>((res, rej) => {
         const id = ++nextId;
-        pending.set(id, (m) => (m.error ? rej(new Error(`${method}: ${m.error.message ?? "erro"}${m.error.code !== undefined ? ` (${m.error.code})` : ""}`)) : res(m.result)));
-        child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+        const timeout = optionalTimeout ? setTimeout(() => { pending.delete(id); res(null); }, optionalTimeout) : null;
+        pending.set(id, (m) => { if (timeout) clearTimeout(timeout); return (m.error ? rej(new Error(`${method}: ${m.error.message ?? "erro"}${m.error.code !== undefined ? ` (${m.error.code})` : ""}`)) : res(m.result)); });
+        child.stdin.write(`${JSON.stringify({ id, method, ...(params ? { params } : {}) })}\n`);
       });
     (async () => {
       await call("initialize", { clientInfo: CLIENT_INFO });
@@ -315,7 +321,10 @@ function codexAppServer(resolved: Resolved & { ok: true }, env: NodeJS.ProcessEn
       } catch (e) {
         capabilitiesError = errMsg(e);
       }
-      finish(null, { models, imageGeneration, ...(capabilitiesError ? { capabilitiesError } : {}) });
+      // Read-only, optional: never consume reset credits or persist the raw response.
+      readable = { models, imageGeneration, ...(capabilitiesError ? { capabilitiesError } : {}) };
+      const quotaRaw = await call("account/rateLimits/read", undefined, Math.min(1000, timeoutMs / 4)).catch(() => null);
+      finish(null, { models, imageGeneration, quotaRaw, ...(capabilitiesError ? { capabilitiesError } : {}) });
     })().catch((e: unknown) => finish(e instanceof Error ? e : new Error(String(e))));
   });
 }
@@ -355,14 +364,17 @@ async function discoverCodex(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proces
         attempts.push(`modelProvider/capabilities/read indisponível (${r.capabilitiesError}); ferramentas lidas de codex features list`);
         tools = featureTools();
       }
+      const models = parseCodexAppServerModels(r.models, tools);
+      const quota = parseCodexQuota(r.quotaRaw, models, cfg.routing.adaptive.quotaWarnPercent);
       return {
+        ...(quota ? { quota } : {}),
         ok: true,
         source: "codex app-server model/list (protocolo estável usado pela extensão e pelo app)",
         sourceKind: "codex-app-server",
         stable: true,
         attempts,
         tools,
-        models: parseCodexAppServerModels(r.models, tools),
+        models,
       };
     } catch (e) {
       attempts.push(`app-server model/list: ${errMsg(e)}`);
@@ -473,6 +485,7 @@ export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?
   const upgradeFromSandbox = Boolean(valid?.discoveredInSandbox) && !inCodexSandbox(env);
   if (!opts.refresh && valid && versionsMatch && !upgradeFromSandbox && Date.now() - Date.parse(valid.discoveredAt) < catalogTtlMs(valid)) return withUserModels(valid, cfg, store.projectRoot, env);
   const fresh = await discover(cfg, store.projectRoot, env, valid, { cliVersions: versions });
+  if (fresh.providers.codex.quota && !fresh.providers.codex.stale) saveQuota(store, "codex", fresh.providers.codex.quota);
   writeJsonAtomic(catalogPath(store), fresh);
   return withUserModels(fresh, cfg, store.projectRoot, env);
 }

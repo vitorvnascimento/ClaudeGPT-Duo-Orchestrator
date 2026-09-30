@@ -91,9 +91,9 @@ A consulta de versões é desligada com `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `C
 | Escalada | Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa; `deep` usa `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece e, sem ele, só aumenta com suporte. Falha de infraestrutura não escala. |
 | Isolamento | Cada nova tentativa `worktree` usa worktree novo e preserva o anterior. `in-place` só tenta novamente sem alterações deixadas pelo executor. |
 | Forçar comportamento | `model`, `effort`, `complexity` (`light`, `standard` ou `deep`), `adaptive: false` e `duo delegate --no-adaptive`; `model`/`effort` explícitos permanecem na escalada. |
-| Uso extra | Exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo em `routing.include`. Não há fallback por conta ou cota nesta fase. |
+| Uso extra | Exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo em `routing.include`. Fallback de cota exige modelo de nível igual/superior e todos os gates. |
 
-`adaptive: false` restaura a execução pré-adaptativa. A seleção não muda o executor solicitado nem cria uma conta ou cota alternativa; fallback de contas e cotas fica para a fase 3.
+`adaptive: false` restaura a execução pré-adaptativa. A seleção inicial mantém o executor solicitado; a fase 3 pode trocá-lo ao esgotar a cota, sem reduzir o nível.
 
 ## Validação
 
@@ -113,3 +113,19 @@ A consulta de versões é desligada com `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `C
 | Windows | — | **Não testado** |
 
 O smoke test real validou a aceitação das flags, o formato dos eventos e a verificação ponta a ponta para uma tarefa simples. Ele não valida comportamento sob carga, cotas esgotadas nem casos de erro reais, que continuam cobertos só pelas CLIs simuladas.
+
+## Cota e proxy local (fase 3)
+
+| Superfície | Contrato e limite |
+| --- | --- |
+| Codex app-server v2 `account/rateLimits/read` | Opcional, sem params, na sessão do catálogo. Usa só janelas/porcentagens/reset, reachedType, slug e ordinaryUsageAllowed; dados inesperados/ausentes não falham o catálogo. Nunca chama métodos de consumo. |
+| Claude `rate_limit_event` | Observação ao terminar a execução, sem porcentagem disponível; erro de cota marca exhausted. |
+| Persistência | `.duo/quota-state.json`: status, uso, reset ISO, observação, fonte e modelos afetados por fornecedor; sem identidade, plano, créditos ou tokens. Reset passado ou 6 h sem reset passa a unknown. |
+| `quota show/set/refresh` | Show mantém os campos anteriores e acrescenta state. Set atualiza também o estado; refresh força a descoberta Codex, sem rede própria. |
+| Warning | −0,15 só para light/standard; deep sem penalidade. Não reduz nível por cota. |
+| Exhausted | Conta inteira indisponível, exceto slug específico mapeado a um único modelo. Múltiplos limites específicos unem modelos; qualquer ambiguidade bloqueia a conta inteira. |
+| Fallback I4 | Mesmo nível ou superior, outros modelos do fornecedor primeiro só quando o limite é específico. Depois outro fornecedor; gates completos, maxAttempts e limite de invocações do run. Worktree novo; in-place só sem alterações. |
+| Modelo explícito | Preservado na escalada de qualidade; pode mudar no fallback de cota. Esforço explícito continua sujeito ao suporte do destino. |
+| Proxy loopback | Opt-in billing.allowLoopbackProxy (false). Só settings/config do cliente, host literal 127.0.0.1/localhost/::1, HTTP/HTTPS; Codex exige requires_openai_auth=true sem chaves de credencial. Ambiente de cobrança continua filtrado. |
+
+A conta é a assinatura ativa de cada CLI; esta fase não gerencia várias identidades nem valida a implementação do proxy. Sem reset conhecido, não inventa horário. O fallback e os casos de cota/proxy foram exercitados com CLIs simuladas; não demonstram funcionamento do Headroom nem cota esgotada em contas reais. Os riscos do proxy e os dados descartados estão em [SECURITY.md](../SECURITY.md).

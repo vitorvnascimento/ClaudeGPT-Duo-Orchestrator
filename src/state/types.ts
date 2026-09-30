@@ -104,6 +104,7 @@ export type Selection = {
   reason: string[];
   attempt: number;
   attemptOf: string | null;
+  fallbacks?: { from: { executor: Provider; model: string | null }; to: { executor: Provider; model: string | null }; reason: string; resetsAt: string | null }[];
   escalatedFrom?: { model: string | null; effort: string | null; reason: string };
 };
 

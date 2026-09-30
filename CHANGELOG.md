@@ -2,7 +2,7 @@
 
 ## 0.3.0 — em desenvolvimento
 
-Fase 2 de 3: seleção adaptativa baseada em evidência. Fallback por conta ou cota continua fora do escopo.
+Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validação offline).
 
 - Catálogo chaveado pelas versões instaladas de Claude/Codex, TTL de 6 h (1 h degradado) e invalidação explícita para o roteador futuro.
 - Consulta anônima das versões publicadas no npm, cache de 6 h e avisos em `models`/`doctor`, sem instalação ou credenciais; opt-out por ambiente/config.
@@ -12,10 +12,17 @@ Fase 2 de 3: seleção adaptativa baseada em evidência. Fallback por conta ou c
 - Novos defaults/validações de `routing.adaptive`, `routing.extraModels` e `discovery`; configs e tasks antigas continuam compatíveis.
 - `duo recommend` agora retorna `tier`, `effort` e `selection`; `--request` leva objetivo, escopo e aceite reais, e ao omitir `model` a seleção ocorre dentro do `executor` solicitado. Sem aceite no modo abreviado, o piso é `standard`.
 - Pisos e escalada adaptativa: risco alto ou sensível exige `deep`; `light` exige baixo risco, escopo limitado sem diretório e comandos de aceite; falha de verificação escala `light → standard → deep` e `maxAttempts` conta a primeira tentativa.
-- Retentativas preservam worktrees anteriores e só repetem `in-place` sem alterações; falhas de infraestrutura não escalam. `deep` pode usar `xhigh`; `model` explícito não troca, `effort` explícito permanece e, sem ele, a escalada só aumenta esforço quando houver suporte.
+- Retentativas preservam worktrees anteriores e só repetem `in-place` sem alterações; falhas de infraestrutura não escalam por qualidade; cota tem fallback próprio. `deep` pode usar `xhigh`; `model` explícito não troca, `effort` explícito permanece e, sem ele, a escalada só aumenta esforço quando houver suporte.
 - `model`, `effort`, `complexity: light|standard|deep`, `adaptive: false` e `duo delegate --no-adaptive` permitem forçar o comportamento. `adaptive: false` mantém a execução pré-adaptativa.
-- Modelos com uso extra exigem ciência do provider e inclusão explícita em `routing.include`; não há fallback de contas ou cotas nesta fase.
+- Modelos com uso extra exigem ciência do provider e inclusão explícita em `routing.include`; fallback de cota usa somente modelos equivalentes ou superiores, sujeitos a todos os gates.
 - Testes offline com fetch injetado e CLIs simuladas. Versões do pacote e `CLIENT_INFO` continuam 0.2.0.
+
+- Estado sanitizado por fornecedor em `.duo/quota-state.json`, com expiração no reset/6 h sem reset; eventos Claude, erros de cota e registros manuais atualizam a observação.
+- `account/rateLimits/read` opcional na sessão de descoberta do Codex, sem métodos de consumo de créditos. Campos de conta/plano/créditos são descartados; limites específicos só afetam modelos com mapeamento inequívoco.
+- `duo quota refresh`, `quota show` com `state` preservando campos anteriores e saúde de cota em `recommend`. Warning poupa a conta para deep (−0,15 só em light/standard).
+- Fallback I4 de nível igual/superior com `selection.fallbacks`, novas tentativas/worktrees, todos os gates e proteção de alterações in-place. A task original continua retomável; adaptive desligado não faz fallback.
+- `billing.allowLoopbackProxy` (false por padrão): exceção explícita para proxy HTTP/HTTPS loopback usando assinatura, sem chaves de API e com `requires_openai_auth` no Codex. Doctor informa autorização/dica; SECURITY documenta o risco.
+- Testes offline de parsing/privacidade/expiração, métodos account permitidos, seleção, fallback entre CLIs simuladas e validação de URLs loopback. Nenhuma versão foi alterada.
 
 ## 0.2.0 — 2026-09-29
 

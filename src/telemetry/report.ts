@@ -1,6 +1,7 @@
 // Relatório determinístico (sem IA). Cada número indica sua origem: native, local-measure, local-estimate, manual ou unavailable.
 import { join } from "node:path";
 import type { Provider } from "../config.js";
+import { quotaStates, quotaStatus, saveQuota } from "../orchestration/quota.js";
 import { readJson, Store, writeJsonAtomic } from "../state/store.js";
 import type { Run, Task } from "../state/types.js";
 
@@ -19,11 +20,12 @@ export function quotaPath(store: Store): string {
   return join(store.base, "quota.json");
 }
 
-export function setQuota(store: Store, entry: Omit<QuotaEntry, "source" | "recordedAt">): QuotaEntry {
+export function setQuota(store: Store, entry: Omit<QuotaEntry, "source" | "recordedAt">, warn = 90): QuotaEntry {
   const all = readJson<Record<string, QuotaEntry>>(quotaPath(store)) ?? {};
   const full: QuotaEntry = { ...entry, source: "manual", recordedAt: new Date().toISOString() };
   all[entry.provider] = full;
   writeJsonAtomic(quotaPath(store), all);
+  saveQuota(store, entry.provider, { status: quotaStatus(entry.usedPercent, warn), usedPercent: entry.usedPercent, resetsAt: entry.resetsAt ? new Date(entry.resetsAt).toISOString() : null, observedAt: full.recordedAt, source: "manual", affectedModels: null });
   return full;
 }
 
@@ -62,7 +64,11 @@ export function quotaView(store: Store, now = Date.now()): Record<Provider, Reco
     }
     return { ...(native ?? manual ?? {}), ...(native && manual ? { manual } : {}) };
   };
-  return { claude: view("claude"), codex: view("codex") };
+  const states = quotaStates(store, now);
+  return {
+    claude: { ...view("claude"), state: states.claude ?? { status: "unknown" }, remainingPercent: states.claude?.usedPercent == null ? null : Math.max(0, 100 - states.claude.usedPercent) },
+    codex: { ...view("codex"), state: states.codex ?? { status: "unknown" }, remainingPercent: states.codex?.usedPercent == null ? null : Math.max(0, 100 - states.codex.usedPercent) },
+  };
 }
 
 type ProviderAgg = {

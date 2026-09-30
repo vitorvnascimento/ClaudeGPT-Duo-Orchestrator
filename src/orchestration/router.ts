@@ -8,6 +8,7 @@ import { extname } from "node:path";
 import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
+import { quotaBlock, quotaStates } from "./quota.js";
 import { automaticModelAllowed, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import type { DuoConfig, Provider } from "../config.js";
@@ -157,26 +158,12 @@ export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.Proce
         reasons.push(block);
       }
     }
-    const recent = latestTasks(store);
-    const recentQuota = recent.find((t) => t.executor === executor && t.state === "blocked" && /cota|limit/i.test(t.outcome ?? ""));
-    const rl = recent.find((t) => t.executor === executor && t.metrics?.native.rateLimit)?.metrics?.native.rateLimit;
-    if (rl && rl.status && !["allowed", "allowed_warning"].includes(rl.status) && rl.resetsAt && Date.parse(rl.resetsAt) > Date.now()) {
-      available = false;
-      reasons.push(`limite ${rl.rateLimitType ?? ""} observado como ${rl.status} até ${rl.resetsAt}`);
-    } else if (recentQuota && Date.now() - Date.parse(recentQuota.updatedAt) < 60 * 60 * 1000) {
-      reasons.push(`cota atingida há menos de 1 h (${recentQuota.taskId}); pode ainda estar em cooldown`);
-    }
+    const blocked = quotaBlock(quotaStates(store)[executor]);
+    if (blocked) { available = false; reasons.push(blocked); }
     const res = { available, reasons };
     cache.set(executor, res);
     return res;
   };
-}
-
-function latestTasks(store: Store): Task[] {
-  return store
-    .listRuns()
-    .flatMap((r) => store.listTasks(r))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 const key = (p: Provider, m: string | null) => `${p}:${m ?? "(padrão)"}`;
@@ -229,9 +216,13 @@ export function evaluateCandidates(
   const min = cfg.routing.minSamples;
   const needs = q.needs ?? [];
   const { cands, filteredOut } = candidatesFrom(cfg, catalog, needs, defaults);
+  const quotas = quotaStates(store);
+  const tier = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles).tier;
   const evals: CandidateEval[] = cands.map((cand) => {
     const ev = evidenceFor(tasks, cand, q, min);
-    const av = availability(cand.executor);
+    const initial = availability(cand.executor);
+    const block = quotaBlock(quotas[cand.executor], cand.model);
+    const av = { available: initial.available && !block, reasons: [...initial.reasons, ...(block ? [block] : [])] };
     const priors = cfg.routing.priors.filter(
       (p) =>
         p.executor === cand.executor &&
@@ -244,6 +235,11 @@ export function evaluateCandidates(
     const vendor = { recommended: cand.info?.vendorRecommended ?? false, legacy: cand.info?.legacy ?? false };
     const reasons: string[] = [];
     let score = ev.successRate + bonus;
+    const quota = quotas[cand.executor];
+    if (quota?.status === "warning" && tier !== "deep") {
+      score -= 0.15;
+      reasons.push(`${quota.usedPercent === null ? "aviso nativo de cota" : `cota acima de ${cfg.routing.adaptive.quotaWarnPercent}%`}: poupando para tarefas deep (−0,15)`);
+    }
     if (ev.n) {
       score -= 0.15 * (ev.overclaims / ev.n);
       if (ev.overclaims) reasons.push(`${ev.overclaims} vez(es) declarou sucesso e a verificação reprovou`);
@@ -293,7 +289,7 @@ function recommendResult(
   const adaptive = cfg.routing.adaptive.enabled;
   const capableOnly = q.kind === "asset" || needs.includes("image_generation");
   const selections = (["claude", "codex"] as const).flatMap((provider) => {
-    const selected = selectModel(catalog, cfg, provider, assessment.tier, { candidates: evals, floor: assessment.floor, needs });
+    const selected = selectModel(catalog, cfg, provider, assessment.tier, { candidates: evals, floor: assessment.floor, needs, allowDowngrade: !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
     return selected ? [{ executor: provider, ...selected }] : [];
   });
   const hasTarget = selections.some((m) => tierRank(m.tier) <= tierRank(assessment.tier) && evals.some((e) => e.available && e.executor === m.executor && e.model === m.model));
@@ -324,6 +320,7 @@ function recommendResult(
     catalog
       ? `Catálogo das contas descoberto em ${catalog.discoveredAt} (duo models --refresh atualiza): ${(["claude", "codex"] as Provider[]).map((p) => `${p} ${catalog.providers[p] ? describeSource(catalog.providers[p]) : "ausente"}`).join(" · ")}.`
       : "Catálogo das contas indisponível: usando routing.candidates da config.",
+    `Saúde de cota: ${(["claude", "codex"] as const).map((p) => `${p}=${quotaStates(store)[p]?.status ?? "unknown"}`).join(" · ")}`,
   ];
   if (filteredOut.length) notes.push(`Excluídos por não terem a capacidade exigida: ${filteredOut.join(", ")}`);
   const available = evals.filter((e) => e.available && eligible.includes(e));

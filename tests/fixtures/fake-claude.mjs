@@ -117,7 +117,7 @@ switch (scenario) {
     emit(init);
     emit({
       type: "rate_limit_event",
-      rate_limit_info: { status: "allowed", resetsAt: 4102444800, rateLimitType: "five_hour", overageStatus: scenario === "overage" ? "allowed" : "rejected", overageDisabledReason: scenario === "overage" ? null : "out_of_credits", isUsingOverage: scenario === "overage" },
+      rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_RATE_LIMIT ?? "null") ?? { status: "allowed", resetsAt: 4102444800, rateLimitType: "five_hour", overageStatus: scenario === "overage" ? "allowed" : "rejected", overageDisabledReason: scenario === "overage" ? null : "out_of_credits", isUsingOverage: scenario === "overage" },
       session_id: session,
     });
     emit(assistant);
@@ -153,7 +153,9 @@ switch (scenario) {
     emit({ type: "system", subtype: "api_retry", error: "authentication_failed", session_id: session });
     process.exit(1);
   case "rate-limit":
+    applyWrites();
     emit(init);
+    if (process.env.FAKE_CLAUDE_RATE_LIMIT) emit({ type: "rate_limit_event", rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_RATE_LIMIT), session_id: session });
     emit({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 1, error: "rate_limit", session_id: session });
     emit({ type: "result", subtype: "success", is_error: true, session_id: session, result: "Claude usage limit reached. Your limit will reset at 5pm." });
     process.exit(1);

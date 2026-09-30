@@ -20,7 +20,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
 <details>
 <summary><strong>English summary</strong></summary>
 
-**ClaudeGPT - Duo Orchestrator by Fusic** (`duo-orchestrator`) is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys, no gateway). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
+**ClaudeGPT - Duo Orchestrator by Fusic** (`duo-orchestrator`) is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys; optional user-authorized loopback proxy). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
 
 </details>
 
@@ -175,7 +175,7 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | `duo apply --task-id <id>` | Integra o patch de uma task `worktree`, só se a base não mudou. |
 | `duo accept --task-id <id> [--reject] --note "..."` | Registra a decisão do cérebro (tarefas aceitas entram na métrica). |
 | `duo handoff --to <cliente>` | Documento de handoff para trocar o cérebro. |
-| `duo quota show` / `duo quota set …` | Cota informada manualmente, com data e expiração. |
+| `duo quota show` / `duo quota set …` / `duo quota refresh` | Estado observado por conta, registro manual e leitura do Codex via app-server. |
 | `duo update [--apply]` | Procura nova versão (release pública, sem credenciais) e, com `--apply`, instala. |
 
 Códigos de saída de `delegate`: `0` succeeded, `1` failed, `2` pedido inválido, `3` blocked, `4` cancelled.
@@ -229,9 +229,21 @@ Os novos defaults, mesclados em configs antigas, são:
 
 Os pisos são aplicados antes da escolha: risco alto ou sensível exige `deep`; `light` só vale para risco baixo, poucos arquivos, sem diretório no escopo e com comandos de aceite. Um downgrade só ocorre com evidência suficiente e sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess`, respeitando os pisos. Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa, e `deep` pode usar `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece, e sem ele a escalada só aumenta o esforço quando houver suporte.
 
-Cada tentativa em `worktree` recebe um worktree novo e mantém o anterior para inspeção. Em `in-place`, só há nova tentativa se o executor não deixou alterações. Falhas de infraestrutura não escalam. Uso extra só entra com `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo incluído em `routing.include`. A fase 2 não adiciona fallback por conta ou cota; isso fica fora da fase 3.
+Cada tentativa em `worktree` recebe um worktree novo e mantém o anterior para inspeção. Em `in-place`, só há nova tentativa se o executor não deixou alterações. Falhas de infraestrutura não escalam. Uso extra só entra com `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo incluído em `routing.include`. Na fase 3, cota esgotada pode trocar o executor/modelo por um equivalente de nível igual ou superior, refazendo todos os gates; nunca reduz o nível.
 
 Exemplo validado com as CLIs reais (E2E A1): pedido de arte ao `codex` com `model: "gpt-6-astra"` gerou `assets/mascot.png` (PNG 1254×1254), verificado pela ponte.
+
+### Cota e continuidade (fase 3)
+
+`duo quota refresh` força uma descoberta pelo catálogo e consulta `account/rateLimits/read` na mesma sessão do app-server do Codex. Não usa API própria, não consome créditos e não invoca modelos. O Claude fornece `rate_limit_event` ao executar; sem porcentagem nativa, o uso restante é desconhecido. `duo quota set --provider claude --used-percent 92 --resets-at <ISO8601>` registra uma observação manual. `duo quota show` mantém o formato anterior e acrescenta `state` com status, fonte, uso, reset e modelos afetados, além de `remainingPercent` (null quando desconhecido). `duo recommend` mostra a saúde de cota.
+
+`.duo/quota-state.json` guarda somente `status`, `usedPercent`, `resetsAt`, `observedAt`, `source` e `affectedModels`, sob `claude`/`codex` (uma conta ativa por CLI). E-mail, ID de conta, plano, créditos e tokens não são guardados. Estado passa a `unknown` após o reset, ou após 6 h sem reset. Não há estimativa inventada de quanto resta quando a CLI não fornece porcentagem.
+
+Com uso ≥ `routing.adaptive.quotaWarnPercent` (90 por padrão), candidatos daquela conta perdem 0,15 no score para tarefas `light`/`standard`; `deep` não recebe essa penalidade. Cota esgotada bloqueia a conta, ou somente os modelos explicitamente identificados por um mapeamento inequívoco do catálogo. A porcentagem observada é o maior uso entre as janelas; o reset de limites bloqueantes é o último reset conhecido. Se faltar reset de algum limite bloqueante, o reset é desconhecido.
+
+Se a cota acabar durante uma task adaptativa, a ponte tenta primeiro outros modelos do mesmo fornecedor quando o limite for específico, depois o outro fornecedor, sempre no nível da tentativa ou acima. Cada fallback conta em `maxAttempts` e nos limites de política do run, mantém a task original retomável e registra a cadeia em `selection.fallbacks`. O prompt da ponte é neutro; sandbox e permissões continuam próprios de cada executor. `model` explícito pode ser substituído **somente neste fallback de cota**; `effort` explícito continua sujeito ao suporte do destino. Sem equivalente, com trabalho alterado in-place ou se o destino for o próprio cérebro/modelo, retorna `blocked`. `adaptive: false` continua registrando cota, sem fallback automático.
+
+Para um proxy local que usa sua assinatura, habilite explicitamente `billing.allowLoopbackProxy: true` (padrão `false`). A exceção aceita somente HTTP/HTTPS em `127.0.0.1`, `localhost` ou `[::1]` nas settings/config do cliente. No Codex exige também `requires_openai_auth = true`, sem chaves de credencial no provedor customizado. `ANTHROPIC_BASE_URL` do ambiente do processo continua removido. `duo doctor` mostra a autorização ou a dica para habilitar a opção. O proxy local pode ver o tráfego e o token de sessão; veja [SECURITY.md](SECURITY.md).
 
 ## Escolha do executor: evidência, não marca
 
@@ -251,7 +263,7 @@ Validado com as CLIs reais (E2E T12/T13): com histórico favorável ao Claude, o
 2. **Política** (`economico` por padrão): motivo da delegação compatível com a política, até **2 invocações por run** (incluindo correção) e preferência de cota.
 3. **Escopo**: só caminhos relativos, sem `..`, sem symlinks, fora da lista de negação (`.env`, chaves, `.git`, `.duo`…).
 4. **Compatibilidade**: flags obrigatórias precisam aparecer no `--help` da versão instalada.
-5. **Autenticação**: variáveis de API/gateway são removidas do ambiente do executor, configurações como `apiKeyHelper` ou `model_provider` bloqueiam a execução, e o método efetivo precisa ser confirmado como assinatura pelo status oficial.
+5. **Autenticação**: variáveis de API/gateway são removidas do ambiente do executor, configurações como `apiKeyHelper` ou provedores customizados bloqueiam a execução (exceto proxy loopback explicitamente autorizado), e o método efetivo precisa ser confirmado como assinatura pelo status oficial.
 6. **Lock**: um executor ativo por projeto.
 7. **Execução**: prompt pela stdin, argumentos separados, sem shell, com timeout, limite de saída e encerramento da árvore de processos.
 8. **Verificação independente**: arquivos realmente alterados (por hash), violações de escopo, diff apenas do delta do executor, divergência entre o que o executor declarou e o que fez, base alterada e comandos de aceite executados pela ponte.
@@ -265,7 +277,7 @@ Um "completed" do modelo com teste falhando vira `failed`. Nada é revertido aut
   config.json
   runs/<runId>/run.json
   runs/<runId>/tasks/<taskId>/{task.json, request.json, prompt.txt, invocation.json, events.jsonl, stderr.txt, changes.diff|changes.patch, snapshot/}
-  telemetry.jsonl   quota.json   lock.json   handoffs/   backups/   worktrees/
+  telemetry.jsonl   quota.json   quota-state.json   lock.json   handoffs/   backups/   worktrees/
 ```
 
 Todo arquivo persistido passa por redação de segredos. O texto de raciocínio (`reasoning` do Codex e `thinking` do Claude) não é gravado.

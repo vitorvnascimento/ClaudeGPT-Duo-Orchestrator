@@ -12,6 +12,7 @@ import type { InvocationInput } from "../src/adapters/types.js";
 import { loadConfig } from "../src/config.js";
 import { loadSchema, validate } from "../src/schema.js";
 import type { Task } from "../src/state/types.js";
+import { quotaStates, saveQuota } from "../src/orchestration/quota.js";
 import { buildReport } from "../src/telemetry/report.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
@@ -41,6 +42,103 @@ const APP_EDIT = JSON.stringify({ "src/app.ts": "export const app = 1;\nexport c
 const adaptiveAcceptance = { criteria: ["nova exportada"], commands: [{ name: "nova", argv: ["node", "-e", 'process.exit(require("fs").readFileSync("src/app.ts", "utf8").includes("nova") ? 0 : 1)'] }] };
 const adaptiveRequest = (brain: "claude" | "codex", overrides: Record<string, unknown> = {}) => baseRequest(brain, { adaptive: true, risk: "low", acceptance: adaptiveAcceptance, ...overrides });
 const adaptiveEnv = { FAKE_ADAPTIVE_CATALOG: "1" };
+
+describe("fallback adaptativo de cota (I4)", () => {
+  const reset = new Date(Date.now() + 3600000).toISOString();
+  const okAcceptance = { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] };
+  const quotaEnv = { ...adaptiveEnv, FAKE_SCENARIO_BY_ATTEMPT: JSON.stringify({ 1: "rate-limit", 2: "success" }),
+    FAKE_CLAUDE_RATE_LIMIT: JSON.stringify({ status: "rejected", resetsAt: Math.floor(Date.parse(reset) / 1000), rateLimitType: "five_hour" }) };
+  for (const brain of ["claude", "codex"] as const) it(`${brain === "codex" ? "Claude → Codex" : "Codex → Claude"}: mesmo nível, gates e worktree nova`, async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest(brain, { brainModel: brain === "codex" ? "gpt-6-astra" : "claude-opus-5-5", complexity: "standard", isolation: "worktree" }),
+      { ...quotaEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId), first = task(s, t.selection?.attemptOf);
+    assert.equal(t.executor, brain); assert.equal(t.selection?.tier, "standard");
+    assert.equal(t.selection?.attempt, 2); assert.equal(first.state, "blocked");
+    assert.notEqual(t.worktree, first.worktree); assert.ok(existsSync(first.worktree!));
+    assert.equal(t.selection?.fallbacks?.length, 1); assert.equal(t.selection?.fallbacks?.[0]?.from.executor, first.executor);
+    assert.equal(t.selection?.fallbacks?.[0]?.to.executor, brain);
+    assert.equal(quotaStates(new Store(s.root))[first.executor]?.status, "exhausted");
+    assert.match(String(t.outcome), /executado por .* após cota esgotada em/);
+    assert.equal(t.verification?.acceptance[0]?.passed, true);
+    const calls = s.execCalls(); assert.equal(calls.length, 2);
+    for (const call of calls) assert.equal(call.depth, "1");
+    assert.ok(s.log().some((e) => e.cmd === "login-status")); assert.ok(s.log().some((e) => e.cmd === "auth-status"));
+    const resume = await delegate({ cwd: s.root, resumeTaskId: first.taskId, env: { ...s.env, ...adaptiveEnv }, authPaths: s.authPaths });
+    assert.equal(resume.summary.state, "blocked"); assert.match(String(resume.summary.outcome), /cota esgotada/);
+  });
+  it("cota só de modelo: tenta outro modelo do mesmo fornecedor primeiro", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { model: "gpt-6.1-sol", brainModel: "claude-opus-5-5", complexity: "standard", acceptance: okAcceptance }),
+      { ...quotaEnv, FAKE_QUOTA_AFTER_EXEC: JSON.stringify({ ordinaryUsageAllowed: true, rateLimitsByLimitId: { sol: { normalModelSlug: "gpt-6.1-sol", primary: { usedPercent: 100, resetsAt: Math.floor(Date.parse(reset) / 1000) } } } }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.equal(t.executor, "codex"); assert.equal(t.model.requested, "gpt-6-sol");
+    assert.deepEqual(quotaStates(new Store(s.root)).codex?.affectedModels, ["gpt-6.1-sol"]);
+    assert.equal(t.selection?.fallbacks?.[0]?.resetsAt, new Date(Math.floor(Date.parse(reset) / 1000) * 1000).toISOString());
+  });
+  it("só resta nível inferior: blocked identifica conta/reset e preserva task", async () => {
+    const s = setup({ routing: { include: ["claude:claude-opus-5-5", "codex:gpt-6-luna"] } });
+    const out = await run(s, adaptiveRequest("codex", { complexity: "deep", acceptance: okAcceptance }), quotaEnv);
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    assert.match(String(out.summary.outcome), /claude.*esgotada até .*nenhum modelo equivalente.*deep/);
+    assert.match(String(out.summary.outcome), /duo delegate --resume/);
+  });
+  it("in-place alterado impede fallback; arquivos e diff preservados", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6-astra", complexity: "standard", acceptance: okAcceptance }), { ...quotaEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 1: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    assert.match(s.read("src/app.ts"), /nova/);
+    assert.ok(task(s, out.summary.taskId).limitations.some((l) => /fallback.*alterou arquivos in-place/.test(l)));
+  });
+  for (const maxAttempts of [1, 2]) it(`maxAttempts=${maxAttempts} respeitado`, async () => {
+    const s = setup({ routing: { adaptive: { maxAttempts } } });
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6-astra", complexity: "standard", acceptance: okAcceptance }), { ...adaptiveEnv, FAKE_SCENARIO: "rate-limit" });
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, maxAttempts);
+    assert.ok(task(s, out.summary.taskId).limitations.some((l) => l.includes(`maxAttempts=${maxAttempts}`)));
+  });
+  it("fallback para o próprio cérebro/modelo bloqueia sem executar", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6.1-sol", complexity: "standard", acceptance: okAcceptance }), quotaEnv);
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    assert.match(String(out.summary.outcome), /faça no cérebro/);
+    assert.equal(task(s, out.summary.taskId).selection?.fallbacks?.length, 1);
+  });
+  it("adaptive=false registra cota e mantém blocked sem fallback", async () => {
+    const s = setup({ routing: { adaptive: { enabled: false } } });
+    const out = await run(s, adaptiveRequest("codex", { acceptance: okAcceptance }), quotaEnv);
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    assert.match(String(out.summary.outcome), /Sem nova tentativa automática/);
+    assert.equal(quotaStates(new Store(s.root)).claude?.source, "task-error");
+  });
+  it("troca de fornecedor continua sujeita à política", async () => {
+    const s = setup({ limits: { maxDelegationsPerRun: 1 } });
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6-astra", complexity: "standard", acceptance: okAcceptance }), quotaEnv);
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    assert.match(String(out.summary.outcome), /política.*limite de 1 invocações/);
+  });
+  it("fallback refaz suporte de effort no executor destino", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6-astra", complexity: "standard", effort: "high", acceptance: okAcceptance }), { ...quotaEnv, FAKE_CODEX_HELP: "missing-config" });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.equal(s.execCalls().length, 1);
+    assert.match(String(out.summary.outcome), /esforço.*high.*codex.*--config/i);
+    assert.equal(task(s, out.summary.taskId).selection?.fallbacks?.length, 1);
+  });
+  it("verificação após fallback ainda escala e conserva a cadeia de tentativas", async () => {
+    const s = setup({ routing: { adaptive: { maxAttempts: 3 } }, limits: { maxDelegationsPerRun: 3 } });
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6-astra", isolation: "worktree" }), {
+      ...adaptiveEnv, FAKE_SCENARIO_BY_ATTEMPT: JSON.stringify({ 1: "rate-limit", 2: "success", 3: "success" }),
+      FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 3: JSON.parse(APP_EDIT) }),
+    });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.equal(t.selection?.attempt, 3); assert.equal(t.selection?.tier, "standard");
+    assert.equal(t.selection?.fallbacks?.length, 1); assert.ok(t.selection?.escalatedFrom);
+    assert.equal(s.execCalls().length, 3);
+  });
+});
 
 describe("seleção e escalada adaptativas", () => {
   it("escopo sensível eleva risco registrado; disabled mantém tags antigas", async () => {
@@ -174,7 +272,7 @@ describe("seleção e escalada adaptativas", () => {
     const out = await run(s, adaptiveRequest("claude", { acceptance: { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } }), { ...adaptiveEnv, FAKE_REPORT_BY_ATTEMPT: JSON.stringify({ 1: { filesChanged: ["src/app.ts"] } }) });
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary)); assert.equal(s.execCalls().length, 2);
   });
-  for (const scenario of ["rate-limit", "auth-error", "model-unavailable", "remove-lock", "invalid-report"])
+  for (const scenario of ["auth-error", "model-unavailable", "remove-lock", "invalid-report"])
     it(`${scenario} não escala`, async () => {
       const s = setup();
       const out = await run(s, adaptiveRequest("codex"), { ...adaptiveEnv, FAKE_SCENARIO: scenario });

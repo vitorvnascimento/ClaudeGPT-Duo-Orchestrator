@@ -185,6 +185,17 @@ describe("doctor e report", () => {
 });
 
 describe("duo recommend", () => {
+  it("doctor informa proxy loopback autorizado ou dica de opt-in", () => {
+    sb = makeSandbox(); const s = sb;
+    writeFileSync(join(s.home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787" } }));
+    writeFileSync(join(s.home, ".codex", "config.toml"), 'model_provider = "headroom"\n[model_providers.headroom]\nbase_url = "http://127.0.0.1:8787/v1"\nrequires_openai_auth = true\n');
+    const before = cli(s, ["doctor"]);
+    assert.match(before.stdout, /se for um proxy local que usa a sua assinatura, habilite billing.allowLoopbackProxy/);
+    s.config({ billing: { allowLoopbackProxy: true } });
+    const after = cli(s, ["doctor"]);
+    assert.equal(after.status, 0, after.stderr);
+    assert.equal(after.stdout.split("proxy local (loopback) autorizado por billing.allowLoopbackProxy: http://127.0.0.1:8787").length - 1, 2);
+  });
   it("recommend --request inclui tier/effort/selection; status/report mostram e no-adaptive desliga", () => {
     sb = makeSandbox(); const s = sb;
     const request = baseRequest("claude", { adaptive: true, risk: "low", acceptance: { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } });
@@ -198,6 +209,7 @@ describe("duo recommend", () => {
     assert.ok(r.selection.reason.length); assert.ok(r.selection.complexitySignals.length);
     const text = cli(s, ["recommend", "--request", path], env);
     assert.match(text.stdout, /Nível-alvo: light/); assert.match(text.stdout, /Sinais:/); assert.match(text.stdout, /esforço=/);
+    assert.match(text.stdout, /Saúde de cota: claude=unknown · codex=unknown/);
     const run = cli(s, ["delegate", "--request", path], env);
     assert.equal(run.status, 0, run.stdout);
     const t = JSON.parse(run.stdout);

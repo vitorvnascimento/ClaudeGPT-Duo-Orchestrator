@@ -40,74 +40,53 @@ export function newId(prefix: "run" | "task"): string {
   return `${prefix}-${ts}-${randomBytes(3).toString("hex")}`;
 }
 
+// Registros versionados (Chain e Run), sem lock e sem poda: cada escrita publica <registro>.d/<rev>.json por
+// link() de um temporário completo e sincronizado. link é atômico e nunca sobrescreve: o nome da revisão é a
+// reserva (compare-and-swap) e o arquivo só aparece inteiro. Revisões nunca são apagadas, então nenhum escritor
+// atrasado reutiliza um número e nenhum leitor perde a revisão que está lendo. Cada registro tem poucas revisões
+// (uma por mudança de uma cadeia/run), e o limite abaixo é só uma trava contra laço.
 const revisionsDir = (path: string) => path.replace(/\.json$/, ".d");
 const revisionName = (rev: number) => String(rev).padStart(12, "0");
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code;
 const pause = new Int32Array(new SharedArrayBuffer(4));
+const MAX_REVISIONS = 100_000;
 
-function reservations(path: string): number[] {
-  // ponytail: varredura O(histórico); indexar se diretórios grandes virarem gargalo.
-  try { return [...new Set(readdirSync(revisionsDir(path)).filter((f) => /^\d{12}\.(cas|json)$/.test(f)).map((f) => Number(f.slice(0, 12))))].sort((a, b) => b - a); }
-  catch (error) { if (errorCode(error) === "ENOENT") return []; throw error; }
-}
-
-function writeExclusive(path: string, data = ""): void {
+function writeExclusive(path: string, data: string): void {
   const fd = openSync(path, "wx", 0o600);
   try { writeFileSync(fd, data); fsyncSync(fd); }
   finally { closeSync(fd); }
 }
 
-/** wx expõe o arquivo antes do fim da escrita. A decisão imutável arbitra
- * publicação versus aborto sem aceitar um escritor ultrapassado. */
-function settleWx(base: string, outcome: "commit" | "abort"): boolean {
-  const decision = `${base}.wx.d`;
-  if (!existsSync(decision)) {
-    const tmp = `${base}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-    mkdirSync(tmp);
-    try {
-      writeExclusive(join(tmp, outcome));
-      // Diretório não vazio nunca é sobrescrito por rename, também no Windows.
-      try { renameSync(tmp, decision); }
-      catch (error) { if (!existsSync(decision)) throw error; }
-    } finally { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* decisão já publicada */ } }
-  }
-  return existsSync(join(decision, "commit"));
+function headRevision(path: string): number {
+  let names: string[];
+  try { names = readdirSync(revisionsDir(path)); }
+  catch (error) { if (errorCode(error) === "ENOENT") return 0; throw error; }
+  let head = 0;
+  for (const name of names) if (/^\d{12}\.json$/.test(name)) head = Math.max(head, Number(name.slice(0, 12)));
+  return head;
 }
 
-/** Snapshot de uma revisão: ausente (podada, em voo ou nunca publicada) e selo de aborto (vazio) são pulados;
- * qualquer outra falha (EIO, EACCES, JSON inválido, rev divergente) é erro: nunca se recua para um estado
- * anterior quando uma revisão confirmada existe mas não pôde ser lida. */
-function readSnapshot<T extends { rev?: number }>(file: string, rev: number): T | "skip" {
-  let text: string;
-  try { text = readFileSync(file, "utf8"); }
-  catch (error) { if (errorCode(error) === "ENOENT") return "skip"; throw error; }
-  if (text === "") return "skip";
-  const value = JSON.parse(text) as T;
+/** Revisões nunca são apagadas: qualquer falha ao ler a revisão mais nova (inclusive sumir) é erro, nunca recuo. */
+function readRevision<T extends { rev?: number }>(path: string, rev: number): T {
+  const file = join(revisionsDir(path), `${revisionName(rev)}.json`);
+  const value = JSON.parse(readFileSync(file, "utf8")) as T;
   if (!value || typeof value !== "object" || value.rev !== rev) throw new Error(`revisão de estado inconsistente: ${file}`);
   return value;
 }
 
-/** "stale": a lista de revisões ficou para trás (outro escritor publicou e podou durante a leitura). */
-function readRevisions<T extends { rev?: number }>(path: string, revisions: number[]): T | null | "stale" {
-  for (const rev of revisions) {
-    const base = join(revisionsDir(path), revisionName(rev));
-    if (existsSync(`${base}.wx`) && !existsSync(join(`${base}.wx.d`, "commit"))) continue;
-    const value = readSnapshot<T>(`${base}.json`, rev);
-    if (value !== "skip") return value;
-  }
-  if (revisions.length && (reservations(path)[0] ?? 0) !== revisions[0]) return "stale";
-  let legacy: T | null = null;
-  try { legacy = JSON.parse(readFileSync(path, "utf8")) as T; }
-  catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
+function readLegacy<T>(path: string): T | null {
+  try { return JSON.parse(readFileSync(path, "utf8")) as T; }
+  catch (error) { if (errorCode(error) === "ENOENT") return null; throw error; }
+}
+
+function readAt<T extends { rev?: number }>(path: string, head: number): T | null {
+  if (head) return readRevision<T>(path, head);
+  const legacy = readLegacy<T>(path);
   return legacy ? { ...legacy, rev: 0 } : null;
 }
 
 export function readVersioned<T extends { rev?: number }>(path: string): T | null {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const value = readRevisions<T>(path, reservations(path));
-    if (value !== "stale") return value;
-  }
-  throw new Error(`estado sob contenção contínua, leitura não concluída: ${path}`);
+  return readAt<T>(path, headRevision(path));
 }
 
 /** CAS sem lock. O callback pode ser repetido: síncrono, puro e sem I/O. */
@@ -115,52 +94,32 @@ export function updateVersioned<T extends { rev?: number }>(path: string, change
   const dir = revisionsDir(path);
   mkdirSync(dir, { recursive: true });
   for (let attempt = 0; attempt < 50; attempt++) {
-    const revisions = reservations(path), head = revisions[0] ?? 0;
-    if (head) {
-      const base = join(dir, revisionName(head));
-      // Revisões JSON sem metadados auxiliares também são entradas legíveis.
-      try { writeExclusive(`${base}.cas`); }
-      catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
-      // Selar o destino também impede publicação tardia após pular uma marca.
-      // Esses arquivos vazios são abortos permanentes, não snapshots podáveis.
-      if (existsSync(`${base}.wx`)) settleWx(base, "abort");
-      else {
-        try { writeExclusive(`${base}.json`); }
-        catch (error) { if (errorCode(error) !== "EEXIST") throw error; }
-        if (existsSync(`${base}.wx`)) settleWx(base, "abort");
-      }
-    }
-    const current = readRevisions<T>(path, revisions), rev = head + 1;
-    if (current === "stale") continue;
+    const head = headRevision(path), rev = head + 1;
+    if (rev > MAX_REVISIONS) throw new Error(`limite de revisões de estado: ${path}`);
+    const current = readAt<T>(path, head);
     const value = change(current && structuredClone(current));
-    if (rev > 999999999999) throw new Error(`limite de revisões de estado: ${path}`);
     value.rev = rev;
-    const name = revisionName(rev), base = join(dir, name), target = `${base}.json`;
-    const tmp = join(dir, `.${name}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
-    const data = `${JSON.stringify(value, null, 2)}\n`;
+    const target = join(dir, `${revisionName(rev)}.json`);
+    const tmp = join(dir, `.${revisionName(rev)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
     try {
-      writeExclusive(tmp, data);
-      writeExclusive(`${base}.cas`);
+      writeExclusive(tmp, `${JSON.stringify(value, null, 2)}\n`);
       try { linkSync(tmp, target); }
       catch (error) {
-        if (!["EPERM", "ENOTSUP"].includes(errorCode(error) ?? "")) throw error;
-        writeExclusive(`${base}.wx`);
-        writeExclusive(target, data);
-        if (!settleWx(base, "commit")) throw Object.assign(new Error("revisão abortada"), { code: "EEXIST" });
+        const code = errorCode(error);
+        if (code === "EEXIST") {
+          // Outro escritor publicou esta revisão: relê e repete. Jitter evita colisões em sincronia.
+          Atomics.wait(pause, 0, 0, 1 + randomBytes(1)[0]! % Math.min(5 + attempt * 2, 40));
+          continue;
+        }
+        if (code === "EPERM" || code === "ENOTSUP" || code === "EXDEV") {
+          throw new Error(`o sistema de arquivos de ${dir} não suporta hard links (link: ${code}); o duo precisa deles para gravar estado com segurança. Use um disco local (APFS, ext4, NTFS).`);
+        }
+        throw error;
       }
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
-      // Jitter evita recuperadores abortarem uns aos outros em sincronia.
-      Atomics.wait(pause, 0, 0, 1 + randomBytes(1)[0]! % Math.min(5 + attempt * 2, 40));
-      continue;
-    } finally { try { rmSync(tmp, { force: true }); } catch { /* tmp ignorado pelos leitores */ } }
-    for (const old of revisions.filter((r) => r < rev - 20)) {
-      const snapshot = join(dir, `${revisionName(old)}.json`);
-      // Só snapshots confirmados e legíveis são podados; selos de aborto (vazios) e marcas ficam.
-      if (readJson<{ rev?: number }>(snapshot)?.rev !== old) continue;
-      try { rmSync(snapshot); } catch { /* poda não invalida o commit */ }
+      return value;
+    } finally {
+      try { rmSync(tmp, { force: true }); } catch { /* temporário ignorado pelos leitores */ }
     }
-    return value;
   }
   throw new Error(`conflito de estado após 50 tentativas de CAS: ${path}`);
 }

@@ -42,6 +42,7 @@ Phases 1–3: catalog, adaptive selection and quota continuity (offline validati
 - Fourth adversarial round: Chain/Run use lock-free versioned CAS with permanent revision markers, snapshot pruning and legacy migration; dead owners cannot remove newer reservations. Safe aborted destinations and commit/abort decisions protect delayed publication and the exclusive-write Windows fallback. Uninvoked planned/blocked attempts resume the same task without spending `maxAttempts`; missing automatic selections are retried with a fresh catalog, including 0.2.0 tasks, preserving floors and explicit choices. Offline regressions cover stale recovery, pruning, concurrent processes, crashes and resumption with the default limit of 2.
 
 - The repository is now `vitorvnascimento/ClaudeGPT-Duo-Orchestrator`; 0.2.0 installations do not receive the automatic notice for this version (one-time manual update: `npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz`).
+- Fifth adversarial round: a committed revision that cannot be read (I/O error, invalid content, wrong revision) now fails closed instead of falling back to an older state; a read overtaken by concurrent pruning re-reads the new head instead of reporting the record as missing.
 
 ### Português
 
@@ -82,6 +83,8 @@ Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validaçã
 - Quarta rodada adversarial: Chain/Run usam CAS versionado sem lock, com marcas permanentes de revisão, poda de snapshots e migração legada; owners mortos não removem reservas posteriores. Destinos abortados seguros e decisões commit/abort protegem publicação atrasada e o fallback de escrita exclusiva no Windows. Tentativas planned/blocked sem invocação retomam a mesma task sem gastar `maxAttempts`; seleções automáticas ausentes são refeitas com catálogo fresco, inclusive em tasks 0.2.0, preservando pisos e escolhas explícitas. Regressões offline cobrem recuperação obsoleta, poda, processos concorrentes, crashes e retomada com limite padrão de 2.
 
 - O repositório agora é `vitorvnascimento/ClaudeGPT-Duo-Orchestrator`; instalações 0.2.0 não recebem o aviso automático desta versão (atualização manual única: `npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz`).
+- Quinta rodada adversarial: revisão publicada que não pode ser lida (erro de E/S, conteúdo inválido, revisão divergente) agora falha fechado em vez de recuar para um estado anterior; leitura atropelada por poda concorrente relê o head novo em vez de declarar o registro inexistente.
+
 
 ## 0.2.0 — 2026-09-29
 

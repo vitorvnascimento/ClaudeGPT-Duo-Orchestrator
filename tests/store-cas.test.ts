@@ -157,7 +157,7 @@ async function worker(script: string, args: string[], timeoutMs = 20_000): Promi
   }
 }
 
-it("CAS: escolhe a maior revisão válida, ignora temporários e cai no legado", () => {
+it("CAS: escolhe a maior revisão publicada, ignora temporários, falha fechado em corrupção e cai no legado", () => {
   const { store, run, chain } = seedLegacy();
 
   store.updateRun(run.runId, (fresh) => {
@@ -174,15 +174,23 @@ it("CAS: escolhe a maior revisão válida, ignora temporários e cai no legado",
   writeFileSync(join(runDir, casName(winnerRevision)), "");
   writeFileSync(join(runDir, revisionName(winnerRevision)), JSON.stringify({ ...currentRun, rev: winnerRevision, invocations: 77 }));
   writeFileSync(join(runDir, `${revisionName(winnerRevision + 1)}.tmp`), JSON.stringify({ ...currentRun, rev: winnerRevision + 1, invocations: 999 }));
+  writeFileSync(join(runDir, casName(winnerRevision + 4)), "unexpected");
+  // Marca sem snapshot (em voo/abortada) e temporário são ignorados: vence a maior revisão publicada.
+  assert.equal(store.loadRun(run.runId)!.invocations, 77);
+
+  // Revisão publicada com conteúdo corrompido nunca é pulada em favor de um estado anterior: erro explícito.
   writeFileSync(join(runDir, casName(winnerRevision + 2)), "");
   writeFileSync(join(runDir, revisionName(winnerRevision + 2)), "{invalid");
-  writeFileSync(join(runDir, casName(winnerRevision + 3)), "");
-  writeFileSync(join(runDir, revisionName(winnerRevision + 3)), JSON.stringify({ ...currentRun, invocations: 888 }));
-  writeFileSync(join(runDir, casName(winnerRevision + 4)), "unexpected");
+  assert.throws(() => store.loadRun(run.runId), SyntaxError);
+  writeFileSync(join(runDir, revisionName(winnerRevision + 2)), JSON.stringify({ ...currentRun, invocations: 888 }));
+  assert.throws(() => store.loadRun(run.runId), /revisão de estado inconsistente/);
+  assert.throws(() => store.updateRun(run.runId, (r) => { r.invocations++; }), /revisão de estado inconsistente/);
+  rmSync(join(runDir, revisionName(winnerRevision + 2)));
+  rmSync(join(runDir, casName(winnerRevision + 2)));
   assert.equal(store.loadRun(run.runId)!.invocations, 77);
 
   rmSync(join(runDir, revisionName(winnerRevision)));
-  assert.equal(store.loadRun(run.runId)!.invocations, 1, "revisão desaparecida deve recuar para a anterior");
+  assert.equal(store.loadRun(run.runId)!.invocations, 1, "snapshot ausente (podado) recua para a revisão anterior publicada");
 
   store.updateChain(run.runId, chain.chainId, (fresh) => {
     fresh.attempts.push(attempt("task-cas-chain02", 1, "deep"));
@@ -713,4 +721,68 @@ it("CAS: retry 50 atravessa conflitos EEXIST e publica a revisão útil", () => 
 it("CAS: timeout de worker mata e recolhe filho mesmo quando a execução falha", async () => {
   await assert.rejects(worker("setInterval(() => {}, 1000);", [], 100), /worker timeout/);
   assert.equal(children.size, 0);
+});
+
+it("rodada 5 achado 1: EIO ao ler a revisão confirmada nunca publica estado anterior (Run e Chain)", () => {
+  const root = freshRoot();
+  const store = new Store(root);
+  const run = makeRun("run-cas-eio001");
+  store.updateRun(run.runId, () => {}, run);
+  store.updateRun(run.runId, (r) => { r.cancelled = true; r.invocations = 1; r.taskIds.push("task-a"); });
+  const chain = makeChain(run.runId, "task-eio-chain1");
+  writeJsonAtomic(store.chainPath(run.runId, chain.chainId), chain);
+  store.updateChain(run.runId, chain.chainId, (c) => { c.minTier = "standard"; c.minEffort = "medium"; });
+  store.updateChain(run.runId, chain.chainId, (c) => { c.minTier = "deep"; c.minEffort = "high"; });
+  const runDir = revisionDirectory(store, "run", run.runId), chainDir = revisionDirectory(store, "chain", run.runId, chain.chainId);
+  const runBefore = revisions(runDir), chainBefore = revisions(chainDir);
+  const real = nativeFs.readFileSync;
+  const heads = [join(runDir, runBefore.at(-1)!), join(chainDir, chainBefore.at(-1)!)];
+  mock.method(nativeFs, "readFileSync", ((...args: Parameters<typeof nativeFs.readFileSync>) => {
+    if (heads.includes(String(args[0]))) throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+    return real(...args);
+  }) as typeof nativeFs.readFileSync);
+  syncBuiltinESMExports();
+  assert.throws(() => store.updateRun(run.runId, (r) => { r.taskIds.push("task-b"); }), /EIO/);
+  assert.throws(() => store.updateChain(run.runId, chain.chainId, (c) => { c.updatedAt = iso(); }), /EIO/);
+  assert.throws(() => readVersioned(join(store.runDir(run.runId), "run.json")), /EIO/);
+  mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.deepEqual(revisions(runDir), runBefore, "nenhuma revisão nova publicada a partir de estado antigo");
+  assert.deepEqual(revisions(chainDir), chainBefore);
+  const saved = store.loadRun(run.runId)!;
+  assert.equal(saved.cancelled, true); assert.equal(saved.invocations, 1); assert.deepEqual(saved.taskIds, ["task-a"]);
+  const c = readVersioned<Chain>(store.chainPath(run.runId, chain.chainId))!;
+  assert.equal(c.minTier, "deep"); assert.equal(c.minEffort, "high");
+});
+
+it("rodada 5 achado 2: leitura atropelada pela poda relê o head novo em vez de declarar o registro inexistente", () => {
+  const root = freshRoot();
+  const store = new Store(root);
+  const run = makeRun("run-cas-prune01");
+  const path = join(store.runDir(run.runId), "run.json");
+  for (let i = 0; i < 22; i++) store.updateRun(run.runId, (r) => { r.taskIds.push(`task-${i}`); }, run);
+  rmSync(path, { force: true });
+  const dir = revisionDirectory(store, "run", run.runId);
+  const real = nativeFs.readFileSync;
+  let triggered = false;
+  mock.method(nativeFs, "readFileSync", ((...args: Parameters<typeof nativeFs.readFileSync>) => {
+    if (!triggered && String(args[0]).startsWith(dir) && String(args[0]).endsWith(".json")) {
+      triggered = true;
+      // Outro processo publica 22 revisões e poda as antigas enquanto este leitor está no meio da leitura.
+      mock.restoreAll();
+      syncBuiltinESMExports();
+      for (let i = 0; i < 22; i++) store.updateRun(run.runId, (r) => { r.cancelled = i === 21 ? true : r.cancelled; });
+      for (const name of revisions(dir).slice(0, -21)) rmSync(join(dir, name), { force: true });
+      mock.method(nativeFs, "readFileSync", ((...a: Parameters<typeof nativeFs.readFileSync>) => real(...a)) as typeof nativeFs.readFileSync);
+      syncBuiltinESMExports();
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    }
+    return real(...args);
+  }) as typeof nativeFs.readFileSync);
+  syncBuiltinESMExports();
+  const seen = readVersioned<Run>(path);
+  assert.ok(triggered);
+  assert.ok(seen, "o Run não pode desaparecer durante a poda");
+  assert.equal(seen.cancelled, true, "o leitor vê o cancelamento publicado");
+  assert.equal(seen.taskIds.length, 22);
 });

@@ -74,19 +74,40 @@ function settleWx(base: string, outcome: "commit" | "abort"): boolean {
   return existsSync(join(decision, "commit"));
 }
 
-function readRevisions<T extends { rev?: number }>(path: string, revisions: number[]): T | null {
+/** Snapshot de uma revisão: ausente (podada, em voo ou nunca publicada) e selo de aborto (vazio) são pulados;
+ * qualquer outra falha (EIO, EACCES, JSON inválido, rev divergente) é erro: nunca se recua para um estado
+ * anterior quando uma revisão confirmada existe mas não pôde ser lida. */
+function readSnapshot<T extends { rev?: number }>(file: string, rev: number): T | "skip" {
+  let text: string;
+  try { text = readFileSync(file, "utf8"); }
+  catch (error) { if (errorCode(error) === "ENOENT") return "skip"; throw error; }
+  if (text === "") return "skip";
+  const value = JSON.parse(text) as T;
+  if (!value || typeof value !== "object" || value.rev !== rev) throw new Error(`revisão de estado inconsistente: ${file}`);
+  return value;
+}
+
+/** "stale": a lista de revisões ficou para trás (outro escritor publicou e podou durante a leitura). */
+function readRevisions<T extends { rev?: number }>(path: string, revisions: number[]): T | null | "stale" {
   for (const rev of revisions) {
     const base = join(revisionsDir(path), revisionName(rev));
     if (existsSync(`${base}.wx`) && !existsSync(join(`${base}.wx.d`, "commit"))) continue;
-    const value = readJson<T>(`${base}.json`);
-    if (value && typeof value === "object" && value.rev === rev) return value;
+    const value = readSnapshot<T>(`${base}.json`, rev);
+    if (value !== "skip") return value;
   }
-  const legacy = readJson<T>(path);
+  if (revisions.length && (reservations(path)[0] ?? 0) !== revisions[0]) return "stale";
+  let legacy: T | null = null;
+  try { legacy = JSON.parse(readFileSync(path, "utf8")) as T; }
+  catch (error) { if (errorCode(error) !== "ENOENT") throw error; }
   return legacy ? { ...legacy, rev: 0 } : null;
 }
 
 export function readVersioned<T extends { rev?: number }>(path: string): T | null {
-  return readRevisions<T>(path, reservations(path));
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const value = readRevisions<T>(path, reservations(path));
+    if (value !== "stale") return value;
+  }
+  throw new Error(`estado sob contenção contínua, leitura não concluída: ${path}`);
 }
 
 /** CAS sem lock. O callback pode ser repetido: síncrono, puro e sem I/O. */
@@ -110,6 +131,7 @@ export function updateVersioned<T extends { rev?: number }>(path: string, change
       }
     }
     const current = readRevisions<T>(path, revisions), rev = head + 1;
+    if (current === "stale") continue;
     const value = change(current && structuredClone(current));
     if (rev > 999999999999) throw new Error(`limite de revisões de estado: ${path}`);
     value.rev = rev;
@@ -134,6 +156,7 @@ export function updateVersioned<T extends { rev?: number }>(path: string, change
     } finally { try { rmSync(tmp, { force: true }); } catch { /* tmp ignorado pelos leitores */ } }
     for (const old of revisions.filter((r) => r < rev - 20)) {
       const snapshot = join(dir, `${revisionName(old)}.json`);
+      // Só snapshots confirmados e legíveis são podados; selos de aborto (vazios) e marcas ficam.
       if (readJson<{ rev?: number }>(snapshot)?.rev !== old) continue;
       try { rmSync(snapshot); } catch { /* poda não invalida o commit */ }
     }

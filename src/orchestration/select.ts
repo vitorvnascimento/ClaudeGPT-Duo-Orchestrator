@@ -12,7 +12,7 @@ export function automaticModelAllowed(model: ModelInfo, cfg: DuoConfig): boolean
   const included = cfg.routing.include?.some((n) => names.includes(n.toLowerCase())) ?? false;
   return !cfg.routing.exclude.some((n) => names.includes(n.toLowerCase()))
     && (cfg.routing.include === null || included)
-    && (!extraUsage(model) || (cfg.billing.acknowledgeUnverifiableExtraUsage[model.provider] && included));
+    && (!extraUsage(model) || (cfg.billing.acknowledgeUnverifiableExtraUsage[model.provider] === true && included));
 }
 
 /** Uma única fronteira para seleção, reserva, retomada e observação nativa. */

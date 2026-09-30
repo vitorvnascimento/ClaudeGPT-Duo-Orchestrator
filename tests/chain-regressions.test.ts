@@ -1,6 +1,8 @@
 // Reproduções da terceira rodada: CLIs simuladas, nenhum acesso a fornecedores.
 import { strict as assert } from "node:assert";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { loadConfig } from "../src/config.js";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { delegate } from "../src/orchestration/delegate.js";
@@ -183,4 +185,41 @@ it("rodada 3 achado 1: ignoreUserConfig só exclui usuário quando a CLI anuncia
   const out = await run(req({ adaptive: false }), { FAKE_CODEX_HELP: "missing-ignore-user-config" });
   assert.equal(out.summary.state, "blocked");
   assert.equal(s.execCalls().length, 0);
+});
+
+it("rodada 7 achado 2: ciência de uso extra só vale como booleano literal", () => {
+  for (const value of ["false", "true", 1, 0, "yes", null]) {
+    const root = mkdtempSync(join(tmpdir(), "duo-ack-"));
+    try {
+      mkdirSync(join(root, ".duo"), { recursive: true });
+      writeFileSync(join(root, ".duo", "config.json"), JSON.stringify({ version: 1, billing: { acknowledgeUnverifiableExtraUsage: { claude: value, codex: false } } }));
+      assert.throws(() => loadConfig(root), /acknowledgeUnverifiableExtraUsage/, String(value));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+it("rodada 7 achado 1: tentativa da Chain ausente do run continua visível para cancelamento e é reconciliada na retomada", async () => {
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 1 } } });
+  const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { adaptive: true })), env: { ...s.env, FAKE_SCENARIO: "capacity", FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
+  assert.equal(first.summary.state, "blocked");
+  const store = new Store(s.root);
+  const runId = String(first.summary.runId);
+  const task = store.findTask(String(first.summary.taskId))!;
+  // Simula gravação do run interrompida: a tentativa existe na Chain, mas não em run.taskIds.
+  const orphan = { ...task, taskId: "task-orfa-000001", state: "blocked" as const, invocations: 0 };
+  mkdirSync(store.taskDir(runId, orphan.taskId), { recursive: true });
+  store.saveTask(orphan);
+  const chain = store.listChains(runId)[0]!;
+  store.updateChain(runId, chain.chainId, (fresh) => {
+    fresh.attempts.push({ ...fresh.attempts[0]!, taskId: orphan.taskId, attempt: 2, reason: "capacity", invocations: 0 });
+    fresh.latestTaskId = orphan.taskId;
+  });
+  assert.ok(!store.loadRun(runId)!.taskIds.includes(orphan.taskId));
+  assert.ok(store.listTasks(store.loadRun(runId)!).some((t) => t.taskId === orphan.taskId), "listTasks inclui tentativas da Chain");
+  store.updateRun(runId, (r) => { r.cancelled = true; });
+  const resumed = await delegate({ cwd: s.root, resumeTaskId: orphan.taskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
+  assert.notEqual(resumed.summary.state, "succeeded");
+  assert.match(JSON.stringify(resumed.summary), /cancelad/, JSON.stringify(resumed.summary));
+  assert.ok(store.loadRun(runId)!.taskIds.includes(orphan.taskId), "retomada reconcilia run.taskIds");
+  assert.equal(s.execCalls().length, 1, "nada executa depois do cancelamento");
 });

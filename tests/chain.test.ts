@@ -187,17 +187,35 @@ it("Chain: sucesso salvo antes da interrupção é reconciliado sem repetir exec
   assert.equal(store.loadChain(chain.runId, chain.chainId)!.attempts.at(-1)!.state, "succeeded");
 });
 
-it("Chain: retomada não repete modelo sem capacidade mesmo sem o cache global", async () => {
+it("Chain: retomada não repete modelo sem capacidade mesmo sem o cache global; usa alternativa equivalente", async () => {
   s = makeSandbox({ routing: { adaptive: { maxAttempts: 1 } } });
   const first = await run({ FAKE_SCENARIO: "capacity" });
   assert.equal(first.summary.state, "blocked");
-  s.config({ routing: { adaptive: { maxAttempts: 3 } } });
   const store = new Store(s.root);
+  const cooled = store.findTask(String(first.summary.taskId))!.model.requested;
+  s.config({ routing: { adaptive: { maxAttempts: 3 } } });
+  writeJsonAtomic(join(store.base, "capacity-state.json"), { entries: [] });
+  const resume = (taskId: string) => delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
+  const out = await resume(String(first.summary.taskId));
+  assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+  const done = store.findTask(String(out.summary.taskId))!;
+  assert.ok(cooled && done.model.requested && done.model.requested !== cooled, `não repete ${cooled}`);
+  assert.ok(tierRank(done.selection!.tier) >= tierRank(store.findTask(String(first.summary.taskId))!.selection!.tier), "nunca abaixo do nível");
+  assert.equal(s.execCalls().length, 2);
+});
+
+it("Chain: retomada sem alternativa equivalente continua bloqueada até o fim do cooldown", async () => {
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 1 } } });
+  const first = await run({ FAKE_SCENARIO: "capacity" });
+  assert.equal(first.summary.state, "blocked");
+  const store = new Store(s.root);
+  const cooled = store.findTask(String(first.summary.taskId))!;
+  s.config({ routing: { adaptive: { maxAttempts: 3 }, include: [`${cooled.executor}:${cooled.model.requested}`] } });
   writeJsonAtomic(join(store.base, "capacity-state.json"), { entries: [] });
   const resume = (taskId: string) => delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
   const cooling = await resume(String(first.summary.taskId));
   assert.equal(cooling.summary.state, "blocked");
-  assert.match(String(cooling.summary.outcome), /sem capacidade/);
+  assert.match(String(cooling.summary.outcome), /sem capacidade|nenhum modelo automático elegível/);
   assert.equal(s.execCalls().length, 1);
   const chain = store.listChains(String(first.summary.runId))[0]!;
   store.updateChain(chain.runId, chain.chainId, (fresh) => { fresh.attempts[0]!.capacityUntil = new Date(Date.now() - 1).toISOString(); });

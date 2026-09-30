@@ -185,6 +185,11 @@ export function loadConfig(projectRoot: string): DuoConfig {
   }
   if (cfg.billing.profile !== "subscription-only") problems.push("billing.profile (o MVP só implementa subscription-only)");
   if (typeof cfg.billing.allowLoopbackProxy !== "boolean") problems.push("billing.allowLoopbackProxy (boolean)");
+  // Ciência de cobrança só vale como booleano literal: "false", 1 ou "yes" não podem autorizar créditos.
+  const ack = cfg.billing.acknowledgeUnverifiableExtraUsage as unknown;
+  if (!ack || typeof ack !== "object" || !(["claude", "codex"] as const).every((p) => typeof (ack as Record<string, unknown>)[p] === "boolean")) {
+    problems.push("billing.acknowledgeUnverifiableExtraUsage.{claude,codex} (boolean)");
+  }
   if (!Array.isArray(cfg.acceptance.allowedCommands) || !cfg.acceptance.allowedCommands.every((c) => Array.isArray(c) && c.every((x) => typeof x === "string"))) {
     problems.push("acceptance.allowedCommands");
   }

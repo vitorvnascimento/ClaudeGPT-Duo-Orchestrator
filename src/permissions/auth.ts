@@ -899,7 +899,7 @@ export function checkAuth(
   sources: { settingSources?: string; ignoreUserConfig?: boolean } = {},
 ): AuthCheck {
   const { env, removed } = childEnv(baseEnv);
-  const extraUsage = cfg.billing.acknowledgeUnverifiableExtraUsage[provider] ? "unverifiable-acknowledged" : "unverifiable-not-acknowledged";
+  const extraUsage = cfg.billing.acknowledgeUnverifiableExtraUsage[provider] === true ? "unverifiable-acknowledged" : "unverifiable-not-acknowledged";
   const settings =
     provider === "claude"
       ? claudeSettingsConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, sources.settingSources ?? cfg.executors.claude.settingSources)

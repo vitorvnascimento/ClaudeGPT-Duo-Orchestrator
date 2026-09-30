@@ -57,6 +57,15 @@ function writeExclusive(path: string, data: string): void {
   finally { closeSync(fd); }
 }
 
+/** Barreira de durabilidade da entrada de diretório criada pelo link (POSIX). O Windows não abre diretórios
+ * para fsync; lá vale a garantia do NTFS. */
+function syncDir(dir: string): void {
+  if (process.platform === "win32") return;
+  const fd = openSync(dir, "r");
+  try { fsyncSync(fd); }
+  finally { closeSync(fd); }
+}
+
 function headRevision(path: string): number {
   let names: string[];
   try { names = readdirSync(revisionsDir(path)); }
@@ -116,6 +125,7 @@ export function updateVersioned<T extends { rev?: number }>(path: string, change
         }
         throw error;
       }
+      syncDir(dir);
       return value;
     } finally {
       try { rmSync(tmp, { force: true }); } catch { /* temporário ignorado pelos leitores */ }
@@ -267,7 +277,18 @@ export class Store {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   listTasks(run: Run): Task[] {
-    return (this.loadRun(run.runId) ?? run).taskIds.map((id) => this.loadTask(run.runId, id)).filter((t): t is Task => t !== null);
+    // Toda tentativa registrada numa Chain do run conta, mesmo que a gravação no run tenha sido interrompida:
+    // cancelamento e status nunca podem perder de vista uma tentativa que pode executar.
+    const ids = new Set((this.loadRun(run.runId) ?? run).taskIds);
+    const dir = join(this.runDir(run.runId), "chains");
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) {
+        const m = /^(task-[a-z0-9-]{6,64})\.(?:json|d)$/.exec(name);
+        const chain = m ? readVersioned<Chain>(join(dir, `${m[1]}.json`)) : null;
+        for (const a of chain?.attempts ?? []) ids.add(a.taskId);
+      }
+    }
+    return [...ids].map((id) => this.loadTask(run.runId, id)).filter((t): t is Task => t !== null);
   }
   telemetry(event: Record<string, unknown>): void {
     appendJsonl(join(this.base, "telemetry.jsonl"), { at: new Date().toISOString(), ...event });

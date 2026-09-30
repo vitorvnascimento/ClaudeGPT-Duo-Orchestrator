@@ -282,6 +282,13 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     });
     if (refused) return refused;
     if (chainPolicy(chain).succeeded) return reused(chain);
+    // Reconcilia antes de executar: toda tentativa da Chain entra no run (gravação anterior pode ter sido interrompida).
+    const attemptIds = chain.attempts.map((a) => a.taskId);
+    run = store.updateRun(run.runId, (fresh) => { for (const id of attemptIds) if (!fresh.taskIds.includes(id)) fresh.taskIds.push(id); });
+    if (run.cancelled) {
+      chain = store.updateChain(run.runId, chain.chainId, (fresh) => { if (fresh.owner?.nonce === owner.nonce) { fresh.status = "cancelled"; fresh.owner = null; } });
+      return invalid(`o run ${run.runId} foi cancelado; a tarefa não será retomada`);
+    }
     resuming = task.base !== null;
   } else {
     if (!opts.requestPath) return invalid("informe --request <arquivo.json> ou --resume <taskId>");
@@ -411,7 +418,12 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       const target = maxTier(assessment.tier, policy.floor);
       let execReq = { ...originalReq, executor: task.executor };
       // Retentativas já têm a escolha persistida; não dependem de variáveis da iteração anterior.
-      const restoring = !!task.selection && (origin.model === "explicit" || !!task.model.requested)
+      // Escolha automática cujo modelo está em cooldown de capacidade ou com cota esgotada não é restaurada:
+      // a retomada volta a selecionar (nível >= minTier, esforço >= minEffort) e pode usar a alternativa recuperada.
+      const autoUnavailable = adaptive && origin.model === "auto" && !!task.model.requested
+        && !!(coolingAttempt(task.executor, task.model.requested) || capacityBlock(store, task.executor, task.model.requested)
+          || quotaBlock(quotaStates(store)[task.executor], task.model.requested));
+      const restoring = !!task.selection && (origin.model === "explicit" || !!task.model.requested) && !autoUnavailable
         && (!!opts.resumeTaskId || chain.attempts.at(-1)?.reason !== "initial");
       if (restoring) {
         if (task.model.requested) execReq.model = task.model.requested;
@@ -420,8 +432,22 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       if (adaptive && !restoring) {
         if (assessment.signals.includes("risk=high")) task.risk = "high";
         const candidates = availableCandidates(target);
-        const chosen = origin.model === "auto" ? selectModel(catalog, cfg, task.executor, target, { candidates, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") }) : null;
+        const selectFor = (executor: Provider) => selectModel(catalog, cfg, executor, target, { candidates, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: !autoUnavailable && policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
+        let chosen = origin.model === "auto" ? selectFor(task.executor) : null;
+        // Retomada de tentativa que nunca invocou, travada por cota/capacidade: se o fornecedor atual não tem modelo
+        // equivalente livre, usa o outro (mesma regra do fallback de cota: nível >= minTier, esforço >= minEffort).
+        if (!chosen && autoUnavailable && task.invocations === 0) {
+          const other: Provider = task.executor === "claude" ? "codex" : "claude";
+          const alt = selectFor(other);
+          if (alt && !(req.brain === other && req.brainModel && modelMatches(alt.model, req.brainModel))) {
+            task.executor = other;
+            execReq = { ...execReq, executor: other };
+            chosen = alt;
+          }
+        }
         if (chosen) execReq.model = chosen.model;
+        // Sem alternativa equivalente: mantém o modelo indisponível para que o bloqueio abaixo informe cooldown/reset.
+        if (autoUnavailable && !chosen && task.model.requested) execReq.model = task.model.requested;
         execReq.model ??= cfg.executors[task.executor].model ?? undefined;
         if (!execReq.model && task.executor === "codex") {
           try { execReq.model = codexConfiguredModel(authPaths, env, cfg.executors.codex.ignoreUserConfig) ?? undefined; }

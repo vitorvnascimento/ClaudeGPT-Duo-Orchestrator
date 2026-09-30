@@ -10,6 +10,7 @@ import { describeSource, type Capability, type Catalog, type ModelInfo } from ".
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
 import { quotaBlock, quotaStates } from "./quota.js";
+import { capacityBlock } from "./capacity.js";
 import { confirmFloor, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import type { DuoConfig, Provider } from "../config.js";
@@ -238,7 +239,7 @@ export function evaluateCandidates(
   const evals: CandidateEval[] = cands.map((cand) => {
     const ev = evidenceFor(tasks, cand, q, min);
     const initial = availability(cand.executor);
-    const block = quotaBlock(quotas[cand.executor], cand.model);
+    const block = quotaBlock(quotas[cand.executor], cand.model) ?? capacityBlock(store, cand.executor, cand.model);
     const av = { available: initial.available && !block, reasons: [...initial.reasons, ...(block ? [block] : [])] };
     const priors = cfg.routing.priors.filter(
       (p) =>

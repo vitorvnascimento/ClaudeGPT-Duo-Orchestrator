@@ -233,6 +233,9 @@ describe("adaptadores (argumentos, sem executar)", () => {
   it("classifica textos de erro de cota, autenticação e modelo", () => {
     assert.equal(classifyErrorText("You've hit your usage limit. Try again at 3:05 PM."), "quota");
     assert.equal(classifyErrorText("Login expired · Please run /login"), "auth");
+    assert.equal(classifyErrorText("Selected model is at capacity. Please try a different model."), "capacity");
+    assert.equal(classifyErrorText('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'), "capacity");
+    assert.equal(classifyErrorText("You've hit your usage limit. Try again at 3:05 PM."), "quota", "cota continua sendo cota");
     assert.equal(classifyErrorText("The 'gpt-x' model is not supported when using Codex"), "model_unavailable");
   });
 });

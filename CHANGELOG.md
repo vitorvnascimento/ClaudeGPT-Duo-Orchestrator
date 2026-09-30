@@ -2,6 +2,8 @@
 
 ## 0.3.0 — em desenvolvimento
 
+- **Modelo sem capacidade** ("at capacity", "overloaded", 529/503): tratado como falha passageira do modelo, não da conta. O modelo fica indisponível por 10 min em `.duo/capacity-state.json` e a tarefa continua em outro modelo de nível igual ou superior, primeiro do mesmo fornecedor e depois do outro, com as mesmas regras do fallback de cota. Com `adaptive=false`: blocked, como na 0.2.0.
+
 - Segunda rodada adversarial: `confirmFloor` centraliza confirmação de modelo/esforço/elegibilidade; deep exige catálogo fresco e esforço explícito high ou superior. Reservas automáticas stale, desconhecidas ou inelegíveis bloqueiam.
 - Sensibilidade de escopo inspecionada sem corte de 2.000 caminhos; enumeração incompleta exige deep. Modelo nativo abaixo do piso ou não confirmável falha sem integrar/escalar, com interrupção antecipada no init Claude.
 - Proxy loopback validado após sobreposição efetiva das configurações global/projeto/local; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.

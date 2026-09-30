@@ -1,4 +1,5 @@
 // Integração offline: a ponte real contra CLIs simuladas (nenhum modelo é invocado).
+import { tierRank } from "../src/orchestration/complexity.js";
 import { strict as assert } from "node:assert";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -67,6 +68,26 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.ok(s.log().some((e) => e.cmd === "login-status")); assert.ok(s.log().some((e) => e.cmd === "auth-status"));
     const resume = await delegate({ cwd: s.root, resumeTaskId: first.taskId, env: { ...s.env, ...adaptiveEnv }, authPaths: s.authPaths });
     assert.equal(resume.summary.state, "blocked"); assert.match(String(resume.summary.outcome), /cota esgotada/);
+  });
+  for (const executor of ["codex", "claude"] as const) it(`${executor} sem capacidade: outro modelo do mesmo nível, sem esgotar a conta`, async () => {
+    const s = setup();
+    const brain = executor === "codex" ? "claude" : "codex";
+    const out = await run(s, adaptiveRequest(brain, { executor, complexity: "standard", isolation: "worktree" }),
+      { ...adaptiveEnv, FAKE_SCENARIO_BY_ATTEMPT: JSON.stringify({ 1: "capacity", 2: "success" }), FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId), first = task(s, t.selection?.attemptOf);
+    assert.equal(first.state, "blocked"); assert.match(String(first.outcome), /sem capacidade/);
+    assert.equal(t.selection?.fallbacks?.[0]?.reason, "modelo sem capacidade no fornecedor");
+    assert.notEqual(t.model.requested, first.model.requested, "o modelo sem capacidade não é repetido");
+    assert.ok(tierRank(t.selection!.tier) >= tierRank("standard"), "nunca abaixo do nível");
+    assert.notEqual(quotaStates(new Store(s.root))[executor]?.status, "exhausted", "capacidade não esgota a conta");
+    assert.match(String(t.outcome), /após modelo sem capacidade no fornecedor em/);
+  });
+  it("sem capacidade e adaptive=false: blocked, sem nova tentativa (0.2.0)", async () => {
+    const s = setup();
+    const out = await run(s, baseRequest("claude", { adaptive: false }), { FAKE_SCENARIO: "capacity" });
+    assert.equal(out.summary.state, "blocked"); assert.match(String(out.summary.outcome), /sem capacidade/);
+    assert.equal(s.execCalls().length, 1);
   });
   it("cota só de modelo: tenta outro modelo do mesmo fornecedor primeiro", async () => {
     const s = setup();

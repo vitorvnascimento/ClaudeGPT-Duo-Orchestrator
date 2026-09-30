@@ -38,6 +38,8 @@ export type InvocationPlan = {
 export type ErrorKind =
   | "auth"
   | "quota"
+  /** Fornecedor sem capacidade para o modelo agora (passageiro; não é cota da conta). */
+  | "capacity"
   | "model_unavailable"
   | "error_envelope"
   | "incomplete_stream"
@@ -89,6 +91,7 @@ export interface ExecutorAdapter {
 
 export function classifyErrorText(text: string): ErrorKind {
   if (/usage limit|rate.?limit|limit (reached|exceeded)|quota|too many requests|\b429\b|try again (at|in)|resets? (at|in)/i.test(text)) return "quota";
+  if (/\bat capacity\b|overloaded|server_is_overloaded|\b529\b|temporarily unavailable|service unavailable|\b503\b/i.test(text)) return "capacity";
   if (/not logged in|please run \/login|login expired|unauthori[sz]ed|\b401\b|authentication|invalid api key|oauth/i.test(text)) return "auth";
   if (/model[^.\n]{0,80}(not found|not available|not supported|unsupported|does not exist|invalid|no access)|model_not_found|unknown model|does not support this model|claude_code_version_too_old|or newer is required/i.test(text)) return "model_unavailable";
   return "unknown";

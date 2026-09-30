@@ -213,6 +213,12 @@ switch (scenario) {
     emit({ type: "turn.started" });
     emit({ type: "turn.failed", error: { message: "You've hit your usage limit. Try again at 3:05 PM." } });
     process.exit(1);
+  case "capacity":
+    emit({ type: "thread.started", thread_id: thread });
+    emit({ type: "turn.started" });
+    emit({ type: "error", message: "Selected model is at capacity. Please try a different model." });
+    emit({ type: "turn.failed", error: { message: "Selected model is at capacity. Please try a different model." } });
+    process.exit(1);
   case "model-unavailable":
     emit({ type: "thread.started", thread_id: thread });
     emit({ type: "turn.failed", error: { message: `The '${valueOf("--model")}' model is not supported when using Codex with a ChatGPT account.` } });

@@ -163,6 +163,11 @@ switch (scenario) {
     emit({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 1, error: "rate_limit", session_id: session });
     emit({ type: "result", subtype: "success", is_error: true, session_id: session, result: "Claude usage limit reached. Your limit will reset at 5pm." });
     process.exit(1);
+  case "capacity":
+    emit(init);
+    emit({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 1, error: "overloaded_error", session_id: session });
+    emit({ type: "result", subtype: "success", is_error: true, session_id: session, result: "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}" });
+    process.exit(1);
   case "model-unavailable":
     emit({ type: "result", subtype: "success", is_error: true, session_id: session, result: `model: ${valueOf("--model")} not found or not available for your account` });
     process.exit(1);

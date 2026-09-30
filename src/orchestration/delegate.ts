@@ -28,6 +28,7 @@ import { EFFORTS, selectEffort, tierOf, type Effort, type Tier } from "../adapte
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
 import { confirmFloor, selectModel, type ModelSelection } from "./select.js";
 import { observeTaskQuota, quotaBlock, quotaStates } from "./quota.js";
+import { recordCapacity } from "./capacity.js";
 import { deriveTags, evaluateCandidates, liveAvailability } from "./router.js";
 
 export const EXIT = { ok: 0, failed: 1, invalid: 2, blocked: 3, cancelled: 4 } as const;
@@ -48,7 +49,7 @@ export type DelegateOptions = {
   authPaths?: AuthPaths;
 };
 
-export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean; quotaExceeded?: boolean };
+export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean; quotaExceeded?: boolean; capacityUntil?: string };
 
 function invalid(message: string, details: string[] = [], exitCode: number = EXIT.invalid): DelegateOutcome {
   return { exitCode, summary: { state: "rejected", error: message, ...(details.length ? { details } : {}) } };
@@ -428,7 +429,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
       out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, adaptive, catalog, floor: assessment.floor, automaticModel: origin.model === "auto" || !!fallbacks?.length, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
     } finally { lock.release(); }
-    if (!adaptive || (!out.verificationFailed && !out.quotaExceeded) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
+    if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
     if (chainAttempt() >= cfg.routing.adaptive.maxAttempts) {
       task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
       store.saveTask(task);
@@ -436,29 +437,31 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     }
     if (task.isolation === "in-place" && (task.verification?.filesChangedActual.length
       || (task.base && diffStates(projectRoot, baseState(task), entries.map((e) => e.rel)).changed.some((p) => !p.startsWith(".duo/"))))) {
-      task.limitations.push(`${out.quotaExceeded ? "fallback de cota não aplicado" : "escalada não aplicada"}: a tentativa alterou arquivos in-place; decida no cérebro`);
+      task.limitations.push(`${out.quotaExceeded || out.capacityUntil ? "fallback de cota/capacidade não aplicado" : "escalada não aplicada"}: a tentativa alterou arquivos in-place; decida no cérebro`);
       store.saveTask(task);
       return { exitCode: out.exitCode, summary: summarize(task) };
     }
     let retryExecutor = task.executor;
-    if (out.quotaExceeded) {
-      if (task.executor === "codex") catalog = await loadCatalog(store, cfg, { env }).catch(() => catalog);
+    if (out.quotaExceeded || out.capacityUntil) {
+      const capacity = !out.quotaExceeded;
+      if (!capacity && task.executor === "codex") catalog = await loadCatalog(store, cfg, { env }).catch(() => catalog);
       const exhausted = quotaStates(store)[task.executor];
       const currentTier = task.selection?.tier ?? target;
       const evals = evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: currentTier }, liveAvailability(store, cfg, env, authPaths), catalog).evals;
-      const providers: Provider[] = exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
+      // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
+      const providers: Provider[] = capacity || exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
       let next: { executor: Provider; selected: ModelSelection } | null = null;
       for (const executor of providers) {
         const selected = selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
         if (selected) { next = { executor, selected }; break; }
       }
       if (!next) {
-        task.outcome = `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
+        task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
       const from = { executor: task.executor, model: task.model.requested };
-      fallbacks = [...(fallbacks ?? []), { from, to: { executor: next.executor, model: next.selected.model }, reason: "cota esgotada", resetsAt: exhausted?.resetsAt ?? null }];
+      fallbacks = [...(fallbacks ?? []), { from, to: { executor: next.executor, model: next.selected.model }, reason: capacity ? "modelo sem capacidade no fornecedor" : "cota esgotada", resetsAt: capacity ? out.capacityUntil ?? null : exhausted?.resetsAt ?? null }];
       retryExecutor = next.executor;
       quotaChoice = next.selected;
       target = currentTier;
@@ -725,6 +728,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     await loadCatalog(store, cfg, { refresh: true, env }).catch(() => null);
   }
   observeTaskQuota(store, task.executor, outcome, task.model.requested);
+  const capacityUntil = outcome.errorKind === "capacity" ? recordCapacity(store, task.executor, task.model.requested ?? task.model.reported ?? null) : null;
   const [state, reason, verificationFailed] = nativeFailure ? ["failed" as const, nativeFailure, false] : decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
   task.pids.child = null;
   task.metrics = {
@@ -745,7 +749,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     events: { ...outcome.events, oversize: result.oversizeLines },
   };
   const fallbackNote = state === "succeeded" && task.selection?.fallbacks?.length
-    ? `; executado por ${task.executor}/${task.model.requested} após cota esgotada em ${task.selection.fallbacks.map((f) => `${f.from.executor}/${f.from.model}`).join(", ")}` : "";
+    ? `; executado por ${task.executor}/${task.model.requested} após ${task.selection.fallbacks.map((f) => `${f.reason} em ${f.from.executor}/${f.from.model}`).join(", ")}` : "";
   const quotaNote = outcome.errorKind === "quota" ? ` ${task.executor}: ${quotaBlock(quotaStates(store)[task.executor], task.model.requested) ?? "cota esgotada"}.` : "";
   transition(task, state, reason + quotaNote + fallbackNote);
   store.saveTask(task);
@@ -772,7 +776,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     reportedModel: task.model.reported,
   });
   return { exitCode: exitFor(state), summary: summarize(task), ...(verificationFailed ? { verificationFailed: true } : {}),
-    ...(state === "blocked" && outcome.errorKind === "quota" && !verification.staleBase ? { quotaExceeded: true } : {}) };
+    ...(state === "blocked" && outcome.errorKind === "quota" && !verification.staleBase ? { quotaExceeded: true } : {}),
+    ...(state === "blocked" && capacityUntil && !verification.staleBase ? { capacityUntil } : {}) };
 }
 
 /** Aliases (opus, sonnet) casam por família; IDs completos exigem igualdade de prefixo. */
@@ -885,6 +890,9 @@ function decide(
   }
   if (o.errorKind === "quota") {
     return ["blocked", `limite/cota do ${task.executor} atingido (${o.errorMessage ?? "sem detalhe"}). ${adaptive ? "A ponte procura um modelo equivalente disponível." : "Sem nova tentativa automática: aguarde o reset, execute no próprio cérebro ou prepare um handoff."}${partial}`];
+  }
+  if (o.errorKind === "capacity") {
+    return ["blocked", `o ${task.executor} está sem capacidade para ${task.model.requested ?? "o modelo padrão"} agora (${o.errorMessage ?? "sem detalhe"}). ${adaptive ? "A ponte procura um modelo equivalente disponível." : "Tente de novo em alguns minutos ou escolha outro modelo do mesmo nível."}${partial}`];
   }
   if (o.errorKind === "auth") return ["blocked", `falha de autenticação no ${task.executor}: ${o.errorMessage ?? ""}. Nenhum método alternativo de cobrança foi tentado.`];
   if (o.errorKind === "model_unavailable") {

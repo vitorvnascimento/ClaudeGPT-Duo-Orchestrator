@@ -1,6 +1,35 @@
 # Changelog — ClaudeGPT - Duo Orchestrator by Fusic
 
-## 0.3.0 — em desenvolvimento
+**English** · [Português](#português)
+
+## 0.3.0 — in development / em desenvolvimento
+
+### English
+
+Phases 1–3: catalog, adaptive selection and quota continuity (offline validation).
+
+- Catalog keyed by installed Claude/Codex versions, 6 h TTL (1 h when degraded) and explicit invalidation for the future router.
+- Anonymous check of published npm versions, 6 h cache and warnings in `models`/`doctor`, without installation or credentials; environment/config opt-out.
+- User-configured models added without duplicating IDs/aliases, with their own origin and unknown efforts.
+- Pure functions for family/regex tiers, version comparison, extra usage and supported effort selection.
+- Optional `effort` in requests and task audits; flags gated by help, rejection before execution and old argv preserved without effort when adaptive mode is disabled.
+- New defaults/validation for `routing.adaptive`, `routing.extraModels` and `discovery`; older configs and tasks remain compatible.
+- `duo recommend` now returns `tier`, `effort` and `selection`; `--request` carries the actual objective, scope and acceptance criteria, and omitting `model` selects within the requested `executor`. Without acceptance criteria in shorthand mode, the minimum tier is `standard`.
+- Minimum tiers and adaptive escalation: high or sensitive risk requires `deep`; `light` requires low risk, limited scope without directories and acceptance commands; verification failure escalates `light → standard → deep` and `maxAttempts` counts the first attempt.
+- Retries preserve previous worktrees and only repeat `in-place` without changes; infrastructure failures do not escalate for quality; quota has its own fallback. `deep` may use `xhigh`; explicit `model` does not change, explicit `effort` remains and, without it, escalation only increases effort when supported.
+- `model`, `effort`, `complexity: light|standard|deep`, `adaptive: false` and `duo delegate --no-adaptive` allow forcing behavior. `adaptive: false` preserves pre-adaptive execution.
+- Models with extra usage require provider acknowledgment and explicit inclusion in `routing.include`; quota fallback uses only equivalent or higher models, subject to all gates.
+- Offline tests with injected fetch and simulated CLIs. Package and `CLIENT_INFO` versions remain 0.2.0.
+- Sanitized per-provider state in `.duo/quota-state.json`, expiring at reset/6 h without reset; Claude events, quota errors and manual records update the observation.
+- Optional `account/rateLimits/read` in the Codex discovery session, without credit-consuming methods. Account/plan/credit fields are discarded; specific limits only affect models with unambiguous mapping.
+- `duo quota refresh`, `quota show` with `state` preserving previous fields and quota health in `recommend`. Warning conserves the account for deep (−0.15 only in light/standard).
+- I4 fallback at the same or higher tier with `selection.fallbacks`, new attempts/worktrees, all gates and protection of in-place changes. The original task remains resumable; adaptive disabled performs no fallback.
+- `billing.allowLoopbackProxy` (false by default): explicit exception for a subscription-based HTTP/HTTPS loopback proxy, without API keys and with `requires_openai_auth` in Codex. Doctor reports authorization/a hint; SECURITY documents the risk.
+- Offline tests of parsing/privacy/expiration, allowed account methods, selection, fallback between simulated CLIs and loopback URL validation. No version was changed.
+- Adversarial fixes: effective model and explicit effort respect the risk/scope minimum tier; capability and tier are required together, with consistent tiers in recommend. Unknown defaults or presumed tiers cannot execute under a deep minimum.
+- Original request preserved in request.json; invocation.json records resolved execution. Resumptions preserve automatic origin, chain root/counter and the minimum effort reached; fallbacks seek destinations supporting that effort. taskKey reuses the final result by its original logical identity.
+
+### Português
 
 Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validação offline).
 
@@ -28,13 +57,36 @@ Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validaçã
 
 ## 0.2.0 — 2026-09-29
 
+### English
+
+First public version, under the official name **ClaudeGPT - Duo Orchestrator by Fusic**. Focus on robust process execution and secret redaction, following a series of cross-reviews between Claude and Codex.
+
+#### Added
+
+- **New version notification:** `duo` checks the latest public release (at most once a day, in the background, without credentials) and notifies the terminal when a newer version exists. `duo update` checks immediately and `duo update --apply` installs it. Disable: `DUO_NO_UPDATE_CHECK=1`.
+
+#### Fixed
+
+- **Orphan processes and stuck bridge:** an executor descendant ignoring SIGTERM held the bridge until it exited on its own and could become orphaned. Timeout, cancellation and bridge exit now reach the entire group, even after the main process exits, and a PGID already reused by another process is never signaled. The bridge only returns the result when the group is empty (with a cap of ~2 s after SIGKILL, so a process stuck in the kernel cannot hang it). A process leaving the group (e.g. a daemon with `setsid`) and inheriting stdout/stderr also no longer holds the bridge: once the group is empty, it releases the pipes after ~2 s without marking a timeout. When returning without the executor's "close", no executor timer or handle keeps the bridge from exiting, and a normal execution no longer waits those ~2 s to exit.
+- **Diagnostics (`runQuick`):** the timeout is now effective even when the queried program ignores SIGTERM.
+- **Failing callbacks:** an exception while saving task state (e.g. full disk) no longer crashes the bridge; the executor is terminated and the error reaches the caller.
+- **Task stuck in `running`:** if saving progress fails during execution, the task becomes `blocked` (resumable) instead of remaining `running` forever.
+- **Termination classification:** excessive output is no longer also reported as a timeout (which incorrectly made the task resumable). The first cause wins, including when a callback fails after another cause already stopped the executor.
+- **Retained output tail:** the final stdout/stderr segment kept for diagnostics no longer loses bytes within the limit.
+- **CRLF lines at the size limit:** acceptance no longer depends on how bytes arrive fragmented.
+- **Config:** `timeoutSec` and `acceptanceTimeoutSec` must be integers between 1 and 86400; byte limits, integers between 1 and 1 GiB. Previously, invalid values became a ~1 ms timer.
+- **Secret redaction:** now covers PEM private-key blocks, Google keys (`AIza…`), Stripe (`sk_/rk_live|test`) and npm tokens. PEM is processed in linear time (previously ~14 s for 1.25 MB) and fails closed: a truncated block or mismatched labels are redacted to the end. Blocks split across event-stream lines or strings within the same JSON (e.g. a line array) are also redacted, and the 2000-character limit per log line is applied only after redaction. A delimiter in a JSON key (e.g. MCP call arguments) also opens the block for subsequent values. If a line over the limit (8 MiB) must be discarded without inspection, including the stream's final line, event logging stops (fails closed).
+- **Reasoning actually omitted:** Codex `reasoning` and Claude `thinking` are identified in the original event, before redaction; previously, a PEM block opened in an earlier event could hide the event type and allow reasoning to be recorded.
+
+### Português
+
 Primeira versão pública, com o nome oficial **ClaudeGPT - Duo Orchestrator by Fusic**. Foco em robustez da execução de processos e na redação de segredos, a partir de uma bateria de revisão cruzada entre Claude e Codex.
 
-### Adicionado
+#### Adicionado
 
 - **Aviso de nova versão:** o `duo` consulta a última release pública (no máximo uma vez por dia, em segundo plano, sem credenciais) e avisa no terminal quando há versão mais nova. `duo update` consulta na hora e `duo update --apply` instala. Desligar: `DUO_NO_UPDATE_CHECK=1`.
 
-### Corrigido
+#### Corrigido
 
 - **Processos órfãos e ponte presa:** um descendente do executor que ignorava SIGTERM segurava a ponte até morrer sozinho e podia ficar órfão. Timeout, cancelamento e a saída da ponte agora alcançam o grupo inteiro, mesmo depois que o processo principal saiu, e um PGID já reutilizado por outro processo nunca é sinalizado. A ponte só devolve o resultado quando o grupo está vazio (com teto de ~2 s após o SIGKILL, para um processo preso no kernel não travá-la). Um processo que sai do grupo (ex.: daemon com `setsid`) e herda stdout/stderr também não prende mais a ponte: com o grupo vazio, ela solta os pipes depois de ~2 s, sem marcar timeout. Quando devolve sem o "close" do executor, nenhum timer ou handle dele segura mais a saída da ponte, e uma execução normal não espera mais esses ~2 s para sair.
 - **Diagnósticos (`runQuick`):** o timeout agora é efetivo mesmo quando o programa consultado ignora SIGTERM.
@@ -48,5 +100,11 @@ Primeira versão pública, com o nome oficial **ClaudeGPT - Duo Orchestrator by 
 - **Raciocínio omitido de verdade:** o `reasoning` do Codex e o `thinking` do Claude são identificados no evento original, antes da redação; antes, um bloco PEM aberto num evento anterior podia esconder o tipo do evento e deixar o raciocínio ser gravado.
 
 ## 0.1.0 — 2026-09-26
+
+### English
+
+First version: local Codex ↔ Claude Code bridge through official CLIs, with independent verification, model catalog, evidence-based routing and a `subscription-only` profile.
+
+### Português
 
 Primeira versão: ponte local Codex ↔ Claude Code pelas CLIs oficiais, com verificação independente, catálogo de modelos, roteamento por evidência e perfil `subscription-only`.

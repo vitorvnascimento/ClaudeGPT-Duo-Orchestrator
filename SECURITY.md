@@ -1,4 +1,79 @@
-# Política de segurança — ClaudeGPT - Duo Orchestrator by Fusic
+# Security Policy — ClaudeGPT - Duo Orchestrator by Fusic
+
+**English** · [Português](#português)
+
+This is a personal, local project. It does not expose a network service, receive credentials, or publish anything.
+
+## Principles
+
+1. **Credentials stay with the official clients.** The bridge never reads `~/.codex/auth.json`, `~/.claude/.credentials.json`, the Keychain, or token variables. It only checks `claude auth status` and `codex login status` and stores only the method (`subscription`, `api_key`…), never an email address, organization, or key fragments. Model discovery (`duo models`) uses Claude's `initialize` and the read methods `model/list`, `modelProvider/capabilities/read`, and `account/rateLimits/read` from `codex app-server`. It discards the `account` field and all server notifications (such as `account/updated`), and writes the model list, tools, and, when available, a sanitized quota note to `.duo/models.json`.
+2. **One brain, depth 1.** The executor cannot call the brain, another executor, or the bridge itself.
+3. **Verify instead of trusting.** The executor's report is self-declared; the bridge checks hashes, scope, diff, and real tests.
+4. **Never discard the user's work.** No `reset --hard`, `clean`, `stash`, or file checkout. Violations are reported, not reverted.
+5. **No external side effects.** No push, publication, deploy, purchase, credit reload, or credential change.
+6. **A single anonymous network request of its own.** The new-version notice sends a `GET` to `https://api.github.com/repos/vitorvnascimento/duo-orchestrator/releases/latest` at most once per day, with fixed headers (`Accept` and `User-Agent`), without a token, cookie, or environment variable, and without following redirects. The process that makes the request receives a minimal environment (`PATH`, `HOME`). From the response, it uses only a validated `x.y.z` version and the `.tgz` URL for that release; the release's free-form text is never displayed. The result is stored in `~/.cache/duo-orchestrator/update-check.json`, read without blocking (regular and small file only), and an atomic reservation guarantees one request at a time, including after a network failure (a new attempt only after 24 h). Installation occurs only with `duo update --apply`: `npm install -g --ignore-scripts` of the validated `.tgz`, without a shell and with a minimal environment (without shell tokens, proxies, or `npm_config_*`). Package authenticity depends on GitHub HTTPS and access control to the repository (only the maintainer publishes releases). Disable it with `DUO_NO_UPDATE_CHECK=1`.
+
+## Optional local proxy
+
+`billing.allowLoopbackProxy` is disabled by default. When enabled, the bridge accepts only `http://` or `https://` with a raw authority exactly equal to `localhost`, `127.0.0.1`, or `[::1]`, without userinfo. In Claude, the exception applies to `env.ANTHROPIC_BASE_URL` in the settings. In Codex, it also requires the active custom provider to have `requires_openai_auth = true` and not declare `env_key`, `experimental_bearer_token`, or `http_headers`. The bridge continues removing `ANTHROPIC_BASE_URL` from the executor process environment; the option only authorizes the client's persistent configuration.
+
+A local proxy sees the traffic sent to the client and may see the session token the client uses to authenticate the subscription. Enable the option only for a local process you control and understand. The check does not audit the process, port, proxy code, how it uses the data, DNS, redirects after the connection, or host security; it only performs this conservative validation of the declared configuration and URL authority. Alternate IPv4 representations, IPv4-mapped IPv6, userinfo, and remote hosts remain blocked.
+
+## Enforced × cooperative
+
+| Control | Type | Enforced by |
+| --- | --- | --- |
+| Codex executor `read-only` / `workspace-write` sandbox | **Enforced** | Codex, through the OS sandbox (Seatbelt on macOS) |
+| Network disabled in the Codex sandbox (`sandbox_workspace_write.network_access=false`) | **Enforced** | Codex |
+| `--permission-mode dontAsk` + restricted `--tools` in the Claude executor | **Client-enforced** | Claude Code (not an OS sandbox) |
+| `--disallowedTools` for `claude`/`codex`/`duo`, destructive Git commands, and protected paths | **Client-enforced** | Claude Code |
+| `--setting-sources user` and `--strict-mcp-config` (without project hooks/settings/MCP) | **Client-enforced** | Claude Code |
+| `--disable-slash-commands` (skills disabled in the Claude executor) | **Client-enforced** | Claude Code |
+| Removal of API/gateway variables from the executor environment | **Enforced** | Bridge (child-process environment) |
+| Execution without a shell, with separate arguments and the prompt on stdin | **Enforced** | Bridge |
+| Timeout, output limit, and process-tree termination | **Enforced** | Bridge |
+| Scope validation (traversal, symlink, denylist) before execution | **Enforced** | Bridge |
+| Detection of changes outside scope, in a protected file, or against a changed base | **Post-execution detection** | Bridge (hash + Git) |
+| Acceptance commands only from an allowlist | **Enforced** | Bridge |
+| `DUO_DEPTH=1` (the bridge refuses to run inside an executor) | **Cooperative** | A process controlling its own environment can remove it |
+| Single-executor lock (`.duo/lock.json`) | **Cooperative + detection** | An executor with write access to `.duo/` can remove it; the bridge checks the nonce at the end and rejects the task |
+| Prompt instructions ("do not delegate", "do not read .env") | **Cooperative** | Text only; never treated as a barrier |
+
+There is no **read** isolation for the Codex executor: the Codex sandbox restricts writing and network access, not reading. Do not place the duo in repositories with secrets in readable files that the provider must not see.
+
+## Process termination
+
+On macOS and Linux, the executor runs in its own process group. Timeout, cancellation, and bridge exit terminate the entire group (first signal, SIGKILL after the grace period), and the bridge returns the result only when the group is empty, so no descendant can continue changing the project after the lock is released. Before each signal, the bridge confirms that the group still exists and forgets it after observing it empty. If, ~2 s after SIGKILL, the group has still not been observed empty (for example, a process stuck in a kernel call), the bridge stops waiting and returns the result so it does not hang. Likewise, if the group is already empty but a process that left it (for example, a daemon with `setsid`) inherited stdout/stderr, the bridge releases the pipes ~2 s later; that process is not terminated by the bridge because it is outside the group.
+
+Residual risk: between the group becoming empty and the next probe (~50 ms), the group ID could theoretically be reused by another process. The system does not reuse the ID while the group has members, so this would require a complete wraparound of the PID space during that window. On Windows, termination uses `taskkill /T /F`, without this wait (not tested).
+
+## Untrusted repositories
+
+- `claude -p` does not show the workspace trust dialog. By default the executor uses `--setting-sources user` and `--strict-mcp-config`, so project hooks, settings, and `.mcp.json` do not run. **User** hooks (`~/.claude/settings.json`) continue to run; `duo doctor` lists these hooks.
+- The project’s `CLAUDE.md` and `AGENTS.md` files are read by the CLIs as instructions.
+- Acceptance commands execute repository code with its permissions, **outside the sandbox**. That is why `acceptance.allowedCommands` has an allowlist.
+- A worktree isolates Git changes; it is **not a security sandbox**.
+
+## Data sent to providers
+
+The executor receives the prompt assembled by the bridge (objective, paths, constraints, interfaces, and criteria) and reads project files with the client's own tools. Send to the second provider only projects for which this is permitted. Corporate projects may require organization authorization.
+
+## Persistence
+
+- `.duo/quota-state.json` keeps one observation per provider (`claude`/`codex`): status, percentage used or null, ISO reset or null, observation date, source, and affected models or null. It stores no email, identity, account IDs, plan, credits, or tokens. The catalog cache receives only this same sanitized projection. Codex fields `accountId`, `planType`, `credits`, `individualLimit`, `rateLimitResetCredits`, and `spendControlReached` are discarded. No `account/*` method other than `account/rateLimits/read` is called; in particular, reset credits are never consumed. Without valid data, the quota remains unknown; observations expire at reset or after 6 h without a reset. The previous manual record (`quota.json`) keeps its format; do not include personal information or secrets in the free-form note.
+- A fallback may send the same subtask to another provider, exclusively through CLIs authenticated by the subscription and passing through the gates again. The level is never reduced; no paid API, credential change, or credit reload is attempted.
+
+- Everything written to `.duo/` goes through secret-pattern redaction (keys `sk-…`, `ghp_…`, Google `AIza…`, Stripe, npm, JWT, `Bearer …`, `api_key=…` pairs, PEM private-key blocks, including when they arrive split across multiple lines or multiple strings in JSON; an open block without an end is redacted to the end, along with anything that follows it) and redaction of sensitive environment-variable values. Redaction uses patterns: a secret in an unknown format may pass. Known PEM-redaction limits: a `-----BEGIN …-----` delimiter split between two events is not recognized (supported executors emit whole messages, not deltas); JSON property names are preserved inside an open block (only values are redacted), although a delimiter in a key opens or closes the block for subsequent values; and an event line above 8 MiB interrupts the task event log.
+- Reasoning text (`reasoning` from Codex and `thinking` from Claude) is omitted before writing. Identification uses the original event, so redacting other fields does not hide reasoning.
+- `.duo/` is in `.gitignore` (proposed by `duo init`).
+
+## Reporting problems
+
+Vulnerabilities in the duo: use GitHub's [private vulnerability reporting](https://github.com/vitorvnascimento/duo-orchestrator/security/advisories/new) instead of a public issue. For other problems, open an issue. Vulnerabilities in the official CLIs should be reported to the providers (Anthropic through HackerOne; OpenAI through the OpenAI security program).
+
+---
+
+## Português
 
 Projeto pessoal e local. Não expõe serviço de rede, não recebe credenciais e não publica nada.
 

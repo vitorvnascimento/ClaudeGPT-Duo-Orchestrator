@@ -1,4 +1,56 @@
-# Autenticação oficial e perfil `subscription-only`
+# Official authentication and `subscription-only` profile
+
+**English** · [Português](#português)
+
+The bridge **does not receive** a password, cookie, OAuth token, or authentication-file contents. You log in directly to the official clients; the bridge only checks the non-sensitive status.
+
+## Claude Code (Pro/Max subscription)
+
+1. Install the official CLI (`npm install -g @anthropic-ai/claude-code` or the native installer). The VS Code extension uses the same account, but does not put `claude` on PATH.
+2. Run `claude` and use `/login` with the claude.ai account.
+3. Check: `claude auth status` should show `"authMethod": "claude.ai"` and `"apiProvider": "firstParty"`.
+
+Documented precedence (code.claude.com/docs/en/authentication, consulted on 25/09/2026): cloud (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`) → `ANTHROPIC_AUTH_TOKEN` → `ANTHROPIC_API_KEY` → `apiKeyHelper` → `CLAUDE_CODE_OAUTH_TOKEN` → profiles → subscription login. **In `claude -p`, `ANTHROPIC_API_KEY` is always used when present.** Therefore the bridge:
+
+- removes these variables from the executor environment;
+- blocks if `apiKeyHelper`, `forceLoginMethod: "console"`, or an `env` block with these variables appears in `~/.claude/settings*.json`, the project's `.claude/settings*.json`, or managed settings;
+- runs `claude auth status` **with the same environment as the executor** and proceeds only with `authMethod=claude.ai` and `apiProvider=firstParty`. Any other value (including an unknown one) blocks.
+
+`--bare` is **never** used: the documentation and the `--help` output of version 2.1.114 confirm that this mode does not read OAuth or the Keychain and requires `ANTHROPIC_API_KEY`.
+
+## Codex (ChatGPT account)
+
+1. Install the official CLI (`npm install -g @openai/codex` or `brew install --cask codex`). Do not use the binary bundled in the VS Code extension.
+2. Run `codex login` and choose "Sign in with ChatGPT".
+3. Check: `codex login status` should say `Logged in using ChatGPT`.
+
+The bridge:
+
+- removes `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and similar variables from the executor environment (the documentation indicates that `CODEX_API_KEY` applies to a `codex exec` run);
+- blocks `model_provider` other than `openai`, `preferred_auth_method = "apikey"`, or `forced_login_method = "api"` in `$CODEX_HOME/config.toml` or `.codex/config.toml`. Only these non-secret values are read; `[model_providers.*]` generates a warning;
+- proceeds only with `Logged in using ChatGPT`. "API key", "Not logged in", or an unrecognized output blocks.
+
+## Credits and extra usage
+
+Even with a subscription login, **credits or extra usage enabled on your account can incur charges**. Neither client exposes an official local interface for checking this setting, and the bridge does not scrape private endpoints. Therefore:
+
+- `billing.acknowledgeUnverifiableExtraUsage.<cliente>` starts as `false` and delegation is blocked;
+- after checking your account configuration on the official websites, change it to `true`. This is your confirmation, recorded on each task as `unverifiable-acknowledged`;
+- the bridge never buys credits, enables extra usage, consumes reset credits, or changes spending limits;
+- `--max-budget-usd` is **not** used because it is not a subscription-quota guarantee.
+- **Post-execution signal (Claude):** the real `claude -p` 2.1.114 stream contains a `rate_limit_event` with `overageStatus` and `isUsingOverage`. The bridge stores this on each task and adds an explicit alert if `isUsingOverage=true`. In the real smoke test: `overageStatus=rejected`, `overageDisabledReason=out_of_credits`, `isUsingOverage=false`. This is an observation **after** execution, not a prior guarantee. Codex emits no equivalent signal in `exec --json`.
+
+## Limits and cooldowns
+
+When an executor reports a limit or quota reached, the task becomes `blocked`, with no automatic retry. The options are to wait for the reset, execute the subtask in the brain itself, or perform a handoff. Nothing is transferred automatically with partial work: the partial-work diff is recorded for you to decide.
+
+## Individual use × product for third parties
+
+The consulted terms (code.claude.com/docs/en/legal-and-compliance) allow a user to use the **unmodified** binary with their own subscription. They prohibit developers from offering claude.ai login in their products, routing requests through Free/Pro/Max credentials on behalf of other users, or brokering credentials. The duo was designed **only for local, individual use**: if it ever becomes a product for other people, it will need API-key authentication or a commercial agreement, and this design is not suitable.
+
+---
+
+## Português
 
 A ponte **não recebe** senha, cookie, token OAuth nem conteúdo de arquivos de autenticação. Você faz login diretamente nos clientes oficiais; a ponte só consulta o status não sensível.
 

@@ -62,6 +62,10 @@ export class CodexAdapter implements ExecutorAdapter {
       enforced.push("hooks e plugins do usuário desligados no executor (--disable hooks/plugins)");
     }
     if (input.model) args.push("--model", input.model);
+    if (input.effort) {
+      if (!caps.flags.config) throw new Error("esforço solicitado, mas esta versão do codex não anuncia --config");
+      args.push("--config", `model_reasoning_effort="${input.effort}"`);
+    }
     if (input.needs.includes("image_generation")) {
       if (!caps.flags.enable) throw new Error("esta versão do codex não anuncia --enable, necessário para ligar image_generation");
       args.push("--enable", "image_generation");

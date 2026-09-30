@@ -14,6 +14,8 @@ import type { TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
 import { Store } from "../state/store.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
+import { loadCliLatest, cliUpdateWarnings } from "../adapters/cli-latest.js";
+import { tierOf, extraUsage } from "../adapters/tiers.js";
 import { doctor, formatDoctor } from "./doctor.js";
 import { applyInit, planInit, previewDiff } from "./init.js";
 import { spawnSync } from "node:child_process";
@@ -171,7 +173,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "doctor": {
-      const r = doctor(cwd);
+      const r = await doctor(cwd);
       print(args.flags.json ? r : formatDoctor(r));
       return 0;
     }
@@ -220,8 +222,17 @@ async function main(argv: string[]): Promise<number> {
     }
     case "models": {
       const root = projectRootOf(cwd);
-      const catalog = await loadCatalog(new Store(root), loadConfig(root), { refresh: Boolean(args.flags.refresh) });
-      print(args.flags.json ? catalog : formatCatalog(catalog));
+      const store = new Store(root), cfg = loadConfig(root);
+      const [catalog, latest] = await Promise.all([loadCatalog(store, cfg, { refresh: Boolean(args.flags.refresh) }), loadCliLatest(store, cfg)]);
+      const warnings = cliUpdateWarnings(catalog.cliVersions, latest);
+      const view = {
+        ...catalog, cliLatest: latest, warnings,
+        providers: Object.fromEntries(Object.entries(catalog.providers).map(([p, pc]) => [p, {
+          ...pc,
+          models: pc.models.map((m) => ({ ...m, ...tierOf(m, cfg), extraUsage: extraUsage(m), source: m.source ?? "discovered" })),
+        }])),
+      };
+      print(args.flags.json ? view : [formatCatalog(catalog, cfg), ...warnings].join("\n"));
       return catalog.providers.claude.ok || catalog.providers.codex.ok ? 0 : 1;
     }
     case "recommend": {

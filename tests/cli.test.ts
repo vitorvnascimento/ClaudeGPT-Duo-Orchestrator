@@ -1,13 +1,13 @@
 // CLI como processo real: cancelamento, init (preview/backup), doctor e report. CLIs de IA simuladas.
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { cancelRun } from "../src/orchestration/control.js";
 import { duoCliCommand } from "../src/cli/init.js";
-import { Store } from "../src/state/store.js";
+import { Store, writeJsonAtomic } from "../src/state/store.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
 let sb: Sandbox | null = null;
@@ -21,6 +21,68 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function cli(s: Sandbox, args: string[], env: Record<string, string> = {}) {
   return spawnSync(process.execPath, [CLI, ...args], { cwd: s.root, env: { ...s.env, ...env }, encoding: "utf8" });
 }
+
+describe("metadados de modelos da fase 1", () => {
+  it("models mostra aviso com fetch injetado; offline e opt-out não mostram aviso", () => {
+    sb = makeSandbox();
+    const s = sb, cache = join(s.tmp, "cache"), preload = join(s.tmp, "fetch.mjs"), calls = join(s.tmp, "fetch-calls");
+    // Impede o trabalhador de update do duo: este teste só consulta versões das CLIs.
+    writeJsonAtomic(join(cache, "duo-orchestrator", "update-check.json"), { checkedAt: new Date().toISOString(), ok: false, latest: null });
+    writeFileSync(preload, `import { appendFileSync } from "node:fs";
+globalThis.fetch = async (url, init) => {
+  appendFileSync(${JSON.stringify(calls)}, "call\\n");
+  if (!String(url).startsWith("https://registry.npmjs.org/")) throw new Error("URL inesperada");
+  if (process.env.FAKE_OFFLINE) throw new Error("offline");
+  return { ok: true, json: async () => ({ version: String(url).includes("openai") ? "0.159.2" : "2.1.285" }) };
+};`);
+    const env = { ...s.env, DUO_NO_UPDATE_CHECK: "0", CI: "", CODEX_SANDBOX: "", CODEX_SANDBOX_NETWORK_DISABLED: "", XDG_CACHE_HOME: cache, FAKE_CODEX_VERSION: "0.157.1", FAKE_CLAUDE_VERSION: "2.1.283" };
+    const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, ["--import", preload, CLI, ...args], { cwd: s.root, env: { ...env, ...extra }, encoding: "utf8" });
+    const text = run(["models"]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /CLI codex desatualizada \(0\.157\.1 < 0\.159\.2\).*npm i -g @openai\/codex@latest/);
+    const json = run(["models", "--json"]);
+    assert.equal(JSON.parse(json.stdout).warnings.length, 2);
+    assert.equal(readFileSync(calls, "utf8").trim().split("\n").length, 2);
+    assert.ok(!run(["models"], { DUO_NO_UPDATE_CHECK: "1" }).stdout.includes("CLI codex desatualizada"));
+    assert.equal(readFileSync(calls, "utf8").trim().split("\n").length, 2);
+    rmSync(join(s.root, ".duo", "cli-latest.json"));
+    const offline = run(["models", "--json"], { FAKE_OFFLINE: "1" });
+    assert.equal(offline.status, 0, offline.stderr);
+    assert.deepEqual(JSON.parse(offline.stdout).warnings, []);
+  });
+  it("texto e JSON incluem nível, esforços, uso extra e origem", () => {
+    sb = makeSandbox({ routing: { extraModels: ["claude:claude-fable-5-1[1m]", "codex:foo-bar"] } });
+    const s = sb;
+    const text = cli(s, ["models"]);
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /nível deep/);
+    assert.match(text.stdout, /esforços: low, high/);
+    assert.match(text.stdout, /uso extra/);
+    assert.match(text.stdout, /nível standard \(presumido\)/);
+    assert.match(text.stdout, /\(configurado pelo usuário; não listado pela CLI\)/);
+    const json = cli(s, ["models", "--json"]);
+    const report = JSON.parse(json.stdout) as { cliVersions: unknown; warnings: string[]; providers: Record<string, { models: { id: string; tier: string; presumed: boolean; extraUsage: boolean; source: string }[] }> };
+    assert.deepEqual(report.cliVersions, { claude: "2.1.114", codex: "0.155.0" });
+    assert.deepEqual(report.warnings, []);
+    const fable = report.providers.claude?.models.find((m) => m.id === "claude-fable-5-1[1m]");
+    assert.equal(fable?.tier, "deep");
+    assert.equal(fable?.extraUsage, true);
+    assert.equal(fable?.source, "user-config");
+    const unknown = report.providers.codex?.models.find((m) => m.id === "foo-bar");
+    assert.equal(unknown?.presumed, true);
+    assert.equal(report.providers.codex?.models[0]?.source, "discovered");
+    assert.equal(s.execCalls().length, 0);
+  });
+  it("doctor mostra as flags e não anuncia atualização quando desligada", () => {
+    sb = makeSandbox();
+    const r = cli(sb, ["doctor"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /--effort: disponível/);
+    assert.match(r.stdout, /--config: disponível/);
+    assert.match(r.stdout, /publicada não disponível/);
+    assert.ok(!r.stdout.includes("CLI codex desatualizada"));
+  });
+});
 
 describe("cancelamento", () => {
   it("duo cancel interrompe a ponte e o executor sem deixar processos órfãos", async () => {

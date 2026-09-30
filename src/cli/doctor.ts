@@ -1,4 +1,4 @@
-// Diagnóstico sem inferência: apenas --version, --help, os comandos oficiais de status e a geração local do schema do app-server.
+// Diagnóstico sem inferência: versões, help, status e schema locais; versões publicadas consultadas anonimamente.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { ConfigError, configPath, DEFAULT_CONFIG, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { git, repoRoot } from "../git.js";
 import { cachedCatalog, checkCodexCatalogContract, describeSource } from "../adapters/catalog.js";
+import { cliUpdateWarnings, loadCliLatest, type FetchLike } from "../adapters/cli-latest.js";
 import { Store } from "../state/store.js";
 import { authBlockReason, BILLING_ENV, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 
@@ -59,7 +60,7 @@ function extensionBinaries(home: string): string[] {
   return out;
 }
 
-export function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, authPathsOverride?: AuthPaths): DoctorReport {
+export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, authPathsOverride?: AuthPaths, fetchImpl?: FetchLike): Promise<DoctorReport> {
   const home = env.HOME ?? env.USERPROFILE ?? homedir();
   const root = repoRoot(cwd);
   const projectRoot = root ?? cwd;
@@ -134,6 +135,14 @@ export function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, authPa
   const billingEnvPresent = BILLING_ENV.filter((k) => env[k] !== undefined);
   if (billingEnvPresent.length) warnings.push(`variáveis de API/gateway presentes no ambiente (removidas dos executores): ${billingEnvPresent.join(", ")}`);
 
+  const latest = await loadCliLatest(new Store(projectRoot), effectiveCfg, { env, fetchImpl });
+  const versions: Record<Provider, string | null> = { claude: null, codex: null };
+  for (const p of ["claude", "codex"] as const) {
+    const info = providers[p] as { version?: string; publishedVersion?: string | null };
+    versions[p] = info.version ?? null;
+    info.publishedVersion = latest?.versions[p] ?? null;
+  }
+  warnings.push(...cliUpdateWarnings(versions, latest));
   const cat = cachedCatalog(new Store(projectRoot));
   const catalogSummary = cat ? Object.fromEntries(Object.entries(cat.providers).map(([p, pc]) => [p, describeSource(pc)])) : null;
   return {
@@ -169,8 +178,10 @@ export function formatDoctor(r: DoctorReport): string {
       lines.push(`  não disponível: ${String(info.reason)}`);
       continue;
     }
+    const caps = info.capabilities as Record<string, boolean>;
+    lines.push(`  ${p === "claude" ? "--effort" : "--config"}: ${caps[p === "claude" ? "effort" : "config"] ? "disponível" : "não anunciado no --help"}`);
     const auth = info.auth as Record<string, unknown>;
-    lines.push(`  ${String(info.path)} (${String(info.source)}) versão ${String(info.version ?? "?")}`);
+    lines.push(`  ${String(info.path)} (${String(info.source)}) versão instalada ${String(info.version ?? "?")} | publicada ${String(info.publishedVersion ?? "não disponível")}`);
     lines.push(`  auth: ${String(auth.method)} — ${String(auth.detail)}${auth.subscriptionType ? ` — plano ${String(auth.subscriptionType)}` : ""}`);
     lines.push(`  uso extra/créditos: ${auth.extraUsage === "unverifiable-acknowledged" ? "não verificável (ciência registrada)" : "não verificável (ciência pendente)"}`);
     for (const c of auth.conflicts as string[]) lines.push(`  conflito: ${c}`);

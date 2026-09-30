@@ -199,6 +199,7 @@ describe("catálogo das contas no roteador", async () => {
   );
   const catalog = {
     discoveredAt: new Date().toISOString(),
+    cliVersions: { claude: null, codex: null },
     providers: {
       claude: { ok: true, source: "t", tools: [], models: claudeModels },
       codex: { ok: true, source: "t", tools, models: codexModels },

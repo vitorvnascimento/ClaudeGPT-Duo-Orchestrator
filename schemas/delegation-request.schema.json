@@ -78,6 +78,10 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9._:\\[\\]-]{1,80}$"
     },
+    "effort": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "xhigh", "max"]
+    },
     "brainModel": {
       "type": "string",
       "pattern": "^[A-Za-z0-9._:\\[\\]-]{1,80}$"

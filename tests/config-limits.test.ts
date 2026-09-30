@@ -80,4 +80,39 @@ describe("limites numéricos da config", () => {
       return true;
     });
   });
+
+  it("config antiga recebe os defaults; overrides novos são preservados", () => {
+    const dir = writeLimits({});
+    writeFileSync(configPath(dir), JSON.stringify({ policy: "equilibrado" }));
+    assert.deepEqual(loadConfig(dir).routing.adaptive, DEFAULT_CONFIG.routing.adaptive);
+    assert.deepEqual(loadConfig(dir).routing.extraModels, []);
+    assert.equal(loadConfig(dir).discovery.checkCliUpdates, true);
+    writeFileSync(configPath(dir), JSON.stringify({ discovery: { checkCliUpdates: false }, routing: { extraModels: ["codex:gpt-6.1-sol"], adaptive: { enabled: false, tiers: [{ match: "SOL", tier: "deep" }], lightMaxFiles: 5, maxAttempts: 3, downgradeMinSuccess: 1, quotaWarnPercent: 100 } } }));
+    assert.equal(loadConfig(dir).discovery.checkCliUpdates, false);
+    assert.equal(loadConfig(dir).routing.adaptive.maxAttempts, 3);
+    assert.equal(loadConfig(dir).routing.adaptive.tiers[0]?.tier, "deep");
+  });
+
+  it("valida intervalos, tipos e regex com ConfigError claro", () => {
+    const dir = writeLimits({});
+    for (const adaptive of [
+      null, [], { enabled: "true" }, { lightMaxFiles: 0 }, { lightMaxFiles: 1.5 }, { maxAttempts: 0 }, { maxAttempts: "2" },
+      { downgradeMinSuccess: -0.1 }, { downgradeMinSuccess: 1.1 }, { downgradeMinSuccess: "0.9" },
+      { quotaWarnPercent: -1 }, { quotaWarnPercent: 101 }, { quotaWarnPercent: null },
+      { tiers: null }, { tiers: [null] }, { tiers: [{ match: "[", tier: "deep" }] }, { tiers: [{ match: "x", tier: "ultra" }] },
+    ]) {
+      writeFileSync(configPath(dir), JSON.stringify({ routing: { adaptive } }));
+      assert.throws(() => loadConfig(dir), (err: unknown) => err instanceof ConfigError && /routing\.adaptive/.test(err.message));
+    }
+    writeFileSync(configPath(dir), JSON.stringify({ routing: { adaptive: { tiers: [{ match: "[", tier: "deep" }] } } }));
+    assert.throws(() => loadConfig(dir), /tiers\[0\]\.match \(regex inválida\)/);
+    for (const extraModels of [null, {}, [1], ["invalid:x"], ["codex:"], ["codex:foo\n"]]) {
+      writeFileSync(configPath(dir), JSON.stringify({ routing: { extraModels } }));
+      assert.throws(() => loadConfig(dir), ConfigError);
+    }
+    for (const discovery of [null, { checkCliUpdates: "false" }]) {
+      writeFileSync(configPath(dir), JSON.stringify({ discovery }));
+      assert.throws(() => loadConfig(dir), ConfigError);
+    }
+  });
 });

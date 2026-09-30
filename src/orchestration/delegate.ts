@@ -89,6 +89,7 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     requestHash: stableHash(hashable),
     base: null,
     model: { requested: req.model ?? cfg.executors[req.executor].model ?? null, reported: null, reportedSource: "unavailable" },
+    effort: { requested: req.effort ?? null },
     native: { sessionId: null },
     pids: { bridge: null, child: null },
     invocations: 0,
@@ -171,6 +172,9 @@ function runGates(
     return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do ${req.executor} não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}` };
   }
   if (task.model.requested && !caps.flags.model) return { ok: false, reason: `modelo solicitado, mas esta versão do ${req.executor} não anuncia --model` };
+  if (task.effort?.requested && !(req.executor === "claude" ? caps.flags.effort : caps.flags.config)) {
+    return { ok: false, reason: `esforço solicitado (${task.effort.requested}), mas esta versão do ${req.executor} não anuncia ${req.executor === "claude" ? "--effort" : "--config"}` };
+  }
   if (task.needs.includes("image_generation") && req.executor === "codex" && !caps.flags.enable) {
     return { ok: false, reason: "esta versão do codex não anuncia --enable, necessário para ligar image_generation" };
   }
@@ -410,6 +414,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     acceptanceArgv: task.acceptanceCommands.map((c) => c.argv),
     needs: task.needs,
     model: task.model.requested,
+    effort: req.effort,
     resumeSessionId: ctx.resuming ? task.native.sessionId : null,
     artifactsDir: task.artifactsDir,
     env: execEnv,
@@ -727,6 +732,7 @@ export function summarize(task: Task): Record<string, unknown> {
     ...(v?.images ? { images: v.images } : {}),
     worktree: task.worktree,
     model: task.model,
+    ...(task.effort ? { effort: task.effort } : {}),
     ...(task.evidence ? { evidence: summarizeEvidence(task.evidence) } : {}),
     invocations: task.invocations,
     metrics: task.metrics

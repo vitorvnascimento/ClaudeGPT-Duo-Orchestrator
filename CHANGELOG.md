@@ -1,5 +1,17 @@
 # Changelog — ClaudeGPT - Duo Orchestrator by Fusic
 
+## 0.3.0 — em desenvolvimento
+
+Fase 1 de 3: base de descoberta, níveis e esforço. Sem nova seleção automática ou fallback por cota.
+
+- Catálogo chaveado pelas versões instaladas de Claude/Codex, TTL de 6 h (1 h degradado) e invalidação explícita para o roteador futuro.
+- Consulta anônima das versões publicadas no npm, cache de 6 h e avisos em `models`/`doctor`, sem instalação ou credenciais; opt-out por ambiente/config.
+- Modelos configurados pelo usuário adicionados sem duplicar IDs/aliases, com origem própria e esforços desconhecidos.
+- Funções puras de nível por família/regex, comparação de versões, uso extra e escolha de esforço suportado.
+- `effort` opcional no pedido e na auditoria da task; flags condicionadas ao help, recusa antes da execução e argv antigo preservado sem effort.
+- Novos defaults/validações de `routing.adaptive`, `routing.extraModels` e `discovery`; configs e tasks antigas continuam compatíveis.
+- Testes offline com fetch injetado e CLIs simuladas. Versões do pacote e `CLIENT_INFO` continuam 0.2.0.
+
 ## 0.2.0 — 2026-09-29
 
 Primeira versão pública, com o nome oficial **ClaudeGPT - Duo Orchestrator by Fusic**. Foco em robustez da execução de processos e na redação de segredos, a partir de uma bateria de revisão cruzada entre Claude e Codex.

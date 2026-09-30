@@ -1,13 +1,14 @@
 // Descoberta de modelos: cadeia de fontes (app-server estável → debug models → último catálogo bom → config).
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { catalogPath, catalogTtlMs, checkCodexCatalogContract, discover, loadCatalog, validateModelListPage, type Catalog } from "../src/adapters/catalog.js";
+import { catalogPath, catalogTtlMs, cachedCatalog, findModel, invalidateCatalog, checkCodexCatalogContract, discover, loadCatalog, validateModelListPage, type Catalog } from "../src/adapters/catalog.js";
 import { isPidAlive } from "../src/adapters/process.js";
 import { loadConfig } from "../src/config.js";
 import { delegate } from "../src/orchestration/delegate.js";
-import { Store } from "../src/state/store.js";
+import { Store, writeJsonAtomic } from "../src/state/store.js";
 import { baseRequest, CLI, FAKE_CODEX, makeSandbox, type Sandbox } from "./helpers.js";
 
 let sb: Sandbox | null = null;
@@ -51,7 +52,7 @@ describe("catálogo: fonte estável (codex app-server)", () => {
     assert.deepEqual(cx.tools, ["image_generation"]);
     assert.ok(cx.models.every((m) => m.capabilities.includes("image_generation")));
     assert.equal(c.providers.claude.sourceKind, "claude-initialize");
-    assert.equal(catalogTtlMs(c), 24 * HOUR);
+    assert.equal(catalogTtlMs(c), 6 * HOUR);
     assert.ok(!s.log().some((e) => e.cmd === "debug-models"), "fallback não deve ser chamado quando a fonte estável funciona");
   });
 
@@ -204,5 +205,81 @@ describe("CLI: opções desconhecidas", () => {
     assert.equal(typo.status, 2);
     assert.match(typo.stderr, /--brain-modle/);
     assert.equal(cli(s, ["models", "--json"]).status, 0);
+  });
+});
+
+describe("cache por versão e modelos configurados", () => {
+  it("cada atualização de CLI invalida antes de 6 h; versões iguais usam cache", async () => {
+    const s = fresh(), store = new Store(s.root), cfg = loadConfig(s.root);
+    const env = { ...s.env, FAKE_CLAUDE_VERSION: "2.1.283", FAKE_CODEX_VERSION: "0.157.1" };
+    const count = () => s.log().filter((c) => c.cmd === "initialize" || c.cmd === "app-server").length;
+    const first = await loadCatalog(store, cfg, { env });
+    assert.deepEqual(first.cliVersions, { claude: "2.1.283", codex: "0.157.1" });
+    await loadCatalog(store, cfg, { env });
+    assert.equal(count(), 2);
+    env.FAKE_CLAUDE_VERSION = "2.1.285";
+    assert.equal((await loadCatalog(store, cfg, { env })).cliVersions.claude, "2.1.285");
+    assert.equal(count(), 4);
+    env.FAKE_CODEX_VERSION = "0.159.2";
+    assert.equal((await loadCatalog(store, cfg, { env })).cliVersions.codex, "0.159.2");
+    assert.equal(count(), 6);
+    assert.deepEqual(cachedCatalog(store)?.cliVersions, { claude: "2.1.285", codex: "0.159.2" });
+    invalidateCatalog(store);
+    invalidateCatalog(store);
+    assert.equal(existsSync(catalogPath(store)), false);
+    await loadCatalog(store, cfg, { env });
+    assert.equal(count(), 8);
+  });
+
+  it("cache legado sem versões e cache de 6 h são redescobertos", async () => {
+    const s = fresh(), store = new Store(s.root), cfg = loadConfig(s.root);
+    const first = await loadCatalog(store, cfg, { env: s.env });
+    const { cliVersions: _v, ...legacy } = first;
+    writeJsonAtomic(catalogPath(store), legacy);
+    await loadCatalog(store, cfg, { env: s.env });
+    assert.equal(s.log().filter((c) => c.cmd === "initialize").length, 2);
+    writeJsonAtomic(catalogPath(store), { ...first, discoveredAt: new Date(Date.now() - 6 * HOUR).toISOString() });
+    await loadCatalog(store, cfg, { env: s.env });
+    assert.equal(s.log().filter((c) => c.cmd === "initialize").length, 3);
+  });
+
+  it("model dos arquivos e extraModels entram sem duplicar IDs/aliases; releitura sem expirar cache", async () => {
+    const s = fresh(), store = new Store(s.root);
+    s.config({ routing: { extraModels: ["claude:opus", "claude:custom-opus", "codex:gpt-6.1-sol", "codex:GPT-6.1-SOL"] } });
+    const claudeFile = join(s.home, ".claude", "settings.json"), codexFile = join(s.home, ".codex", "config.toml");
+    writeFileSync(claudeFile, JSON.stringify({ model: "custom-opus", env: { ANTHROPIC_API_KEY: "não ler nem gravar" } }));
+    writeFileSync(codexFile, 'model = "gpt-6.1-sol"\n[profiles.other]\nmodel = "ignore-me"\n');
+    const cfg = loadConfig(s.root);
+    const c = await loadCatalog(store, cfg, { env: s.env });
+    assert.equal(c.providers.claude.models.filter((m) => m.id === "custom-opus").length, 1);
+    assert.equal(c.providers.claude.models.filter((m) => m.id === "opus").length, 0);
+    assert.equal(c.providers.codex.models.filter((m) => m.source === "user-config").length, 1);
+    assert.deepEqual(findModel(c, "codex", "gpt-6.1-sol")?.efforts, []);
+    assert.equal(findModel(c, "claude", "custom-opus")?.source, "user-config");
+    assert.equal(findModel(c, "claude", "opus")?.source, "discovered");
+    assert.equal(findModel(c, "codex", "ignore-me"), null);
+    assert.ok(!readFileSync(catalogPath(store), "utf8").includes("não ler"));
+    writeFileSync(claudeFile, '{"model":"new-haiku"}');
+    const next = await loadCatalog(store, cfg, { env: s.env });
+    assert.equal(findModel(next, "claude", "new-haiku")?.source, "user-config");
+    assert.equal(s.log().filter((c) => c.cmd === "initialize").length, 1);
+    assert.equal(readFileSync(claudeFile, "utf8"), '{"model":"new-haiku"}');
+  });
+
+  it("JSON/TOML inválidos não quebram e modelos removidos não permanecem no cache", async () => {
+    const s = fresh(), store = new Store(s.root), cfg = loadConfig(s.root);
+    const claudeFile = join(s.home, ".claude", "settings.json"), codexFile = join(s.home, ".codex", "config.toml");
+    writeFileSync(claudeFile, '{"model":"custom-opus"}');
+    writeFileSync(codexFile, 'model = "custom-sol"');
+    const first = await loadCatalog(store, cfg, { env: s.env });
+    assert.ok(findModel(first, "claude", "custom-opus"));
+    assert.ok(findModel(first, "codex", "custom-sol"));
+    for (const invalid of ["{", "null", '{"model":1}', '{"model":"foo\\u001b[31m"}']) {
+      writeFileSync(claudeFile, invalid);
+      writeFileSync(codexFile, 'model = "unterminated\n[broken');
+      const c = await loadCatalog(store, cfg, { env: s.env });
+      assert.ok(c.providers.claude.models.every((m) => m.source === "discovered"));
+      assert.ok(c.providers.codex.models.every((m) => m.source === "discovered"));
+    }
   });
 });

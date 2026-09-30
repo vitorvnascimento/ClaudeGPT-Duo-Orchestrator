@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { applyTask, refreshInterrupted } from "../src/orchestration/control.js";
-import { delegate } from "../src/orchestration/delegate.js";
+import { ADAPTERS, delegate } from "../src/orchestration/delegate.js";
 import { Store } from "../src/state/store.js";
+import type { InvocationInput } from "../src/adapters/types.js";
+import { loadConfig } from "../src/config.js";
+import { loadSchema, validate } from "../src/schema.js";
 import type { Task } from "../src/state/types.js";
 import { buildReport } from "../src/telemetry/report.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
@@ -34,6 +37,77 @@ function task(s: Sandbox, taskId: unknown): Task {
 }
 
 const APP_EDIT = JSON.stringify({ "src/app.ts": "export const app = 1;\nexport const nova = 2;\n" });
+
+describe("esforço explícito nos executores", () => {
+  it("sem effort, argv idênticos ao contrato 0.2.0 dos dois adaptadores", () => {
+    const s = setup();
+    const input: InvocationInput = {
+      resolved: { ok: true, command: "/bin/cli", prefixArgs: [], source: "path" },
+      caps: { version: "1.0.0", flags: { model: true, effort: true, config: true }, missingRequired: [], divergences: [] },
+      cfg: loadConfig(s.root), cwd: s.root, kind: "review", prompt: "p", writableAbs: [], denyGlobs: [], acceptanceArgv: [], needs: [],
+      model: "fixed-model", resumeSessionId: null, artifactsDir: new Store(s.root).base, env: {},
+    };
+    // Captura do argv da 0.2.0; apenas caminhos e JSON do schema são normalizados.
+    const expected = {
+      claude: ["-p", "--output-format", "stream-json", "--verbose", "--json-schema", "<schema>", "--permission-mode", "dontAsk", "--tools", "Read,Grep,Glob", "--disallowedTools",
+        "Bash(claude *)", "Bash(codex *)", "Bash(duo *)", "Bash(npx duo*)", "Bash(npm exec duo*)", "Bash(node *duo-orchestrator*)",
+        "Bash(git reset *)", "Bash(git clean *)", "Bash(git stash *)", "Bash(git checkout *)", "Bash(git push *)", "Bash(git commit *)", "--model", "fixed-model"],
+      codex: ["exec", "--json", "--sandbox", "read-only", "--cd", "<cwd>", "--output-schema", "<schema>", "--model", "fixed-model", "-"],
+    };
+    for (const p of ["claude", "codex"] as const) {
+      for (const patch of [{}, { effort: null }]) {
+        const args = ADAPTERS[p].plan({ ...input, ...patch }).args;
+        args[args.indexOf(p === "claude" ? "--json-schema" : "--output-schema") + 1] = "<schema>";
+        if (p === "codex") args[args.indexOf("--cd") + 1] = "<cwd>";
+        assert.deepEqual(args, expected[p]);
+      }
+      const caps = { ...input.caps, flags: { model: true } };
+      assert.throws(() => ADAPTERS[p].plan({ ...input, caps, effort: "high" }), /esforço solicitado.*não anuncia/);
+    }
+  });
+  for (const brain of ["claude", "codex"] as const) {
+    it(`${brain}: registra effort e passa a sintaxe do executor`, async () => {
+      const s = setup();
+      const out = await run(s, baseRequest(brain, { effort: "xhigh" }), { FAKE_WRITE: APP_EDIT });
+      assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+      assert.deepEqual(task(s, out.summary.taskId).effort, { requested: "xhigh" });
+      assert.deepEqual(out.summary.effort, { requested: "xhigh" });
+      const args = s.execCalls()[0]?.args as string[];
+      const flag = brain === "codex" ? "--effort" : "--config";
+      const value = brain === "codex" ? "xhigh" : 'model_reasoning_effort="xhigh"';
+      assert.ok(args.some((arg, i) => arg === flag && args[i + 1] === value));
+    });
+    it(`${brain}: flag ausente bloqueia antes da execução`, async () => {
+      const s = setup();
+      const out = await run(s, baseRequest(brain, { effort: "high" }), {}, { FAKE_HELP: brain === "codex" ? "missing-effort" : "missing-config" });
+      assert.equal(out.summary.state, "blocked");
+      assert.match(String(out.summary.outcome), /esforço solicitado.*não anuncia --(effort|config)/);
+      assert.equal(s.execCalls().length, 0);
+      assert.equal(task(s, out.summary.taskId).invocations, 0);
+    });
+  }
+  it("schema aceita os cinco níveis e rejeita esforço inválido", async () => {
+    const s = setup();
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) assert.deepEqual(validate(loadSchema("delegation-request"), baseRequest("claude", { effort })), []);
+    for (const effort of ["ultra", "HIGH", "", null, 3]) {
+      const out = await run(s, baseRequest("claude", { effort }));
+      assert.equal(out.exitCode, 2);
+      assert.match(JSON.stringify(out.summary), /\$\.effort/);
+    }
+    assert.equal(s.execCalls().length, 0);
+  });
+  it("retomada mantém o esforço do pedido", async () => {
+    const s = setup();
+    const out = await run(s, baseRequest("codex", { effort: "max" }), { FAKE_SCENARIO: "partial", FAKE_WRITE: APP_EDIT });
+    assert.equal(out.summary.state, "blocked");
+    const resumed = await delegate({ cwd: s.root, resumeTaskId: String(out.summary.taskId), env: s.env, authPaths: s.authPaths });
+    assert.equal(resumed.summary.state, "succeeded", JSON.stringify(resumed.summary));
+    for (const call of s.execCalls()) {
+      const args = call.args as string[];
+      assert.equal(args[args.indexOf("--effort") + 1], "max");
+    }
+  });
+});
 
 describe("direções de delegação e cérebro explícito", () => {
   it("Claude cérebro → Codex executor: sucesso verificado, diff, uso nativo, sem raciocínio salvo", async () => {

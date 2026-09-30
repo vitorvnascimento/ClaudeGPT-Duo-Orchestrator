@@ -52,7 +52,17 @@ export type DuoConfig = {
   scope: {
     deny: string[];
   };
+  discovery: { checkCliUpdates: boolean };
   routing: {
+    extraModels: string[];
+    adaptive: {
+      enabled: boolean;
+      tiers: { match: string; tier: "light" | "standard" | "deep" }[];
+      lightMaxFiles: number;
+      maxAttempts: number;
+      downgradeMinSuccess: number;
+      quotaWarnPercent: number;
+    };
     /** Candidatos usados só quando o catálogo das contas não pode ser descoberto (duo models). */
     candidates: { executor: Provider; model: string | null }[];
     /** Se definido, restringe o roteador a estes modelos ("claude:claude-opus-5-5", "codex:gpt-6-astra"). */
@@ -112,7 +122,10 @@ export const DEFAULT_CONFIG: DuoConfig = {
       "**/.credentials.json",
     ],
   },
+  discovery: { checkCliUpdates: true },
   routing: {
+    extraModels: [],
+    adaptive: { enabled: true, tiers: [], lightMaxFiles: 3, maxAttempts: 2, downgradeMinSuccess: 0.85, quotaWarnPercent: 90 },
     candidates: [
       { executor: "claude", model: "claude-opus-5-5" },
       { executor: "codex", model: null },
@@ -175,6 +188,28 @@ export function loadConfig(projectRoot: string): DuoConfig {
     problems.push("routing.candidates");
   }
   if (!Number.isInteger(cfg.routing.minSamples) || cfg.routing.minSamples < 1) problems.push("routing.minSamples");
+  if (!isObj(cfg.discovery) || typeof cfg.discovery.checkCliUpdates !== "boolean") problems.push("discovery.checkCliUpdates (boolean)");
+  if (!Array.isArray(cfg.routing.extraModels) || !cfg.routing.extraModels.every((m) => typeof m === "string" && /^(claude|codex):[A-Za-z0-9._:\[\]-]{1,80}(?![\s\S])/.test(m))) problems.push("routing.extraModels (lista provider:modelo)");
+  const adaptive = cfg.routing.adaptive;
+  if (!isObj(adaptive)) problems.push("routing.adaptive (objeto)");
+  else {
+    if (typeof adaptive.enabled !== "boolean") problems.push("routing.adaptive.enabled (boolean)");
+    for (const field of ["lightMaxFiles", "maxAttempts"] as const) {
+      if (!Number.isSafeInteger(adaptive[field]) || adaptive[field] < 1) problems.push(`routing.adaptive.${field} (inteiro positivo seguro)`);
+    }
+    for (const [field, max] of [["downgradeMinSuccess", 1], ["quotaWarnPercent", 100]] as const) {
+      const value = adaptive[field];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max) problems.push(`routing.adaptive.${field} (número de 0 a ${max})`);
+    }
+    if (!Array.isArray(adaptive.tiers)) problems.push("routing.adaptive.tiers (lista)");
+    else adaptive.tiers.forEach((rule, i) => {
+      if (!isObj(rule) || typeof rule.match !== "string" || !["light", "standard", "deep"].includes(rule.tier)) problems.push(`routing.adaptive.tiers[${i}] (match e tier)`);
+      else {
+        try { new RegExp(rule.match, "i"); }
+        catch { problems.push(`routing.adaptive.tiers[${i}].match (regex inválida)`); }
+      }
+    });
+  }
   if (!Array.isArray(cfg.routing.priors) || !cfg.routing.priors.every((p) => typeof p.bonus === "number" && Math.abs(p.bonus) <= 0.2 && typeof p.note === "string")) {
     problems.push("routing.priors (bonus entre -0.2 e 0.2, com note)");
   }

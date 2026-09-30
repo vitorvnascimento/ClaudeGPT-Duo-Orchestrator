@@ -22,6 +22,7 @@ export const CLAUDE_FLAGS: Record<string, FlagSpec> = {
   allowedTools: { flag: "--allowedTools", required: true },
   permissionMode: { flag: "--permission-mode", required: true },
   model: { flag: "--model", required: false },
+  effort: { flag: "--effort", required: false },
   resume: { flag: "--resume", required: false },
   settingSources: { flag: "--setting-sources", required: false },
   strictMcpConfig: { flag: "--strict-mcp-config", required: false },

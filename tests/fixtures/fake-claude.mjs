@@ -11,17 +11,18 @@ const valueOf = (f) => (args.indexOf(f) >= 0 ? args[args.indexOf(f) + 1] : undef
 const FLAGS = [
   "-p, --print", "--output-format <format>", "--verbose", "--json-schema <schema>", "--tools <tools...>",
   "--disallowedTools, --disallowed-tools <tools...>", "--allowedTools, --allowed-tools <tools...>",
-  "--permission-mode <mode>", "--model <model>", "-r, --resume [value]", "--setting-sources <sources>",
+  "--effort <level>", "--permission-mode <mode>", "--model <model>", "-r, --resume [value]", "--setting-sources <sources>",
   "--strict-mcp-config", "--disable-slash-commands", "--append-system-prompt <prompt>", "--bare",
 ];
 
 if (has("--version")) {
-  process.stdout.write(`${process.env.FAKE_VERSION ?? "2.1.114"} (Claude Code)\n`);
+  process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? process.env.FAKE_VERSION ?? "2.1.114"} (Claude Code)\n`);
   process.exit(0);
 }
 if (has("--help")) {
   let flags = FLAGS;
   if (process.env.FAKE_HELP === "missing-schema") flags = flags.filter((f) => !f.startsWith("--json-schema"));
+  if (process.env.FAKE_HELP === "missing-effort") flags = flags.filter((f) => !f.startsWith("--effort"));
   process.stdout.write(`Usage: claude [options]\n\nOptions:\n${flags.map((f) => `  ${f}   desc`).join("\n")}\n`);
   process.exit(0);
 }

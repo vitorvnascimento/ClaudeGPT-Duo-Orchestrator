@@ -167,7 +167,7 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | `duo init [--brain claude\|codex] [--apply] [--overwrite]` | Config e skills do projeto com preview/diff e backup. |
 | `duo delegate --request <arquivo>` | Executa um pedido do cérebro (formato em `schemas/delegation-request.schema.json`). Imprime um JSON final. |
 | `duo delegate --resume <taskId> [--timeout-sec N]` | Retoma uma task `blocked` (timeout, interrupção, cota, login…), reutilizando a sessão nativa; `--timeout-sec` dá mais tempo à retomada. |
-| `duo models [--refresh] [--json]` | Modelos disponíveis nas contas conectadas (Claude e Codex), com recomendado/legado do fornecedor, sucessor e aposentadoria, ferramentas (ex.: geração de imagem) e a fonte usada. Sem inferência; cache de 24 h (1 h se alguma fonte estiver degradada). |
+| `duo models [--refresh] [--json]` | Modelos disponíveis nas contas conectadas (Claude e Codex), com nível, esforços, uso extra, origem, recomendado/legado do fornecedor, sucessor e aposentadoria, ferramentas (ex.: geração de imagem) e a fonte usada. Sem inferência; cache de 6 h por versão das CLIs (1 h se alguma fonte estiver degradada). |
 | `duo recommend --kind … [--needs image_generation] [--paths …] [--risk …] [--brain …] [--brain-model …]` | Melhor modelo disponível para a subtarefa (filtro por capacidade + evidência medida + disponibilidade). Diz se é para delegar (a qual cliente e modelo) ou fazer você mesmo. Sem preferência de marca. |
 | `duo status [--run-id]` | Runs e tasks. Detecta interrupções (ponte morta) e marca como `blocked`. |
 | `duo report [--run-id] [--json]` | Relatório determinístico com a origem de cada número. |
@@ -184,10 +184,43 @@ Códigos de saída de `delegate`: `0` succeeded, `1` failed, `2` pedido inválid
 
 A ponte não se limita a "Claude ou Codex": ela trabalha com **modelos**.
 
-- **`duo models`** descobre o que as contas conectadas oferecem, sem inferência. No Claude, usa o handshake `initialize` (o mesmo do `supportedModels()` do Agent SDK). No Codex, usa o `model/list` e o `modelProvider/capabilities/read` do `codex app-server`, métodos da superfície estável do protocolo que a extensão do VS Code usa. Se uma fonte falhar ou mudar de formato, a ponte cai para a seguinte: `codex debug models`, depois o último catálogo bom (marcado como desatualizado), depois `routing.candidates`. O `duo doctor` confere o contrato do protocolo localmente e avisa antes de algo quebrar. Exemplo de conta: Opus 5.5, Sonnet 5, Fable 5.1, Haiku 4.5 e outros no Claude; GPT-6-Astra, GPT-6-Sol, GPT-6-Luna e a família 5.x no Codex, além da ferramenta **`image_generation`**.
+- **`duo models`** descobre o que as contas conectadas oferecem, sem inferência. No Claude, usa o handshake `initialize` (o mesmo do `supportedModels()` do Agent SDK). No Codex, usa o `model/list` e o `modelProvider/capabilities/read` do `codex app-server`, métodos da superfície estável do protocolo que a extensão do VS Code usa. Se uma fonte falhar ou mudar de formato, a ponte cai para a seguinte: `codex debug models`, depois o último catálogo bom (marcado como desatualizado), depois `routing.candidates`. O `duo doctor` confere o contrato do protocolo localmente e avisa antes de algo quebrar. Exemplo de conta: Opus 5.5, Sonnet 5.5, Fable 5.1, Haiku 4.5 e outros no Claude; GPT-6.1-Sol, GPT-6-Astra, GPT-6-Sol, GPT-6-Luna e a família 5.x no Codex, além da ferramenta **`image_generation`**.
 - **Cada subtarefa declara o que exige:** `kind: "asset"` + `needs: ["image_generation"]` para arte. O roteador só considera modelos com essa capacidade.
 - **Qualquer modelo, qualquer cérebro:** a delegação pode ir para o **mesmo cliente com outro modelo** (ex.: cérebro GPT-6-Sol → arte com GPT-6-Astra; cérebro Opus 5.5 → tarefa simples com Sonnet 5). Só é recusado delegar ao mesmo modelo que o cérebro já é.
 - **A ponte valida antes e depois:** bloqueia um `model` que não exista na conta (listando os disponíveis) e, em arte, confere a assinatura binária da imagem gravada no escopo (PNG/JPEG/WebP/GIF). Um "completed" sem imagem válida vira `failed`.
+
+### Base da v0.3.0 (fase 1)
+
+O catálogo registra `cliVersions` e expira após 6 h (1 h degradado). Atualizar qualquer CLI invalida o cache na próxima consulta; `duo models --refresh` força a descoberta. A lista depende da versão instalada: o servidor Codex também filtra por `client_version`.
+
+`duo models` mostra o nível `light`, `standard` ou `deep`, esforços suportados, origem e uso extra. O JSON inclui `tier`, `presumed`, `extraUsage` e `source`. Os níveis padrão seguem famílias: Opus/Fable/Astra → deep; Sonnet/Sol/Terra → standard; Haiku/Luna/Mini/Nano → light. Famílias desconhecidas recebem standard presumido. A primeira regex de `routing.adaptive.tiers` que casar com ID, alias ou nome (sem distinguir caixa) tem precedência.
+
+Modelos das chaves raiz `model` de `~/.codex/config.toml` e `~/.claude/settings.json`, ou de `routing.extraModels` (`["codex:gpt-6.1-sol"]`), aparecem como configurados pelo usuário se a CLI não os listar. IDs e aliases não são duplicados. Esses arquivos são somente lidos; a presença na configuração não confirma disponibilidade na conta.
+
+O pedido pode declarar `"effort": "high"` (`low|medium|high|xhigh|max`). Claude recebe `--effort high`; Codex recebe `--config model_reasoning_effort="high"`. A ponte bloqueia antes de executar se a CLI não anunciar a flag. Sem effort, o argv é o mesmo da 0.2.0. O esforço pedido fica registrado na task; tasks antigas continuam válidas.
+
+`duo models` e `duo doctor` consultam anonimamente as versões publicadas das CLIs no npm (cache `.duo/cli-latest.json`, 6 h, timeout 5 s), e sugerem atualização quando necessário. Nunca instalam nada. Sem rede não há aviso novo. Desative com `DUO_NO_UPDATE_CHECK=1` ou `discovery.checkCliUpdates=false`; a consulta também é desligada em executores (`DUO_DEPTH`), CI e sandbox Codex. `doctor` mostra versão instalada/publicada e suporte a `--effort`/`--config`.
+
+Os novos defaults, mesclados em configs antigas, são:
+
+```json
+{
+  "discovery": { "checkCliUpdates": true },
+  "routing": {
+    "extraModels": [],
+    "adaptive": {
+      "enabled": true,
+      "tiers": [],
+      "lightMaxFiles": 3,
+      "maxAttempts": 2,
+      "downgradeMinSuccess": 0.85,
+      "quotaWarnPercent": 90
+    }
+  }
+}
+```
+
+Nesta fase esses parâmetros preparam o roteamento adaptativo; não ativam seleção automática nem fallback por cota. `selectEffort` prefere low/medium/high por nível (xhigh na escalada), ou o esforço suportado imediatamente acima; retorna null sem opção adequada. `extraUsage` marca contexto `[1m]`, créditos ou preços na descrição. A exclusão automática desses modelos, com exceção por `billing.acknowledgeUnverifiableExtraUsage` + `routing.include`, será aplicada na fase 2. O `duo recommend` existente mantém seu comportamento.
 
 Exemplo validado com as CLIs reais (E2E A1): pedido de arte ao `codex` com `model: "gpt-6-astra"` gerou `assets/mascot.png` (PNG 1254×1254), verificado pela ponte.
 
@@ -233,7 +266,7 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 | Item | Situação |
 | --- | --- |
 | Código, testes e documentação | Implementados |
-| 239 testes offline (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
+| 298 testes offline da fase 1 (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
 | `duo doctor` real | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes |
 | Bateria E2E real ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro |
 | Cérebro nativo usando a skill | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded` |

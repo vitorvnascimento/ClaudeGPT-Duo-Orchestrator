@@ -1,5 +1,5 @@
 import type { DuoConfig, Provider } from "../config.js";
-import type { ExecutorReport, TaskKind } from "../state/types.js";
+import type { DelegationRequest, ExecutorReport, TaskKind } from "../state/types.js";
 import type { Capabilities } from "./capabilities.js";
 import type { Resolved } from "./resolve.js";
 
@@ -17,6 +17,7 @@ export type InvocationInput = {
   /** Capacidades exigidas (ex.: image_generation habilita a ferramenta no Codex). */
   needs: string[];
   model: string | null;
+  effort?: DelegationRequest["effort"] | null;
   resumeSessionId: string | null;
   artifactsDir: string;
   env: NodeJS.ProcessEnv;

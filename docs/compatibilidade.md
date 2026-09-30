@@ -47,7 +47,7 @@ Achados de ambiente que afetam a ponte (e como ela lida com eles):
 
 ## Descoberta de modelos (`duo models`)
 
-A ponte usa as fontes abaixo, que **não consomem inferência** e ficam em cache em `.duo/models.json` por 24 h (1 h quando alguma fonte está degradada). A identificação da conta (e-mail, organização) e as notificações do servidor são descartadas.
+A ponte usa as fontes abaixo, que **não consomem inferência** e ficam em cache em `.duo/models.json` por 6 h, chaveado pelas versões das CLIs (1 h quando alguma fonte está degradada). A identificação da conta (e-mail, organização) e as notificações do servidor são descartadas.
 
 | Fonte | Como | Observado em 26/09/2026 |
 | --- | --- | --- |
@@ -61,13 +61,31 @@ A ponte usa as fontes abaixo, que **não consomem inferência** e ficam em cache
 
 Cada resposta é validada (campos obrigatórios e tipos); formato inesperado cai para a fonte seguinte em vez de gerar um catálogo errado. O `duo doctor` gera o schema do app-server localmente (`generate-json-schema`, ~0,1 s, sem rede) e avisa se `model/list`, `modelProvider/capabilities/read` ou os campos usados saírem da superfície estável. A ponte adiciona `--enable image_generation` só em tarefas `kind: "asset"` com `needs: ["image_generation"]`.
 
-Se o pedido nomear um `model` que não está no catálogo, a ponte bloqueia **antes** de invocar e lista os disponíveis. O Claude Code não gera imagens raster; tarefas de arte vão só para modelos com `image_generation`.
+Se o pedido nomear um `model` que não está no catálogo descoberto nem nas configurações do usuário, a ponte bloqueia **antes** de invocar e lista os disponíveis. O Claude Code não gera imagens raster; tarefas de arte vão só para modelos com `image_generation`.
+
+## Base da v0.3.0 — fase 1
+
+Diagnóstico informado em 29/09/2026: Sonnet 5.5 só apareceu após Claude Code 2.1.283 → 2.1.285; GPT-6.1-Sol após Codex 0.157.1 → 0.159.2. O `model/list` é filtrado pelo servidor conforme `client_version`. O cache agora registra as duas versões e é invalidado na próxima consulta após qualquer mudança, inclusive a instalação/remoção de uma CLI. O snapshot de 26/09 acima permanece como histórico.
+
+Catálogo informado em 29/09: Claude Opus 5.5 (recomendado), Fable 5.1 `[1m]`, Sonnet 5.5, Haiku 4.5 e Opus 5.5 `[1m]` ("Draws from usage credits"); Codex GPT-6.1-Sol (recomendado), GPT-6-Astra/Sol/Luna, GPT-5.6-Sol/Terra/Luna (legados), GPT-5.5 (legado → GPT-5.6-Sol). A descoberta continua dinâmica, sem fixar esse catálogo no código.
+
+| Recurso | Contrato da fase 1 |
+| --- | --- |
+| Claude `--effort <level>` | low, medium, high, xhigh ou max; enviado só quando anunciado no `--help` |
+| Codex `--config model_reasoning_effort="<level>"` | enviado só quando `exec --help` anuncia `--config`; funciona também na retomada |
+| Sem effort | argv preservado em relação à 0.2.0; não injeta esforço por tier |
+| Modelo configurado fora da lista | origem `user-config`, esforços desconhecidos (`[]`); não significa acesso confirmado |
+| Níveis | regex configurada tem precedência sobre famílias; desconhecido é standard presumido |
+| Uso extra | marca `[1m]`, usage credits, per Mtok ou preço em dólares; filtro automático fica para a fase 2 |
+| Versão publicada da CLI | consulta anônima ao npm, headers fixos, redirect error, timeout 5 s; cache 6 h; falha é ausência de dado |
+
+A consulta de versões é desligada com `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `CI`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED=1` ou `discovery.checkCliUpdates=false`. A descoberta dos modelos continua local. Nenhum npm é executado por esse diagnóstico. Versões de pacote e `CLIENT_INFO` permanecem 0.2.0 até a release.
 
 ## Validação
 
 | Teste | Tipo | Resultado |
 | --- | --- | --- |
-| 239 testes (`npm test`) | Offline, CLIs simuladas com saídas no formato documentado **e observado** (incluindo o app-server JSON-RPC, com falha, formato inesperado, travamento, mudança de schema e sandbox) | 239/239 |
+| 298 testes da fase 1 (`npm test`) | Offline, CLIs simuladas com saídas no formato documentado **e observado** (incluindo o app-server JSON-RPC, com falha, formato inesperado, travamento, mudança de schema e sandbox) | 298/298 |
 | `duo doctor` real | Sem inferência | Claude 2.1.114 e Codex 0.157.1: autenticados por assinatura, todos os recursos obrigatórios presentes; bloqueados só pela confirmação de uso extra, como esperado |
 | **Smoke test real Codex→Claude** | 1 invocação de `claude -p` (autorizada) num repositório descartável | **succeeded** em 17 s; só `src/math.mjs` alterado; `check.mjs` executado pela ponte (exit 0); modelo `claude-opus-4-7`; uso nativo `input 9 / output 976 / cache_creation 19.081 / cache_read 72.960`; estimativa do cliente US$ 0,18 (não é cobrança da assinatura); `thinking` não gravado |
 | **Smoke test real Claude→Codex** | 1 invocação de `codex exec` (autorizada) num repositório descartável | **succeeded** em 29 s; só `src/math.mjs` alterado; `check.mjs` executado pela ponte (exit 0); uso nativo `input 142.390 (cached 105.728) / output 445`; `reasoning` não gravado |

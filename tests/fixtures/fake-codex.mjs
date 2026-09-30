@@ -16,12 +16,13 @@ const FLAGS = [
 ];
 
 if (has("--version")) {
-  process.stdout.write(`codex-cli ${process.env.FAKE_VERSION ?? "0.155.0"}\n`);
+  process.stdout.write(`codex-cli ${process.env.FAKE_CODEX_VERSION ?? process.env.FAKE_VERSION ?? "0.155.0"}\n`);
   process.exit(0);
 }
 if (args[0] === "exec" && has("--help")) {
   let flags = FLAGS;
   if (process.env.FAKE_HELP === "missing-schema") flags = flags.filter((f) => !f.startsWith("--output-schema"));
+  if (process.env.FAKE_HELP === "missing-config") flags = flags.filter((f) => !f.includes("--config"));
   process.stdout.write(`Run Codex non-interactively\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n${flags.map((f) => `  ${f}  desc`).join("\n")}\n`);
   process.exit(0);
 }

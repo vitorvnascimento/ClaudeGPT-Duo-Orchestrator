@@ -7,13 +7,15 @@
 // Se todas as fontes de uma conta falharem, vale o último catálogo bom (marcado como desatualizado) e, por fim,
 // `routing.candidates` da config. A resposta de cada fonte é validada: formato inesperado cai para a próxima.
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DuoConfig, Provider } from "../config.js";
-import { childEnv } from "../permissions/auth.js";
+import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
+import { childEnv, codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
 import { redact } from "../redact.js";
 import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
+import { parseVersion } from "./capabilities.js";
+import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
 
@@ -22,6 +24,7 @@ export type Capability = "code" | "image_generation";
 
 export type ModelInfo = {
   provider: Provider;
+  source?: "discovered" | "user-config";
   /** Identificador a passar em --model (ID resolvido no Claude, slug no Codex). */
   id: string;
   aliases: string[];
@@ -57,12 +60,13 @@ export type ProviderCatalog = {
 };
 export type Catalog = {
   discoveredAt: string;
+  cliVersions: Record<Provider, string | null>;
   /** Descoberto dentro do sandbox do Codex (fonte estável indisponível ali): refeito ao rodar fora dele. */
   discoveredInSandbox?: boolean;
   providers: Record<Provider, ProviderCatalog>;
 };
 
-const TTL_MS = 24 * 60 * 60 * 1000;
+const TTL_MS = 6 * 60 * 60 * 1000;
 /** Com fonte frágil, falha ou cache desatualizado, tenta de novo mais cedo. */
 const DEGRADED_TTL_MS = 60 * 60 * 1000;
 /** Último catálogo bom é aceito por até 30 dias; depois disso, só routing.candidates. */
@@ -393,37 +397,84 @@ export async function discover(
   cwd: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
   previous: Catalog | null = null,
-  opts: { appServerTimeoutMs?: number } = {},
+  opts: { appServerTimeoutMs?: number; cliVersions?: Catalog["cliVersions"] } = {},
 ): Promise<Catalog> {
   const { env } = childEnv(baseEnv);
   const [claude, codex] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs)]);
   return {
     discoveredAt: new Date().toISOString(),
+    cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv),
     ...(inCodexSandbox(baseEnv) ? { discoveredInSandbox: true } : {}),
     providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous) },
   };
+}
+
+/** Versão instalada: usa a mesma execução curta e ambiente filtrado da detecção de caps. */
+export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog["cliVersions"] {
+  const { env } = childEnv(baseEnv);
+  const versions: Catalog["cliVersions"] = { claude: null, codex: null };
+  for (const p of ["claude", "codex"] as const) {
+    const resolved = resolveExecutable(p, cfg.executors[p].command, baseEnv);
+    if (!resolved.ok) continue;
+    const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+    versions[p] = r.ok ? parseVersion(r.stdout + r.stderr) : null;
+  }
+  return versions;
+}
+
+/** Só lê model; configurações inválidas ou inacessíveis não impedem a descoberta. */
+function withUserModels(catalog: Catalog, cfg: DuoConfig, cwd: string, env: NodeJS.ProcessEnv): Catalog {
+  const out = structuredClone(catalog);
+  const paths = defaultAuthPaths(cwd, env);
+  const configured: { provider: Provider; id: string }[] = cfg.routing.extraModels.map((m) => {
+    const colon = m.indexOf(":");
+    return { provider: m.slice(0, colon) as Provider, id: m.slice(colon + 1) };
+  });
+  try {
+    const model = codexConfiguredModel(paths, env);
+    if (model) configured.push({ provider: "codex", id: model });
+  } catch { /* config inacessível */ }
+  try {
+    const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR ?? join(paths.home, ".claude"), "settings.json"), "utf8")) as { model?: unknown } | null;
+    if (typeof settings?.model === "string") configured.push({ provider: "claude", id: settings.model });
+  } catch { /* JSON inválido ou ausente */ }
+  for (const pc of Object.values(out.providers)) {
+    pc.models = pc.models.filter((m) => m.source !== "user-config").map((m) => ({ ...m, source: "discovered" }));
+  }
+  for (const { provider, id } of configured) {
+    if (!/^[A-Za-z0-9._:\[\]-]{1,80}(?![\s\S])/.test(id) || findModel(out, provider, id)) continue;
+    out.providers[provider].models.push({ provider, id, aliases: [], displayName: id, description: "", efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: ["code"], source: "user-config" });
+  }
+  return out;
+}
+
+/** A fase 2 pode forçar redescoberta após uma recusa de modelo. */
+export function invalidateCatalog(store: Store): void {
+  rmSync(catalogPath(store), { force: true });
 }
 
 export function catalogPath(store: Store): string {
   return join(store.base, "models.json");
 }
 
-/** 24 h com fontes estáveis; 1 h quando alguma conta usou fallback, falhou ou está com cache desatualizado. */
+/** 6 h com fontes estáveis; 1 h quando alguma conta usou fallback, falhou ou está com cache desatualizado. */
 export function catalogTtlMs(c: Catalog): number {
   const degraded = Object.values(c.providers ?? {}).some((pc) => !pc.ok || pc.stale || pc.stable === false);
   return degraded ? DEGRADED_TTL_MS : TTL_MS;
 }
 
-/** Catálogo em cache (24 h, ou 1 h se degradado). `refresh` força nova descoberta. */
+/** Catálogo em cache (6 h, ou 1 h se degradado). `refresh` força nova descoberta. */
 export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<Catalog> {
   const cached = readJson<Catalog>(catalogPath(store));
   const valid = cached && typeof cached.discoveredAt === "string" && cached.providers ? cached : null;
   const env = opts.env ?? process.env;
+  const versions = cliVersions(cfg, env);
+  const versionsMatch = valid?.cliVersions && (["claude", "codex"] as const).every((p) => valid.cliVersions[p] === versions[p]);
   const upgradeFromSandbox = Boolean(valid?.discoveredInSandbox) && !inCodexSandbox(env);
-  if (!opts.refresh && valid && !upgradeFromSandbox && Date.now() - Date.parse(valid.discoveredAt) < catalogTtlMs(valid)) return valid;
-  const fresh = await discover(cfg, store.projectRoot, env, valid);
+  if (!opts.refresh && valid && versionsMatch && !upgradeFromSandbox && Date.now() - Date.parse(valid.discoveredAt) < catalogTtlMs(valid)) return withUserModels(valid, cfg, store.projectRoot, env);
+  const fresh = await discover(cfg, store.projectRoot, env, valid, { cliVersions: versions });
   writeJsonAtomic(catalogPath(store), fresh);
-  return fresh;
+  return withUserModels(fresh, cfg, store.projectRoot, env);
 }
 
 /** Último catálogo gravado, mesmo expirado (só para exibição, sem disparar descoberta). */
@@ -446,7 +497,7 @@ export function describeSource(pc: ProviderCatalog): string {
   return `${pc.models.length} modelos${pc.tools.length ? ` + ${pc.tools.join(", ")}` : ""} via ${kind} (${quality})`;
 }
 
-export function formatCatalog(c: Catalog): string {
+export function formatCatalog(c: Catalog, cfg: DuoConfig = DEFAULT_CONFIG): string {
   const lines = [`Modelos disponíveis nas contas conectadas (descoberto em ${c.discoveredAt}):`];
   for (const [p, pc] of Object.entries(c.providers)) {
     lines.push(`\n[${p}] ${pc.ok ? pc.source : `indisponível: ${pc.error}`}${pc.tools.length ? ` | ferramentas: ${pc.tools.join(", ")}` : ""}`);
@@ -454,7 +505,12 @@ export function formatCatalog(c: Catalog): string {
     else if (pc.ok && pc.stable === false) lines.push("  aviso: fonte frágil (fallback); a fonte estável falhou ou não roda neste ambiente.");
     for (const a of pc.ok ? (pc.attempts ?? []) : []) lines.push(`  fonte que falhou: ${a}`);
     for (const m of pc.models) {
+      const level = tierOf(m, cfg);
       const flags = [
+        `nível ${level.tier}${level.presumed ? " (presumido)" : ""}`,
+        `esforços: ${m.efforts.join(", ") || "não informados"}`,
+        extraUsage(m) ? "uso extra" : "",
+        m.source === "user-config" ? "(configurado pelo usuário; não listado pela CLI)" : "",
         m.vendorRecommended ? "recomendado pelo fornecedor" : "",
         m.legacy ? `legado${m.upgradeTo ? ` → ${m.upgradeTo}` : ""}${m.retirementAt ? `, aposentadoria ${m.retirementAt.slice(0, 10)}` : ""}` : "",
         m.capabilities.includes("image_generation") ? "gera imagem (ferramenta)" : "",

@@ -21,6 +21,7 @@ export type DelegationRequest = {
   rationale: string;
   risk?: "low" | "medium" | "high";
   model?: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Modelo do próprio cérebro, quando conhecido (evita delegar ao mesmo modelo). */
   brainModel?: string;
   /** Capacidades exigidas pela subtarefa (ex.: image_generation). */
@@ -124,6 +125,7 @@ export type Task = {
     codex?: CodexRolloutEvidence | null;
     images?: { path: string; sha256: string; generatedByExecutorTool: boolean }[];
   };
+  effort?: { requested: string | null };
   native: { sessionId: string | null };
   pids: { bridge: number | null; child: number | null };
   invocations: number;

@@ -86,6 +86,10 @@ export class ClaudeAdapter implements ExecutorAdapter {
     }
     if (caps.flags.appendSystemPrompt) args.push("--append-system-prompt", EXECUTOR_SYSTEM_APPEND);
     if (input.model) args.push("--model", input.model);
+    if (input.effort) {
+      if (!caps.flags.effort) throw new Error("esforço solicitado, mas esta versão do claude não anuncia --effort");
+      args.push("--effort", input.effort);
+    }
     if (input.resumeSessionId) {
       if (!caps.flags.resume) throw new Error("esta versão do claude não anuncia --resume");
       args.push("--resume", input.resumeSessionId);

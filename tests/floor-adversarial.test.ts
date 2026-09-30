@@ -124,3 +124,31 @@ for (const fake of [{ FAKE_NO_ROLLOUT: "1" }, { FAKE_ROLLOUT_MODEL: "gpt-future-
   const t = new Store(s.root).findTask(String(out.summary.taskId))!;
   assert.equal(t.verification?.acceptance.length, 0);
 });
+
+it("rodada 9 achado 1: variante paga [1m] informada pelo cliente não passa como o modelo pedido", async () => {
+  s = makeSandbox({ routing: { include: ["claude:claude-opus-5-5"] }, billing: { acknowledgeUnverifiableExtraUsage: { claude: true } } });
+  // Catálogo com Opus normal e Opus[1m] (variante com créditos), como na reprodução do review.
+  const c = cache();
+  const opus = c.providers.claude.models.find((m) => m.id === "claude-opus-5-5")!;
+  c.providers.claude.models.push({ ...opus, id: "claude-opus-5-5[1m]", displayName: "Opus (1M context)", description: "Draws from usage credits · $4/$20 per Mtok", vendorRecommended: false });
+  save(c);
+  const out = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5[1m]",
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /créditos extras|uso extra/);
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+  assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+});
+
+it("rodada 9 achado 2: execução no próprio modelo do cérebro falha mesmo quando a seleção escolheu outro", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", brainModel: "gpt-6-astra", executor: "codex", risk: "medium", complexity: "standard", isolation: "worktree" }), {
+    FAKE_ROLLOUT_MODEL: "gpt-6-astra",
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /próprio modelo do cérebro/);
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+});

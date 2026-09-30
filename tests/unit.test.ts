@@ -245,7 +245,8 @@ describe("comparação de modelos", () => {
     const { modelMatches } = await import("../src/orchestration/delegate.js");
     assert.ok(modelMatches("opus", "claude-opus-5-5"));
     assert.ok(modelMatches("claude-opus-5-5", "claude-opus-5-5"));
-    assert.ok(modelMatches("claude-opus-5-5", "claude-opus-5-5[1m]"));
+    assert.ok(!modelMatches("claude-opus-5-5", "claude-opus-5-5[1m]"), "variante [1m] tem cobrança própria: não é o mesmo modelo");
+    assert.ok(modelMatches("claude-haiku-4-5", "claude-haiku-4-5-20251001"), "sufixo de data é o mesmo modelo");
     assert.ok(!modelMatches("claude-opus-5-5", "claude-opus-4-7"));
     assert.ok(!modelMatches("sonnet", "claude-opus-4-7"));
   });

@@ -24,9 +24,9 @@ import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
 import { buildExecutorPrompt } from "./prompt.js";
-import { selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
+import { extraUsage, selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
-import { confirmFloor, selectModel, type ModelSelection } from "./select.js";
+import { automaticModelAllowed, confirmFloor, selectModel, type ModelSelection } from "./select.js";
 import { observeTaskQuota, quotaBlock, quotaStates } from "./quota.js";
 import { capacityBlock, recordCapacity } from "./capacity.js";
 import { chainPolicy, chainStatus, effortRank, maxEffort, maxTier } from "./chain.js";
@@ -768,7 +768,25 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (checked.ok && effortRank(checked.effort) > effortRank(policy.minimumEffort)) {
       store.updateChain(run.runId, ctx.chainId, (fresh) => { fresh.minEffort = maxEffort(fresh.minEffort, checked.effort); });
     }
-    return checked.ok ? null : `modelo efetivo ${model ?? "desconhecido"} abaixo do piso ${policy.floor} ou não confirmável: ${checked.reason}; resultado não integrado`;
+    if (!checked.ok) return `modelo efetivo ${model ?? "desconhecido"} abaixo do piso ${policy.floor} ou não confirmável: ${checked.reason}; resultado não integrado`;
+    if (model) {
+      const info: ModelInfo = (ctx.catalog && findModel(ctx.catalog, task.executor, model))
+        ?? { provider: task.executor, id: model, aliases: [], displayName: model, description: "", efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: [] };
+      // Variante com cobrança extra (ex.: [1m]) só vale se foi exatamente a pedida ou está autorizada (ciência + include).
+      const exactRequest = !!task.model.requested && task.model.requested.toLowerCase() === info.id.toLowerCase();
+      if (extraUsage(info) && !exactRequest && !automaticModelAllowed(info, cfg)) {
+        return `modelo efetivo ${info.id} consome créditos extras e não está autorizado (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
+      }
+      // O executor nunca pode ser o próprio modelo do cérebro (a revisão/implementação perderia a independência).
+      const brainModel = ctx.req.brainModel;
+      if (brainModel && task.executor === task.brain) {
+        const canon = (name: string) => ((ctx.catalog && findModel(ctx.catalog, task.executor, name)?.id) ?? name).toLowerCase();
+        if (canon(model) === canon(brainModel) || modelMatches(brainModel, model)) {
+          return `o executor rodou no próprio modelo do cérebro (${info.id}); resultado não integrado — faça no cérebro ou delegue a outro modelo`;
+        }
+      }
+    }
+    return null;
   };
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
@@ -945,7 +963,8 @@ export function modelMatches(requested: string, reported: string): boolean {
   const r = requested.toLowerCase();
   const got = reported.toLowerCase();
   if (/^(opus|sonnet|haiku|fable)$/.test(r)) return got.includes(r);
-  return got === r || got.startsWith(`${r}-`) || got.startsWith(`${r}[`);
+  // Sufixo de data (-20251001) é o mesmo modelo; variante entre colchetes ([1m]) tem cobrança própria e não é.
+  return got === r || /^-\d{8}$/.test(got.slice(r.length)) && got.startsWith(r);
 }
 
 /** Confere a assinatura binária de uma imagem e, quando possível, as dimensões. */

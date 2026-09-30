@@ -300,7 +300,7 @@ describe("seleção e escalada adaptativas", () => {
   });
   it("model e effort explícitos prevalecem; complexity respeita piso", async () => {
     const s = setup();
-    const out = await run(s, adaptiveRequest("claude", { model: "gpt-6-astra", effort: "max", complexity: "light" }), { ...adaptiveEnv, FAKE_WRITE: APP_EDIT });
+    const out = await run(s, adaptiveRequest("claude", { model: "gpt-6-astra", effort: "max", complexity: "light" }), { ...adaptiveEnv, FAKE_CODEX_EFFORTS: JSON.stringify(["low", "medium", "high", "xhigh", "max"]), FAKE_WRITE: APP_EDIT });
     assert.equal(out.summary.state, "succeeded"); assert.equal(s.execCalls()[0]!.model, "gpt-6-astra");
     assert.equal(s.execCalls()[0]!.effort, 'model_reasoning_effort="max"');
     const fixed = await run(s, adaptiveRequest("claude", { isolation: "worktree", model: "gpt-6-astra", effort: "low" }), adaptiveEnv);
@@ -313,10 +313,11 @@ describe("seleção e escalada adaptativas", () => {
     assert.equal(out.summary.state, "succeeded");
     assert.deepEqual(s.execCalls().map((c) => c.effort), ['model_reasoning_effort="high"', 'model_reasoning_effort="high"']);
   });
-  it("catálogo indisponível mantém padrão sem esforço automático e explica", async () => {
+  it("catálogo indisponível bloqueia reserva automática cuja elegibilidade não é confirmável", async () => {
     const s = setup();
     const out = await run(s, adaptiveRequest("claude"), { FAKE_NO_CATALOG: "1", FAKE_WRITE: APP_EDIT });
-    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.equal(s.execCalls().length, 0);
     assert.equal(task(s, out.summary.taskId).model.requested, null);
     assert.equal(task(s, out.summary.taskId).effort?.requested, null);
     assert.match(JSON.stringify(out.summary.selection), /catálogo\/candidato indisponível/);

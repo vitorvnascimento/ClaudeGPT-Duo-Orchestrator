@@ -163,6 +163,248 @@ describe("proxy local de loopback", () => {
     assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
   });
 
+  it("valida o provedor Codex efetivo depois do overlay global/projeto", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      'base_url = "https://gateway.example.test/v1"',
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "endpoint remoto do overlay deve bloquear");
+
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      "requires_openai_auth = false",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "auth falsa do overlay deve bloquear");
+
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      'env_key = "SESSION_SECRET"',
+    ].join("\n"));
+    const credential = codexConfigConflicts(s.paths, s.env, true);
+    assert.equal(credential.conflicts.length, 1, "credencial do overlay deve bloquear");
+    assert.ok(!JSON.stringify(credential).includes("SESSION_SECRET"));
+
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "overlay válido deve completar a tabela global");
+
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+    ].join("\n"));
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "campos complementares de camadas diferentes devem ser efetivos");
+
+    writeFileSync(projectConfig, 'model_provider = "remote"\n[model_providers.remote]\nbase_url = "https://gateway.example.test/v1"\nrequires_openai_auth = true\n');
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "seleção remota do projeto deve ser efetiva");
+
+    rmSync(s.codexConfig);
+    writeFileSync(projectConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "configuração de projeto deve funcionar sem camada global");
+  });
+
+  it("avalia a configuração efetiva do Claude na ordem usuário, projeto e local", () => {
+    const s = sandbox();
+    const projectDir = join(s.paths.projectRoot, ".claude");
+    const projectSettings = join(projectDir, "settings.json");
+    mkdirSync(projectDir, { recursive: true });
+
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
+    writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true).conflicts, [], "projeto deve substituir a URL do usuário");
+
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
+    assert.equal(claudeSettingsConflicts(s.paths, s.env, true).conflicts.length, 1, "URL remota do projeto deve prevalecer");
+
+    writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
+    writeFileSync(join(projectDir, "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true).conflicts, [], "settings.local deve prevalecer sobre projeto");
+  });
+
+  it("valida toda tabela de provedor e perfil introduzidos pelo projeto", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    writeFileSync(projectConfig, [
+      "[model_providers.openai]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "tabela inativa remota do projeto deve bloquear");
+
+    writeFileSync(projectConfig, [
+      "[model_providers.inactive]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "tabela inativa loopback segura pode apenas avisar");
+
+    writeFileSync(projectConfig, [
+      "[profiles.local]",
+      'model_provider = "remote"',
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "perfil de provedor do projeto deve bloquear");
+
+    writeFileSync(projectConfig, [
+      "[profiles.local]",
+      'model_provider = "headroom"',
+    ].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "perfil pode referenciar o provedor combinado seguro");
+
+    writeFileSync(s.codexConfig, [
+      'model_provider = "openai"',
+      "[model_providers.openai]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(projectConfig, [
+      "[model_providers.openai]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "tabela openai sobrescrita pelo projeto deve bloquear");
+  });
+
+  it("não herda campo seguro quando o overlay Codex tem base_url inválido", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(projectConfig, [
+      "[model_providers.headroom]",
+      "base_url = 123",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
+  });
+
+  it("aplica settings locais do usuário antes das settings do projeto", () => {
+    const s = sandbox();
+    const projectDir = join(s.paths.projectRoot, ".claude");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://user.example.test/v1" } }));
+    writeFileSync(join(s.paths.home, ".claude", "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    writeFileSync(join(projectDir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://project.example.test/v1" } }));
+    assert.equal(claudeSettingsConflicts(s.paths, s.env, true).conflicts.length, 1);
+  });
+
+  it("falha fechado para formas TOML de roteamento ainda não suportadas", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+      "[model_providers.remote]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    for (const config of [
+      'model_providers.headroom.base_url = "https://gateway.example.test/v1"',
+      'model_providers.headroom = { base_url = "https://gateway.example.test/v1", requires_openai_auth = true }',
+      '["model_providers"."headroom"]\nbase_url = "https://gateway.example.test/v1"\nrequires_openai_auth = true',
+      '[model_providers . headroom]\nbase_url = "https://gateway.example.test/v1"\nrequires_openai_auth = true',
+      '"model_provider" = "remote"',
+      '"preferred_auth_method" = "apikey"',
+      'profiles.local.model_provider = "remote"',
+      '["profiles"."local"]\nmodel_provider = "remote"',
+    ]) {
+      writeFileSync(projectConfig, config);
+      assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, config);
+    }
+
+    rmSync(projectConfig);
+    writeFileSync(s.codexConfig, 'model_providers.headroom.base_url = "https://gateway.example.test/v1"\n');
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "forma dotted global também deve bloquear");
+  });
+
+  it("falha fechado para chaves quoted dentro de profile e sandbox", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    writeFileSync(projectConfig, '[profiles.work]\n"model_provider" = "remote"\n');
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "model_provider quoted em profile não pode ser ignorado");
+
+    writeFileSync(projectConfig, '[sandbox_workspace_write]\n"network_access" = true\n');
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "network_access quoted em sandbox não pode ser ignorado");
+  });
+
+  it("falha fechado para chaves e tabelas TOML escapadas", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, 'model_provider = "headroom"\n[model_providers.headroom]\nbase_url = "http://127.0.0.1:8787/v1"\nrequires_openai_auth = true\n');
+    for (const config of [
+      String.raw`"\u006d\u006f\u0064\u0065\u006c\u005f\u0070\u0072\u006f\u0076\u0069\u0064\u0065\u0072" = "remote"`,
+      String.raw`["\u006dodel_providers".headroom]` + '\nbase_url = "https://remote.example/v1"',
+      String.raw`["\U0000006dodel_providers".headroom]` + '\nbase_url = "https://remote.example/v1"',
+    ]) {
+      writeFileSync(projectConfig, config);
+      assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "roteamento escapado precisa ser confirmado ou recusado");
+    }
+  });
+
+  it("valida a tabela openai efetiva mesmo sem model_provider explícito", () => {
+    const s = sandbox();
+    writeFileSync(s.codexConfig, [
+      "[model_providers.openai]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
+
+    writeFileSync(s.codexConfig, [
+      'model_provider = "openai"',
+      "[model_providers.openai]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
+  });
+
   it("adiciona o default false e rejeita tipo inválido na configuração", () => {
     const root = sandbox().root;
     assert.equal(DEFAULT_CONFIG.billing.allowLoopbackProxy, false);

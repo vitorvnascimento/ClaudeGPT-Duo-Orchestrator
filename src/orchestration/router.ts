@@ -4,12 +4,13 @@
 // 3) sinais do próprio fornecedor (recomendado / legado) e preferências declaradas pelo usuário pesam pouco;
 // 4) disponibilidade atual (CLI, login por assinatura, ciência de uso extra, limite observado).
 // Não há ranking fixo de fornecedores: sem evidência suficiente, a recomendação diz isso.
-import { extname } from "node:path";
+import { extname, join } from "node:path";
+import { readdirSync } from "node:fs";
 import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
 import { quotaBlock, quotaStates } from "./quota.js";
-import { automaticModelAllowed, selectModel } from "./select.js";
+import { confirmFloor, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import type { DuoConfig, Provider } from "../config.js";
 import { listFiles } from "../git.js";
@@ -64,11 +65,27 @@ export function deriveTags(projectRoot: string, entries: Pick<ScopeEntry, "rel" 
   const counts = new Map<string, number>();
   const sensitive = new Set<string>();
   const add = (p: string) => {
-    if (includeSensitive && sensitiveScope(p)) sensitive.add(p);
     const ext = extname(p).slice(1).toLowerCase();
     if (ext) counts.set(ext, (counts.get(ext) ?? 0) + 1);
   };
   for (const e of entries) {
+    if (includeSensitive) {
+      if (sensitiveScope(e.rel)) sensitive.add(e.rel);
+      if (e.isDir || e.rel === ".") {
+        const pending = [e.rel];
+        while (pending.length) {
+          const dir = pending.pop()!;
+          try {
+            for (const child of readdirSync(join(projectRoot, dir), { withFileTypes: true })) {
+              const path = `${dir}/${child.name}`;
+              if (sensitiveScope(path)) sensitive.add(path);
+              if (child.isDirectory()) pending.push(path);
+              else if (!child.isFile()) sensitive.add("security: inspeção incompleta do escopo");
+            }
+          } catch { sensitive.add("security: inspeção incompleta do escopo"); }
+        }
+      }
+    }
     if (e.isDir || e.rel === ".") for (const f of listFiles(projectRoot, [e.rel]).slice(0, 2000)) add(f);
     else add(e.rel);
   }
@@ -81,7 +98,7 @@ type Outcome = "success" | "failure" | "excluded";
 export function outcomeOf(t: Task): Outcome {
   if (t.accepted?.accepted === false) return "failure";
   if (t.state === "succeeded") return "success";
-  if (t.state === "cancelled" || /^(timeout|limite\/cota|falha de autenticação|modelo indisponível|falha ao iniciar|violação de escopo|o lock|o estado base|saída do executor excedeu)/i.test(t.outcome ?? "")
+  if (t.state === "cancelled" || /^(timeout|limite\/cota|falha de autenticação|modelo indisponível|modelo efetivo|falha ao iniciar|violação de escopo|o lock|o estado base|saída do executor excedeu)/i.test(t.outcome ?? "")
     || t.verification?.lockIntact === false || t.verification?.staleBase === true || (t.verification?.outOfScope?.length ?? 0) > 0 || (t.verification?.deniedTouched?.length ?? 0) > 0) return "excluded";
   if (t.verification?.acceptance?.some((a) => !a.passed && (!a.ran || a.exitCode === null || a.outputTail?.endsWith("\n[timeout]")))) return "excluded";
   if (!t.executorReport) return "excluded";
@@ -293,13 +310,13 @@ function recommendResult(
   });
   const hasTarget = selections.some((m) => tierRank(m.tier) <= tierRank(assessment.tier) && evals.some((e) => e.available && e.executor === m.executor && e.model === m.model));
   let eligible = evals;
-  if (adaptive && catalog) {
+  const confirmationReasons: string[] = [];
+  if (adaptive) {
     eligible = evals.filter((c) => {
-      const pc = catalog.providers[c.executor];
-      if (!pc.ok || pc.stale) return true; // Fonte indisponível mantém a reserva da 0.2.0.
-      const model = pc.models.find((m) => m.id === c.model);
       const selected = selections.find((m) => m.executor === c.executor && m.model === c.model);
-      return model && automaticModelAllowed(model, cfg) && selected !== undefined && tierRank(selected.tier) >= tierRank(assessment.floor)
+      const confirmed = confirmFloor({ catalog, cfg, executor: c.executor, model: c.model, floor: assessment.floor, effort: selected?.effort ?? null, automatic: true, needs });
+      if (!confirmed.ok) confirmationReasons.push(confirmed.reason);
+      return confirmed.ok && selected !== undefined && tierRank(selected.tier) >= tierRank(assessment.floor)
         && (!hasTarget || tierRank(selected.tier) <= tierRank(assessment.tier) || c.evidence.sufficient);
     });
   }
@@ -339,7 +356,7 @@ function recommendResult(
   if (!best) {
     const why = needs.length ? [`nenhum modelo disponível com ${needs.join(", ")}`] : ["nenhum candidato disponível para delegar"];
     const hasKnownCatalog = adaptive && catalog !== null && Object.values(catalog.providers).some((provider) => provider.ok && !provider.stale);
-    const canSelf = !hasKnownCatalog && q.brain !== null && needs.every((n) => n === "code");
+    const canSelf = !adaptive && !hasKnownCatalog && q.brain !== null && needs.every((n) => n === "code");
     return {
       ...base,
       decision: {
@@ -347,7 +364,7 @@ function recommendResult(
         executor: canSelf ? q.brain : null,
         model: null,
         confidence: "baixa",
-        why: [...why, ...[...new Set(evals.flatMap((e) => e.availability.map((r) => `${e.executor}: ${r}`)))]],
+        why: [...why, ...new Set(confirmationReasons), ...[...new Set(evals.flatMap((e) => e.availability.map((r) => `${e.executor}: ${r}`)))]],
       },
       explore: null,
     };

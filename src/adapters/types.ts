@@ -76,6 +76,8 @@ export type ParsedOutcome = {
 
 export interface StreamParser {
   onLine(line: string): void;
+  /** Modelo nativo já observado, disponível antes do término no Claude system/init. */
+  observedModel?(): string | null;
   finish(lastMessage: string | null): ParsedOutcome;
 }
 

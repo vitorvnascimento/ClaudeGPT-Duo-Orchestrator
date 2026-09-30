@@ -21,6 +21,7 @@ export function assessComplexity(req: ComplexityRequest, scopeEntries: Pick<Scop
   const risk = sensitive ? "high" : req.risk ?? "medium";
   const signals = [`kind=${req.kind}`, `risk=${risk}`, `arquivos=${files}; diretórios=${dirs}`, `critérios=${criteria}; comandos de aceite=${commands}`];
   if (sensitive) signals.push("escopo/tag sensível: piso deep");
+  if (tags.includes("security: inspeção incompleta do escopo")) signals.push("inspeção incompleta: piso deep");
   const lightSafe = risk === "low" && commands > 0 && files > 0 && files <= lightMaxFiles && dirs === 0;
   const floor: Tier = risk === "high" ? "deep" : lightSafe ? "light" : "standard";
   const objective = (req.objective ?? "").toLowerCase();

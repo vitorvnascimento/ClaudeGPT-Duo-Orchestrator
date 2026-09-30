@@ -2,6 +2,10 @@
 
 ## 0.3.0 — em desenvolvimento
 
+- Segunda rodada adversarial: `confirmFloor` centraliza confirmação de modelo/esforço/elegibilidade; deep exige catálogo fresco e esforço explícito high ou superior. Reservas automáticas stale, desconhecidas ou inelegíveis bloqueiam.
+- Sensibilidade de escopo inspecionada sem corte de 2.000 caminhos; enumeração incompleta exige deep. Modelo nativo abaixo do piso ou não confirmável falha sem integrar/escalar, com interrupção antecipada no init Claude.
+- Proxy loopback validado após sobreposição efetiva das configurações global/projeto/local; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.
+
 Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validação offline).
 
 - Catálogo chaveado pelas versões instaladas de Claude/Codex, TTL de 6 h (1 h degradado) e invalidação explícita para o roteador futuro.

@@ -59,7 +59,9 @@ if (args[0] === "app-server") {
     process.stderr.write("error: unrecognized subcommand 'app-server'\n");
     process.exit(2);
   }
-  const efforts = process.env.FAKE_ADAPTIVE_CATALOG ? ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })) : [{ reasoningEffort: "low", description: "l" }, { reasoningEffort: "high", description: "h" }];
+  const efforts = process.env.FAKE_CODEX_EFFORTS
+    ? JSON.parse(process.env.FAKE_CODEX_EFFORTS).map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort }))
+    : process.env.FAKE_ADAPTIVE_CATALOG ? ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })) : [{ reasoningEffort: "low", description: "l" }, { reasoningEffort: "high", description: "h" }];
   const model = (id, displayName, description, extra = {}) => ({ id, model: id, displayName, description, hidden: false, isDefault: false, defaultReasoningEffort: "medium", supportedReasoningEfforts: efforts, upgrade: null, upgradeInfo: null, inputModalities: ["text", "image"], ...extra });
   const models = process.env.FAKE_ADAPTIVE_CATALOG ? [
     model("gpt-6-astra", "GPT-6-Astra", "Deep"),
@@ -155,7 +157,7 @@ const writeRollout = (tools = []) => {
   mkdirSync(dir, { recursive: true });
   const recs = [
     { type: "session_meta", payload: { id: thread, cwd: process.cwd(), originator: "codex_exec", cli_version: "0.157.1", source: "exec", model_provider: "openai" } },
-    { type: "turn_context", payload: { model: process.env.FAKE_ROLLOUT_MODEL ?? valueOf("--model") ?? "gpt-6-astra", cwd: process.cwd(), sandbox_policy: { type: valueOf("--sandbox") ?? sandboxFromConfig ?? "read-only" }, effort: "high" } },
+    { type: "turn_context", payload: { model: process.env.FAKE_ROLLOUT_MODEL ?? valueOf("--model") ?? "gpt-6-astra", cwd: process.cwd(), sandbox_policy: { type: valueOf("--sandbox") ?? sandboxFromConfig ?? "read-only" }, effort: process.env.FAKE_ROLLOUT_EFFORT ?? JSON.parse(args.find((a) => a.startsWith("model_reasoning_effort="))?.slice("model_reasoning_effort=".length) ?? '"high"') } },
     ...tools.map((t) => ({ type: "response_item", payload: { type: "custom_tool_call", input: `const r = await tools.${t}({prompt:"segredo do prompt"});` } })),
     { type: "token_usage_record", payload: { thread_id: thread, response_id: "resp_fake_1", usage: usage } },
     { type: "token_usage_record", payload: { thread_id: thread, response_id: "resp_fake_2", usage: usage } },

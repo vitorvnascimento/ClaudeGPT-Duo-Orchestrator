@@ -26,7 +26,7 @@ import { policyBlockReason } from "./policy.js";
 import { buildExecutorPrompt } from "./prompt.js";
 import { EFFORTS, selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
-import { selectModel, type ModelSelection } from "./select.js";
+import { confirmFloor, selectModel, type ModelSelection } from "./select.js";
 import { observeTaskQuota, quotaBlock, quotaStates } from "./quota.js";
 import { deriveTags, evaluateCandidates, liveAvailability } from "./router.js";
 
@@ -311,7 +311,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
   const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: !isWriteKind(req.kind) });
   const entriesForSelection = scope.ok ? scope.entries : [];
-  const tags = scope.ok ? deriveTags(projectRoot, entriesForSelection, true) : [];
+  const tags = scope.ok ? deriveTags(projectRoot, entriesForSelection, adaptive) : [];
   const assessment = assessComplexity(req, entriesForSelection, tags, cfg.routing.adaptive.lightMaxFiles);
   let target: Tier = assessment.tier;
   let escalateToMax = false;
@@ -365,23 +365,21 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       quotaChoice = null;
     }
     if (adaptive) {
-      const model: string | null = task.model.requested;
-      const info: ModelInfo | null = model && catalog ? findModel(catalog, task.executor, model) : null;
-      const level: ReturnType<typeof tierOf> | null = model ? tierOf(info ?? { id: model, aliases: [], displayName: model }, cfg) : null;
-      const belowEffort = assessment.floor === "deep" && origin.effort === "explicit" && effortRank(originalReq.effort) < effortRank("high");
-      if (level && task.selection) task.selection.tier = level.tier;
-      if ((level && tierRank(level.tier) < tierRank(assessment.floor)) || (assessment.floor === "deep" && (!level || level.presumed)) || belowEffort) {
-        const candidates = evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: assessment.floor }, liveAvailability(store, cfg, env, authPaths), catalog).evals;
-        const example = selectModel(catalog, cfg, task.executor, assessment.floor, { candidates, floor: assessment.floor, needs: req.needs, allowDowngrade: false })?.model;
-        const reason = `risco/escopo exige nível ${assessment.floor}; ${model ?? "padrão da CLI desconhecido"} é ${level?.presumed ? "nível presumido (não confirmado)" : level?.tier ?? "nível desconhecido"}${belowEffort ? `; effort explícito ${originalReq.effort} abaixo de high` : ""}. Remova \`model\` para escolha automática ou peça um modelo de nível ${assessment.floor}${example ? ` (ex.: ${example})` : ""}${belowEffort ? " e effort high ou superior" : ""}`;
-        task.selection?.reason.push(reason);
-        blockTask(task, reason); store.saveTask(task);
+      if (assessment.signals.includes("risk=high")) task.risk = "high";
+      if (task.selection) task.selection.complexitySignals = assessment.signals;
+      const confirmed = confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
+        floor: assessment.floor, effort: task.effort?.requested ?? null, automatic: origin.model === "auto" || !!fallbacks?.length,
+        needs: task.needs, minimumEffort });
+      if (task.selection) task.selection.tier = confirmed.tier;
+      if (!confirmed.ok) {
+        task.selection?.reason.push(confirmed.reason);
+        blockTask(task, confirmed.reason); store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      if (effortRank(task.effort?.requested) < effortRank(minimumEffort)) {
-        const reason = `nenhum esforço compatível com o mínimo ${minimumEffort} alcançado na cadeia; sem reduzir raciocínio`;
-        task.selection?.reason.push(reason); blockTask(task, reason); store.saveTask(task);
-        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      if (confirmed.effort) {
+        execReq.effort = confirmed.effort;
+        task.effort = { requested: confirmed.effort };
+        if (task.selection) task.selection.effort = confirmed.effort;
       }
       if (effortRank(task.effort?.requested) > effortRank(minimumEffort)) minimumEffort = task.effort?.requested as Effort;
     }
@@ -428,7 +426,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     try {
       const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
       const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-      out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, adaptive, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
+      out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, adaptive, catalog, floor: assessment.floor, automaticModel: origin.model === "auto" || !!fallbacks?.length, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
     } finally { lock.release(); }
     if (!adaptive || (!out.verificationFailed && !out.quotaExceeded) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
     if (chainAttempt() >= cfg.routing.adaptive.maxAttempts) {
@@ -511,6 +509,9 @@ type ExecCtx = {
   entries: ScopeEntry[];
   resuming: boolean;
   adaptive: boolean;
+  catalog: Catalog | null;
+  floor: Tier;
+  automaticModel: boolean;
   timeoutSec: number;
   codexHome: string;
   signal?: AbortSignal;
@@ -607,6 +608,14 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 
   const parser = adapter.parser();
+  const nativeAbort = new AbortController();
+  let nativeFailure: string | null = null;
+  const confirmNative = (model: string | null, effort = task.effort?.requested ?? null): string | null => {
+    const checked = confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor: ctx.floor,
+      effort, automatic: ctx.automaticModel || !!(model && task.model.requested && !modelMatches(task.model.requested, model)),
+      needs: task.needs, minimumEffort: EFFORTS[effortRank(task.effort?.requested)] });
+    return checked.ok ? null : `modelo efetivo ${model ?? "desconhecido"} abaixo do piso ${ctx.floor} ou não confirmável: ${checked.reason}; resultado não integrado`;
+  };
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
@@ -621,13 +630,18 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       timeoutMs: ctx.timeoutSec * 1000,
       maxOutputBytes: cfg.limits.maxOutputBytes,
       firstSignal: plan.firstSignal,
-      ...(ctx.signal ? { signal: ctx.signal } : {}),
+      signal: ctx.signal ? AbortSignal.any([ctx.signal, nativeAbort.signal]) : nativeAbort.signal,
       onSpawn: (pid) => {
         task.pids.child = pid;
         store.saveTask(task);
       },
       onLine: (line) => {
         parser.onLine(line);
+        const observed = parser.observedModel?.();
+        if (ctx.adaptive && observed && !nativeFailure) {
+          nativeFailure = confirmNative(observed);
+          if (nativeFailure) nativeAbort.abort();
+        }
         if (loggedBytes < MAX_EVENT_LOG_BYTES) {
           const safe = sanitizeEventLine(task.executor, line, redactStdout);
           loggedBytes += safe.length + 1;
@@ -674,6 +688,9 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       task.limitations.push(`o rollout do codex registrou sandbox ${codexEvidence.sandbox}, esperado ${expectedSandbox}`);
     }
   }
+  if (ctx.adaptive && !nativeFailure && (task.model.reported || (!outcome.errorKind && outcome.report?.status === "completed"))) {
+    nativeFailure = confirmNative(task.model.reported, (!outcome.errorKind ? codexEvidence?.effort : null) ?? task.effort?.requested ?? null);
+  }
   task.executorReport = outcome.report;
   if (loggedBytes >= MAX_EVENT_LOG_BYTES) task.limitations.push("log de eventos truncado em 2 MiB (parsing continuou sobre o stream completo)");
   if (outcome.unknownTypes.length) task.limitations.push(`eventos desconhecidos ignorados: ${outcome.unknownTypes.join(", ")}`);
@@ -691,7 +708,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
 
   const processOk = !result.timedOut && !result.cancelled && !result.outputLimitExceeded && !result.spawnError && !cancelledExternally;
   const violations = [...verification.outOfScope, ...verification.deniedTouched];
-  if (processOk && lockIntact && violations.length === 0 && !outcome.errorKind && outcome.report?.status === "completed" && !verification.staleBase) {
+  if (processOk && !nativeFailure && lockIntact && violations.length === 0 && !outcome.errorKind && outcome.report?.status === "completed" && !verification.staleBase) {
     verification.acceptance = await runAcceptance(task.acceptanceCommands, cfg, execCwd, childEnv(env, { DUO_DEPTH: "1" }).env, ctx.signal);
   }
   for (const w of [...new Set(outcome.warnings)].slice(0, 5)) task.limitations.push(`aviso do ${task.executor}: ${w}`);
@@ -708,7 +725,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     await loadCatalog(store, cfg, { refresh: true, env }).catch(() => null);
   }
   observeTaskQuota(store, task.executor, outcome, task.model.requested);
-  const [state, reason, verificationFailed] = decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
+  const [state, reason, verificationFailed] = nativeFailure ? ["failed" as const, nativeFailure, false] : decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
   task.pids.child = null;
   task.metrics = {
     wallMs: result.durationMs,

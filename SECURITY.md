@@ -68,3 +68,9 @@ O executor recebe o prompt montado pela ponte (objetivo, caminhos, restrições,
 ## Relato de problemas
 
 Vulnerabilidades no duo: use o [relato privado de vulnerabilidades do GitHub](https://github.com/vitorvnascimento/duo-orchestrator/security/advisories/new) em vez de uma issue pública. Outros problemas: abra uma issue. Vulnerabilidades nas CLIs oficiais devem ser relatadas aos fornecedores (Anthropic via HackerOne; OpenAI pelo programa de segurança da OpenAI).
+
+## Confirmação de piso e configuração efetiva
+
+Com seleção adaptativa ligada, modelo, esforço e elegibilidade automática precisam de confirmação antes da invocação. Piso deep exige catálogo fresco e esforço explícito high ou superior suportado; metadados ausentes, stale ou apenas cadastrados pelo usuário não confirmam esse piso. A sensibilidade é inspecionada em todos os caminhos autorizados; qualquer enumeração incompleta eleva o piso para deep. Modelo nativo abaixo do piso, ou desconhecido em deep, impede sucesso e integração. Essa proteção usa os metadados informados pelas CLIs; não prova a honestidade do fornecedor ou proxy. Trabalho parcial é preservado.
+
+A autorização loopback considera a configuração efetiva, e não arquivos isolados: settings do Claude seguem usuário/local, projeto e local; providers do Codex combinam global e projeto, chave a chave. Tabelas e seleções de projeto são revalidadas. Endpoint remoto, autenticação incompatível, chaves de credencial ou formas TOML de roteamento não verificáveis bloqueiam. Valores de credencial não são interpretados nem incluídos em mensagens: somente a presença/nome das chaves é usada. A checagem continua limitada à configuração e à URL; não audita o processo local nem redirecionamentos.

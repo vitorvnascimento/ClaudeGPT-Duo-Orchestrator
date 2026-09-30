@@ -94,7 +94,7 @@ log({ cmd: "print", model: valueOf("--model") ?? null, effort: valueOf("--effort
 const session = "sess-claude-123";
 const init = {
   type: "system", subtype: "init", session_id: session,
-  model: scenario === "model-fallback" ? "claude-opus-4-7" : valueOf("--model") ?? "claude-opus-5-5", tools: ["Read"], mcp_servers: [],
+  model: process.env.FAKE_CLAUDE_REPORTED_MODEL ?? (scenario === "model-fallback" ? "claude-opus-4-7" : valueOf("--model") ?? "claude-opus-5-5"), tools: ["Read"], mcp_servers: [],
 };
 const assistant = { type: "assistant", session_id: session, message: { content: [{ type: "thinking", thinking: "segredo do raciocínio interno" }, { type: "text", text: "ok" }] } };
 const usage = { input_tokens: 1200, output_tokens: 340, cache_creation_input_tokens: 100, cache_read_input_tokens: 800 };
@@ -116,8 +116,9 @@ switch (scenario) {
   case "success":
   case "model-fallback":
   case "overage": {
-    const files = applyWrites();
     emit(init);
+    if (process.env.FAKE_CLAUDE_INIT_DELAY_MS) await sleep(Number(process.env.FAKE_CLAUDE_INIT_DELAY_MS));
+    const files = applyWrites();
     emit({
       type: "rate_limit_event",
       rate_limit_info: JSON.parse(process.env.FAKE_CLAUDE_RATE_LIMIT ?? "null") ?? { status: "allowed", resetsAt: 4102444800, rateLimitType: "five_hour", overageStatus: scenario === "overage" ? "allowed" : "rejected", overageDisabledReason: scenario === "overage" ? null : "out_of_credits", isUsingOverage: scenario === "overage" },

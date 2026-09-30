@@ -123,11 +123,14 @@ describe("recomendação adaptativa", () => {
   });
 });
 
-describe("roteador por evidência", () => {
+describe("roteador por evidência (contrato 0.2.0 sem seleção adaptativa)", () => {
+  const legacyConfig = (root: string) => {
+    const cfg = loadConfig(root); cfg.routing.adaptive.enabled = false; return cfg;
+  };
   it("sem histórico: decide por julgamento e sugere exploração em baixo risco", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "low", brain: "claude" }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "low", brain: "claude" }, allUp);
     assert.equal(r.decision.action, "judgment");
     assert.equal(r.decision.confidence, "baixa");
     assert.match(r.explore ?? "", /baixo risco/);
@@ -140,7 +143,7 @@ describe("roteador por evidência", () => {
       ...Array.from({ length: 4 }, () => ({ executor: "codex" as const, ok: true })),
       ...Array.from({ length: 4 }, (_, i) => ({ executor: "claude" as const, ok: i === 0 })),
     ]);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
     assert.equal(r.decision.action, "delegate");
     assert.equal(r.decision.executor, "codex");
   });
@@ -152,10 +155,10 @@ describe("roteador por evidência", () => {
       ...Array.from({ length: 4 }, () => ({ executor: "claude" as const, ok: true })),
       ...Array.from({ length: 4 }, () => ({ executor: "codex" as const, ok: false })),
     ]);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
     assert.equal(r.decision.action, "self");
     assert.equal(r.decision.executor, "claude");
-    const r2 = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "codex" }, allUp);
+    const r2 = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "codex" }, allUp);
     assert.equal(r2.decision.action, "delegate");
     assert.equal(r2.decision.executor, "claude");
     assert.equal(r2.decision.model, "claude-opus-5-5");
@@ -170,7 +173,7 @@ describe("roteador por evidência", () => {
     ]);
     const tasks = store.listRuns().flatMap((r) => store.listTasks(r));
     assert.equal(outcomeOf(tasks.find((t) => t.executor === "claude") as Task), "failure");
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: null }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: null }, allUp);
     const codex = r.candidates.find((c) => c.executor === "codex");
     assert.ok(codex && codex.score < 0.2);
     assert.ok(codex?.reasons.some((x) => x.includes("declarou sucesso")));
@@ -180,7 +183,7 @@ describe("roteador por evidência", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);
     seed(store, Array.from({ length: 5 }, () => ({ executor: "codex" as const, ok: false, infra: true })));
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp);
     assert.equal(r.candidates.find((c) => c.executor === "codex")?.evidence.n, 0);
   });
 
@@ -191,7 +194,7 @@ describe("roteador por evidência", () => {
       ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, ok: true, tags: ["py"] })),
       ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, ok: false, tags: ["ts"] })),
     ]);
-    const cfg = loadConfig(sb.root);
+    const cfg = legacyConfig(sb.root);
     const py = recommend(store, cfg, { kind: "implement", tags: ["py"], risk: "medium", brain: null }, allUp).candidates.find((c) => c.executor === "codex");
     assert.match(py?.evidence.bucket ?? "", /tags=py/);
     assert.equal(py?.evidence.successes, 3);
@@ -207,7 +210,7 @@ describe("roteador por evidência", () => {
       ...Array.from({ length: 3 }, () => ({ executor: "claude" as const, model: "sonnet", ok: false })),
       ...Array.from({ length: 3 }, () => ({ executor: "claude" as const, model: "claude-opus-5-5", ok: true })),
     ]);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "codex" }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "codex" }, allUp);
     assert.equal(r.decision.action, "delegate");
     assert.equal(r.decision.model, "claude-opus-5-5");
   });
@@ -219,7 +222,7 @@ describe("roteador por evidência", () => {
       ...Array.from({ length: 3 }, () => ({ executor: "claude" as const, ok: true, wallMs: 90_000 })),
       ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, ok: true, wallMs: 20_000 })),
     ]);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: null }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: null }, allUp);
     assert.equal(r.candidates[0]?.executor, "codex");
   });
 
@@ -228,16 +231,16 @@ describe("roteador por evidência", () => {
     const store = new Store(sb.root);
     seed(store, Array.from({ length: 4 }, () => ({ executor: "codex" as const, ok: true })));
     const codexDown: AvailabilityFn = (e) => (e === "codex" ? { available: false, reasons: ["não autenticado"] } : { available: true, reasons: [] });
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, codexDown);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, codexDown);
     assert.notEqual(r.decision.executor, "codex");
-    const none = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, () => ({ available: false, reasons: ["x"] }));
+    const none = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, () => ({ available: false, reasons: ["x"] }));
     assert.equal(none.decision.action, "self");
   });
 
   it("preferência declarada entra como bônus limitado e identificado", () => {
     sb = makeSandbox({ routing: { priors: [{ executor: "codex", kind: "implement", bonus: 0.15, note: "gosto do Codex para scripts" }] } });
     const store = new Store(sb.root);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: [], risk: "medium", brain: null }, allUp);
+    const r = recommend(store, legacyConfig(sb.root), { kind: "implement", tags: [], risk: "medium", brain: null }, allUp);
     const codex = r.candidates.find((c) => c.executor === "codex");
     assert.equal(codex?.prior.bonus, 0.15);
     assert.ok(codex?.reasons.some((x) => x.includes("preferência declarada")));
@@ -274,7 +277,7 @@ describe("catálogo das contas no roteador", async () => {
   const tools = parseCodexFeatures("apps  stable  true\nimage_generation   stable   true\n");
   const codexModels = parseCodexModels(
     { models: [
-      { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "Frontier intelligence", priority: 1, visibility: "list" },
+      { slug: "gpt-6-astra", display_name: "GPT-6-Astra", description: "Frontier intelligence", priority: 1, visibility: "list", supported_reasoning_levels: [{ effort: "high" }] },
       { slug: "gpt-6-sol", display_name: "GPT-6-Sol", description: "Workhorse", priority: 2, visibility: "list" },
       { slug: "gpt-5.5", display_name: "GPT-5.5", description: "Legacy coding model.", priority: 12, visibility: "list" },
       { slug: "codex-auto-review", display_name: "Auto Review", description: "x", priority: 43, visibility: "hide" },

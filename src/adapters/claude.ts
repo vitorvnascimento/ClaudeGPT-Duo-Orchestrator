@@ -117,6 +117,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
     let rateLimit: RateLimitObservation | null = null;
     const warnings: string[] = [];
     return {
+      observedModel: () => model,
       onLine(line: string) {
         events.total++;
         let ev: Record<string, unknown>;

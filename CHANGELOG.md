@@ -2,11 +2,15 @@
 
 ## 0.3.0 — em desenvolvimento
 
+- Terceira rodada adversarial: Chain persistida em `.duo/runs/<runId>/chains/<chainId>.json`, com pedido original, origem, tentativas, piso/esforço monotônicos e reserva de execução. Seleção, confirmação nativa, orçamento, retomada, capacidade e idempotência consultam esse registro. Ancestrais substituídas são recusadas; retomar o sucesso final reutiliza o resultado.
+- Chain e run usam leitura-modificação-escrita sob lock curto de arquivo. Escaladas/fallbacks preservam tasks concorrentes, contadores e cancelamento; tasks antigas recebem Chain unitária ao ler, sem reescrita da auditoria. Retomada adaptativa registra nova tentativa e preserva sessão, base, snapshot e trabalho parcial; a escolha da próxima tentativa já está persistida se houver interrupção antes de executá-la.
+- Autenticação valida fontes e diretório do plano efetivo. Claude `settingSources=user` considera usuário + managed; projeto/local ignorados geram aviso e não mascaram endpoints. Codex só ignora configuração do usuário quando `--ignore-user-config` está no plano. Flags ausentes no help não autorizam exclusão de fontes.
+
 - **Modelo sem capacidade** ("at capacity", "overloaded", 529/503): tratado como falha passageira do modelo, não da conta. O modelo fica indisponível por 10 min em `.duo/capacity-state.json` e a tarefa continua em outro modelo de nível igual ou superior, primeiro do mesmo fornecedor e depois do outro, com as mesmas regras do fallback de cota. Com `adaptive=false`: blocked, como na 0.2.0.
 
 - Segunda rodada adversarial: `confirmFloor` centraliza confirmação de modelo/esforço/elegibilidade; deep exige catálogo fresco e esforço explícito high ou superior. Reservas automáticas stale, desconhecidas ou inelegíveis bloqueiam.
 - Sensibilidade de escopo inspecionada sem corte de 2.000 caminhos; enumeração incompleta exige deep. Modelo nativo abaixo do piso ou não confirmável falha sem integrar/escalar, com interrupção antecipada no init Claude.
-- Proxy loopback validado após sobreposição efetiva das configurações global/projeto/local; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.
+- Proxy loopback validado após sobreposição das fontes carregadas pelo executor; tabelas, perfis e sintaxes TOML de roteamento não verificáveis falham fechado, sem expor valores de credencial.
 
 Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validação offline).
 
@@ -26,11 +30,11 @@ Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validaçã
 - Estado sanitizado por fornecedor em `.duo/quota-state.json`, com expiração no reset/6 h sem reset; eventos Claude, erros de cota e registros manuais atualizam a observação.
 - `account/rateLimits/read` opcional na sessão de descoberta do Codex, sem métodos de consumo de créditos. Campos de conta/plano/créditos são descartados; limites específicos só afetam modelos com mapeamento inequívoco.
 - `duo quota refresh`, `quota show` com `state` preservando campos anteriores e saúde de cota em `recommend`. Warning poupa a conta para deep (−0,15 só em light/standard).
-- Fallback I4 de nível igual/superior com `selection.fallbacks`, novas tentativas/worktrees, todos os gates e proteção de alterações in-place. A task original continua retomável; adaptive desligado não faz fallback.
+- Fallback I4 de nível igual/superior registrado em `Chain.attempts`, novas tentativas/worktrees, todos os gates e proteção de alterações in-place. Só a última tentativa bloqueada pode ser retomada; adaptive desligado não faz fallback.
 - `billing.allowLoopbackProxy` (false por padrão): exceção explícita para proxy HTTP/HTTPS loopback usando assinatura, sem chaves de API e com `requires_openai_auth` no Codex. Doctor informa autorização/dica; SECURITY documenta o risco.
 - Testes offline de parsing/privacidade/expiração, métodos account permitidos, seleção, fallback entre CLIs simuladas e validação de URLs loopback. Nenhuma versão foi alterada.
 - Correções adversariais: modelo efetivo e effort explícito respeitam o piso de risco/escopo; capacidade e nível são exigidos juntos, com tiers coerentes em recommend. Padrão desconhecido ou nível presumido não pode executar sob piso deep.
-- Pedido original preservado em request.json; invocation.json registra a execução resolvida. Retomadas conservam origem automática, raiz/contador da cadeia e esforço mínimo alcançado; fallbacks procuram destinos que sustentem esse esforço. taskKey reutiliza o resultado final pela identidade lógica original.
+- Pedido original preservado em request.json; invocation.json registra a execução resolvida. Chain conserva origem, contador e esforço mínimo alcançado; fallbacks procuram destinos que sustentem esse esforço. taskKey reutiliza a última tentativa da Chain pelo hash do pedido original.
 
 ## 0.2.0 — 2026-09-29
 

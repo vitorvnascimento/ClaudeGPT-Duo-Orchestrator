@@ -52,8 +52,7 @@ export function writeHandoff(projectRoot: string, to: Provider, runId: string | 
   const path = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-para-${to}.md`);
   writeFileSync(path, content);
   if (run && next) {
-    run.nextStep = next;
-    store.saveRun(run);
+    store.updateRun(run.runId, (fresh) => { fresh.nextStep = next; });
   }
   return { path, content };
 }

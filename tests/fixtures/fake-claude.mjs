@@ -24,6 +24,7 @@ if (has("--help")) {
   let flags = FLAGS;
   if (process.env.FAKE_HELP === "missing-schema") flags = flags.filter((f) => !f.startsWith("--json-schema"));
   if (process.env.FAKE_HELP === "missing-effort") flags = flags.filter((f) => !f.startsWith("--effort"));
+  if (process.env.FAKE_HELP === "missing-setting-sources") flags = flags.filter((f) => !f.startsWith("--setting-sources"));
   process.stdout.write(`Usage: claude [options]\n\nOptions:\n${flags.map((f) => `  ${f}   desc`).join("\n")}\n`);
   process.exit(0);
 }
@@ -89,7 +90,7 @@ if (valueOf("--input-format") === "stream-json") {
 }
 
 const prompt = readStdin();
-log({ cmd: "print", model: valueOf("--model") ?? null, effort: valueOf("--effort") ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length, resume: valueOf("--resume") ?? null });
+log({ cmd: "print", pid: process.pid, model: valueOf("--model") ?? null, effort: valueOf("--effort") ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length, resume: valueOf("--resume") ?? null });
 
 const session = "sess-claude-123";
 const init = {

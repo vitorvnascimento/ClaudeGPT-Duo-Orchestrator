@@ -24,6 +24,7 @@ if (args[0] === "exec" && has("--help")) {
   const help = process.env.FAKE_CODEX_HELP ?? process.env.FAKE_HELP;
   if (help === "missing-schema") flags = flags.filter((f) => !f.startsWith("--output-schema"));
   if (help === "missing-config") flags = flags.filter((f) => !f.includes("--config"));
+  if (help === "missing-ignore-user-config") flags = flags.filter((f) => !f.includes("--ignore-user-config"));
   process.stdout.write(`Run Codex non-interactively\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n${flags.map((f) => `  ${f}  desc`).join("\n")}\n`);
   process.exit(0);
 }
@@ -142,7 +143,7 @@ const resuming = args[1] === "resume";
 const sandboxFromConfig = args.map((a, i) => (args[i - 1] === "--config" ? /^sandbox_mode="(.+)"$/.exec(a)?.[1] : undefined)).find(Boolean);
 const schemaPath = valueOf("--output-schema");
 log({
-  cmd: "exec", model: valueOf("--model") ?? null, effort: args.find((a) => a.startsWith("model_reasoning_effort=")) ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length,
+  cmd: "exec", pid: process.pid, model: valueOf("--model") ?? null, effort: args.find((a) => a.startsWith("model_reasoning_effort=")) ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length,
   resume: resuming ? args.at(-2) : null, schemaExists: schemaPath ? existsSync(schemaPath) : false, sandbox: valueOf("--sandbox") ?? sandboxFromConfig,
 });
 

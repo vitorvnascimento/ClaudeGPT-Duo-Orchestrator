@@ -79,20 +79,20 @@ it("adversarial 3: sem destino que sustente xhigh bloqueia sem executar high", a
 });
 
 it("adversarial 4: retomada mantém campos automáticos escaláveis e pedido original intocado", async () => {
-  s = makeSandbox({ limits: { maxDelegationsPerRun: 5 } });
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 3 } }, limits: { maxDelegationsPerRun: 5 } });
   const req = request({ isolation: "worktree" });
   const first = await run(req, { FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "Precisa de decisão do cérebro" }) });
   assert.equal(first.summary.state, "blocked");
-  const out = await resume(first.summary.taskId, { FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: edit }) });
+  const out = await resume(first.summary.taskId, { FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 3: edit }) });
   assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
-  assert.equal(saved(out.summary.taskId).selection?.attempt, 2);
+  assert.equal(saved(out.summary.taskId).selection?.attempt, 3);
   assert.deepEqual(s.execCalls().map((c) => c.model), ["gpt-6-luna", "gpt-6-luna", "gpt-6.1-sol"]);
   for (const t of new Store(s.root).listTasks(new Store(s.root).loadRun(String(out.summary.runId))!)) {
     assert.deepEqual(JSON.parse(readFileSync(join(t.artifactsDir, "request.json"), "utf8")), req);
   }
 });
 
-it("adversarial 4: task legada sem origin retoma pedido original da raiz", async () => {
+it("adversarial 4: Chain ignora origin/chainRoot/attempt das tasks e preserva pedido original", async () => {
   s = makeSandbox({ routing: { adaptive: { maxAttempts: 3 } }, limits: { maxDelegationsPerRun: 5 } });
   const req = request({ isolation: "worktree" });
   const first = await run(req, { FAKE_SCENARIO_BY_ATTEMPT: JSON.stringify({ 1: "rate-limit" }), FAKE_REPORT_BY_ATTEMPT: JSON.stringify({ 2: { status: "blocked", blockedReason: "Precisa de decisão do cérebro" } }) });
@@ -100,27 +100,27 @@ it("adversarial 4: task legada sem origin retoma pedido original da raiz", async
   const store = new Store(s.root), t = saved(first.summary.taskId), root = saved(t.selection?.attemptOf);
   assert.equal(t.selection?.attempt, 2);
   for (const old of [root, t]) {
-    delete old.selection!.origin; delete old.selection!.chainRoot; store.saveTask(old);
+    delete old.selection!.origin; delete old.selection!.chainRoot; old.selection!.attempt = 999; store.saveTask(old);
   }
   // Formato antigo: a tentativa descendente salvava model/effort resolvidos no request.
   writeJsonAtomic(join(t.artifactsDir, "request.json"), { ...req, executor: t.executor, model: t.model.requested, effort: t.effort?.requested });
   const out = await resume(t.taskId, { FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 3: edit }) });
   assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
   assert.equal(saved(out.summary.taskId).selection?.attempt, 3);
-  assert.equal(saved(out.summary.taskId).selection?.origin?.effort, "auto");
+  assert.equal(store.chainForTask(saved(out.summary.taskId)).origin.effort, "auto");
   assert.deepEqual(JSON.parse(readFileSync(join(saved(out.summary.taskId).artifactsDir, "request.json"), "utf8")), req);
 });
 
 it("adversarial 5: retomada antes da base conserva orçamento de toda a cadeia", async () => {
   s = makeSandbox({ routing: { adaptive: { maxAttempts: 2 } }, limits: { maxDelegationsPerRun: 5 } });
-  const first = await run(request({ complexity: "standard", acceptance: ok }), { FAKE_SCENARIO: "rate-limit", FAKE_AUTH_BLOCK_CALL: "4" });
+  const first = await run(request({ complexity: "standard", acceptance: ok }), { FAKE_SCENARIO: "rate-limit", FAKE_HELP: "missing-effort" });
   const t = saved(first.summary.taskId);
   assert.equal(t.executor, "claude"); assert.equal(t.state, "blocked"); assert.equal(t.base, null);
   assert.equal(t.selection?.attempt, 2);
   writeJsonAtomic(quotaStatePath(new Store(s.root)), {});
   const out = await resume(t.taskId, { FAKE_SCENARIO: "rate-limit" });
   assert.equal(out.summary.state, "blocked");
-  assert.equal(s.execCalls().length, 2);
+  assert.equal(s.execCalls().length, 1, "o orçamento também conta tentativas bloqueadas antes de executar");
   assert.equal(saved(out.summary.taskId).selection?.attempt, 2);
   assert.ok(saved(out.summary.taskId).limitations.some((l) => l.includes("maxAttempts=2")));
 });

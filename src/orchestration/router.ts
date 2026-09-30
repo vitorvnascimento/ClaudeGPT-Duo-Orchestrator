@@ -152,7 +152,7 @@ function evidenceFor(tasks: Task[], cand: Cand, q: RouteQuery, minSamples: numbe
 export type AvailabilityFn = (executor: Provider) => { available: boolean; reasons: string[] };
 
 /** Disponibilidade real, sem inferência: CLI instalada, login por assinatura, ciência de uso extra, limite observado. */
-export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths): AvailabilityFn {
+export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths, deferSettingsToPlan = false): AvailabilityFn {
   const paths = authPaths ?? defaultAuthPaths(store.projectRoot, env);
   const cache = new Map<Provider, { available: boolean; reasons: string[] }>();
   return (executor) => {
@@ -166,7 +166,9 @@ export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.Proce
       reasons.push(resolved.reason);
     } else {
       const auth = checkAuth(executor, resolved, cfg, paths, env);
-      const block = authBlockReason(auth);
+      // Na delegação, cwd/flags só são definitivos no plano (pode ser outra worktree).
+      // A seleção não autoriza execução: o gate final sempre inspeciona essas settings.
+      const block = authBlockReason(deferSettingsToPlan ? { ...auth, conflicts: [] } : auth);
       const inCodexSandbox = Boolean(env.CODEX_SANDBOX) || env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
       if (block && inCodexSandbox && (auth.method === "none" || auth.method === "unknown") && auth.conflicts.length === 0) {
         // Dentro do sandbox do Codex o status de outro cliente pode não ser legível (Keychain, rede); não é indisponibilidade.

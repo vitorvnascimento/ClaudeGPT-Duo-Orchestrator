@@ -71,6 +71,10 @@ export type AuthPaths = {
   home: string;
   projectRoot: string;
   claudeManagedSettings: string[];
+  /** Codex system/legacy managed paths; optional so offline fixtures do not read the host. */
+  codexSystemConfig?: string;
+  codexManagedConfig?: string;
+  codexRequirements?: string;
 };
 
 export function defaultAuthPaths(projectRoot: string, env: NodeJS.ProcessEnv = process.env): AuthPaths {
@@ -78,9 +82,19 @@ export function defaultAuthPaths(projectRoot: string, env: NodeJS.ProcessEnv = p
     process.platform === "darwin"
       ? ["/Library/Application Support/ClaudeCode/managed-settings.json"]
       : process.platform === "win32"
-        ? [join(env.ProgramFiles ?? "C:\\Program Files", "ClaudeCode", "managed-settings.json")]
+      ? [join(env.ProgramFiles ?? "C:\\Program Files", "ClaudeCode", "managed-settings.json")]
         : ["/etc/claude-code/managed-settings.json"];
-  return { home: env.HOME ?? env.USERPROFILE ?? homedir(), projectRoot, claudeManagedSettings: managed };
+  const codexSystemRoot = process.platform === "win32"
+    ? join(env.ProgramData ?? "C:\\ProgramData", "OpenAI", "Codex")
+    : "/etc/codex";
+  return {
+    home: env.HOME ?? env.USERPROFILE ?? homedir(),
+    projectRoot,
+    claudeManagedSettings: managed,
+    codexSystemConfig: join(codexSystemRoot, "config.toml"),
+    codexManagedConfig: join(codexSystemRoot, "managed_config.toml"),
+    codexRequirements: join(codexSystemRoot, "requirements.toml"),
+  };
 }
 
 function readJson(p: string): Record<string, unknown> | null {
@@ -147,25 +161,39 @@ type ClaudeSettingsLayer = {
   settings: Record<string, unknown>;
 };
 
+type ClaudeSettingsFiles = {
+  user: string[];
+  project: string[];
+  local: string[];
+  managed: string[];
+};
+
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function claudeSettingsLayers(paths: AuthPaths, env: NodeJS.ProcessEnv): { regular: string[]; managed: string[] } {
+function claudeSettingsLayers(paths: AuthPaths, env: NodeJS.ProcessEnv): ClaudeSettingsFiles {
   const configDir = env.CLAUDE_CONFIG_DIR ?? join(paths.home, ".claude");
-  // Claude applies the user's two settings files before both project layers;
-  // project-local settings are the final ordinary overlay. Keep managed
-  // settings separate because a managed policy must remain visible even when a
-  // lower layer tries to mask it.
+  // `user`, `project`, and `local` are the CLI's selectable sources. Managed
+  // policy remains visible even when a lower layer is excluded or masked.
   return {
-    regular: [
-      join(configDir, "settings.json"),
-      join(configDir, "settings.local.json"),
-      join(paths.projectRoot, ".claude", "settings.json"),
-      join(paths.projectRoot, ".claude", "settings.local.json"),
-    ],
+    user: [join(configDir, "settings.json")],
+    project: [join(paths.projectRoot, ".claude", "settings.json")],
+    local: [join(paths.projectRoot, ".claude", "settings.local.json")],
     managed: paths.claudeManagedSettings,
   };
+}
+
+function claudeSettingSources(settingSources: string): { selected: Set<"user" | "project" | "local">; unknown: string[] } {
+  const tokens = settingSources.split(",").map((source) => source.trim()).filter(Boolean);
+  if (tokens.length === 0) return { selected: new Set(["user", "project", "local"]), unknown: [] };
+  const selected = new Set<"user" | "project" | "local">();
+  const unknown: string[] = [];
+  for (const token of tokens) {
+    if (token === "user" || token === "project" || token === "local") selected.add(token);
+    else if (token !== "policy" && token !== "managed" && !unknown.includes(token)) unknown.push(token);
+  }
+  return { selected, unknown };
 }
 
 function readClaudeLayers(files: string[], warnings: string[]): ClaudeSettingsLayer[] {
@@ -204,11 +232,30 @@ function inspectClaudeLayer(layer: ClaudeSettingsLayer, allowLoopbackProxy: bool
 }
 
 /** Inspeciona as settings efetivas do Claude Code sem ler valores secretos. */
-export function claudeSettingsConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, allowLoopbackProxy = false): { conflicts: string[]; warnings: string[] } {
+export function claudeSettingsConflicts(
+  paths: AuthPaths,
+  env: NodeJS.ProcessEnv,
+  allowLoopbackProxy = false,
+  settingSources = "user",
+): { conflicts: string[]; warnings: string[] } {
   const conflicts: string[] = [];
   const warnings: string[] = [];
   const files = claudeSettingsLayers(paths, env);
-  const regular = readClaudeLayers(files.regular, warnings);
+  const sources = claudeSettingSources(settingSources);
+  if (sources.unknown.length) {
+    warnings.push(`settingSources contém fonte não reconhecida: ${sources.unknown.join(", ")}; fontes regulares inspecionadas de forma conservadora`);
+    conflicts.push(`settingSources contém fonte não reconhecida: ${sources.unknown.join(", ")}; não é possível provar a configuração efetiva`);
+    for (const source of ["user", "project", "local"] as const) sources.selected.add(source);
+  }
+  for (const source of ["project", "local"] as const) {
+    if (sources.selected.has(source)) continue;
+    for (const file of files[source]) {
+      if (existsSync(file)) warnings.push(`${file}: fonte ${source} ignorada pelo executor (settingSources=${settingSources || "padrão"})`);
+    }
+  }
+  const regular = (["user", "project", "local"] as const)
+    .filter((source) => sources.selected.has(source))
+    .flatMap((source) => readClaudeLayers(files[source], warnings));
 
   let apiKeyHelperSource: string | null = null;
   let forceLoginMethod: unknown;
@@ -309,6 +356,10 @@ type CodexConfigSnapshot = {
   file: string;
   rootModelProvider: string | undefined;
   rootModelProviderInvalid: boolean;
+  rootOpenaiBaseUrl: string | undefined;
+  rootOpenaiBaseUrlInvalid: boolean;
+  rootChatgptBaseUrl: string | undefined;
+  rootChatgptBaseUrlInvalid: boolean;
   providers: Map<string, CodexProviderInspection>;
   profileProviders: Map<string, string | undefined>;
   invalidProviderTables: Set<string>;
@@ -318,14 +369,26 @@ type CodexConfigSnapshot = {
   sandboxWorkspaceNetworkAccess: boolean | undefined;
 };
 
+// These are the built-in first-party endpoints documented by Codex. A local
+// proxy must be represented by a named model provider so it can be checked for
+// loopback and requires_openai_auth; a root endpoint override is otherwise an
+// opaque routing decision.
+const OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const OFFICIAL_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api";
+
+function isOfficialBaseUrl(value: string, kind: "openai" | "chatgpt"): boolean {
+  const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+  return normalized === (kind === "openai" ? OFFICIAL_OPENAI_BASE_URL : OFFICIAL_CHATGPT_BASE_URL);
+}
+
 function providerTable(table: string): { name: string; tail: string } | null {
   const m = /^model_providers\.([A-Za-z0-9_-]+)(?:\.(.*))?$/.exec(table);
   if (!m || (m[2] !== undefined && !/^[A-Za-z0-9_.-]+$/.test(m[2]))) return null;
   return { name: m[1]!, tail: m[2] ?? "" };
 }
 
-function providerIsLoopbackAuthorized(info: CodexProviderInspection, allowLoopbackProxy: boolean): string | null {
-  if (!allowLoopbackProxy || info.malformed || info.requiresOpenaiAuth !== true || info.credentialKeys.size > 0) return null;
+function providerIsLoopbackAuthorized(info: CodexProviderInspection | undefined, allowLoopbackProxy: boolean): string | null {
+  if (!info || !allowLoopbackProxy || info.malformed || info.requiresOpenaiAuth !== true || info.credentialKeys.size > 0) return null;
   return loopbackProxyOrigin(info.baseUrl);
 }
 
@@ -374,6 +437,10 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
     file,
     rootModelProvider: undefined,
     rootModelProviderInvalid: false,
+    rootOpenaiBaseUrl: undefined,
+    rootOpenaiBaseUrlInvalid: false,
+    rootChatgptBaseUrl: undefined,
+    rootChatgptBaseUrlInvalid: false,
     providers: new Map<string, CodexProviderInspection>(),
     profileProviders: new Map<string, string | undefined>(),
     invalidProviderTables: new Set<string>(),
@@ -468,6 +535,14 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
       const value = tomlString(kv[2]!);
       if (value === undefined) snapshot.rootModelProviderInvalid = true;
       else snapshot.rootModelProvider = value;
+    } else if (key === "openai_base_url" && table === "") {
+      const value = tomlString(kv[2]!);
+      if (value === undefined) snapshot.rootOpenaiBaseUrlInvalid = true;
+      else snapshot.rootOpenaiBaseUrl = value;
+    } else if (key === "chatgpt_base_url" && table === "") {
+      const value = tomlString(kv[2]!);
+      if (value === undefined) snapshot.rootChatgptBaseUrlInvalid = true;
+      else snapshot.rootChatgptBaseUrl = value;
     } else if (key === "model_provider" && /^profiles\./.test(table)) {
       const value = tomlString(kv[2]!);
       snapshot.profileProviders.set(table, value);
@@ -486,46 +561,162 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
   return snapshot;
 }
 
-function mergeCodexProvider(base: CodexProviderInspection | undefined, overlay: CodexProviderInspection | undefined): CodexProviderInspection {
-  const result = base ? { ...base, credentialKeys: new Set(base.credentialKeys), seenKeys: new Set(base.seenKeys) } : emptyCodexProvider();
-  if (!overlay) return result;
-  if (overlay.baseUrl !== undefined) result.baseUrl = overlay.baseUrl;
-  if (overlay.requiresOpenaiAuth !== undefined) result.requiresOpenaiAuth = overlay.requiresOpenaiAuth;
-  for (const key of overlay.credentialKeys) result.credentialKeys.add(key);
-  result.malformed = result.malformed || overlay.malformed;
+function mergeCodexProvider(...layers: Array<CodexProviderInspection | undefined>): CodexProviderInspection {
+  const result = emptyCodexProvider();
+  for (const overlay of layers) {
+    if (!overlay) continue;
+    if (overlay.baseUrl !== undefined) result.baseUrl = overlay.baseUrl;
+    if (overlay.requiresOpenaiAuth !== undefined) result.requiresOpenaiAuth = overlay.requiresOpenaiAuth;
+    for (const key of overlay.credentialKeys) result.credentialKeys.add(key);
+    result.malformed = result.malformed || overlay.malformed;
+    for (const key of overlay.seenKeys) result.seenKeys.add(key);
+  }
   return result;
 }
 
-function effectiveString(global: CodexConfigSnapshot | undefined, project: CodexConfigSnapshot | undefined, key: "rootModelProvider" | "preferredAuthMethod" | "forcedLoginMethod"): string | undefined {
+function effectiveString(
+  system: CodexConfigSnapshot | undefined,
+  global: CodexConfigSnapshot | undefined,
+  project: CodexConfigSnapshot | undefined,
+  key: "rootModelProvider" | "preferredAuthMethod" | "forcedLoginMethod",
+): string | undefined {
   const projectValue = project?.[key];
-  return projectValue !== undefined ? projectValue : global?.[key];
+  if (projectValue !== undefined) return projectValue;
+  const globalValue = global?.[key];
+  return globalValue !== undefined ? globalValue : system?.[key];
+}
+
+function effectiveRootUrl(
+  system: CodexConfigSnapshot | undefined,
+  global: CodexConfigSnapshot | undefined,
+  project: CodexConfigSnapshot | undefined,
+  key: "rootOpenaiBaseUrl" | "rootChatgptBaseUrl",
+): string | undefined {
+  return project?.[key] ?? global?.[key] ?? system?.[key];
+}
+
+function effectiveBaseRouteRisk(
+  system: CodexConfigSnapshot | undefined,
+  global: CodexConfigSnapshot | undefined,
+  allowLoopbackProxy: boolean,
+): boolean {
+  if (!system && !global) return false;
+  if (system?.rootModelProviderInvalid || global?.rootModelProviderInvalid) return true;
+  if (system?.rootOpenaiBaseUrlInvalid || global?.rootOpenaiBaseUrlInvalid) return true;
+  if (system?.rootChatgptBaseUrlInvalid || global?.rootChatgptBaseUrlInvalid) return true;
+  const openaiBaseUrl = global?.rootOpenaiBaseUrl ?? system?.rootOpenaiBaseUrl;
+  if (openaiBaseUrl !== undefined && !isOfficialBaseUrl(openaiBaseUrl, "openai")) return true;
+  const chatgptBaseUrl = global?.rootChatgptBaseUrl ?? system?.rootChatgptBaseUrl;
+  if (chatgptBaseUrl !== undefined && !isOfficialBaseUrl(chatgptBaseUrl, "chatgpt")) return true;
+  const selected = effectiveString(system, global, undefined, "rootModelProvider") ?? "openai";
+  const providerInfo = mergeCodexProvider(system?.providers.get(selected), global?.providers.get(selected));
+  const hasProviderTable = system?.providers.has(selected) === true || global?.providers.has(selected) === true;
+  if (selected === "openai" && !hasProviderTable) return false;
+  return providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy) === null;
+}
+
+function readCodexSnapshot(file: string | undefined, conflicts: string[]): CodexConfigSnapshot | undefined {
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    return parseCodexConfig(file);
+  } catch {
+    conflicts.push(`${file}: não foi possível interpretar (TOML inválido); não verificado`);
+    return undefined;
+  }
+}
+
+function validateCodexSnapshotSyntax(snapshot: CodexConfigSnapshot, conflicts: string[]): void {
+  if (snapshot.rootModelProviderInvalid) conflicts.push(`${snapshot.file}: model_provider não é uma string TOML reconhecível`);
+  if (snapshot.rootOpenaiBaseUrlInvalid) conflicts.push(`${snapshot.file}: openai_base_url não é uma string TOML reconhecível`);
+  if (snapshot.rootChatgptBaseUrlInvalid) conflicts.push(`${snapshot.file}: chatgpt_base_url não é uma string TOML reconhecível`);
+  for (const _ of snapshot.invalidProviderTables) conflicts.push(`${snapshot.file}: tabela de provedor customizado não é suportada com segurança`);
+  for (const entry of snapshot.unsupportedRoutingEntries) conflicts.push(`${snapshot.file}: forma TOML não suportada para ${entry}`);
+}
+
+function validateStandaloneManagedCodexSnapshot(
+  snapshot: CodexConfigSnapshot,
+  allowLoopbackProxy: boolean,
+  conflicts: string[],
+  warnings: string[],
+): void {
+  validateCodexSnapshotSyntax(snapshot, conflicts);
+  if (snapshot.rootOpenaiBaseUrl !== undefined && !isOfficialBaseUrl(snapshot.rootOpenaiBaseUrl, "openai")) {
+    conflicts.push(`${snapshot.file}: openai_base_url seleciona endpoint não oficial`);
+  }
+  if (snapshot.rootChatgptBaseUrl !== undefined && !isOfficialBaseUrl(snapshot.rootChatgptBaseUrl, "chatgpt")) {
+    conflicts.push(`${snapshot.file}: chatgpt_base_url seleciona endpoint não oficial`);
+  }
+
+  const selectedProvider = snapshot.rootModelProvider ?? "openai";
+  const providerInfo = snapshot.providers.get(selectedProvider);
+  const builtInOpenai = selectedProvider === "openai" && !providerInfo;
+  const origin = builtInOpenai ? "openai" : providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy);
+  if (origin) {
+    if (origin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
+  } else {
+    const suffix = allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT;
+    conflicts.push(`${snapshot.file}: model_provider customizado não suportado com segurança${suffix}`);
+  }
+
+  for (const [profile, providerName] of snapshot.profileProviders) {
+    if (providerName === undefined) {
+      conflicts.push(`${snapshot.file}: perfil [${profile}] não referencia um provedor reconhecível`);
+      continue;
+    }
+    const profileInfo = snapshot.providers.get(providerName);
+    const profileBuiltInOpenai = providerName === "openai" && !profileInfo;
+    const profileOrigin = profileBuiltInOpenai ? "openai" : providerIsLoopbackAuthorized(profileInfo, allowLoopbackProxy);
+    if (profileOrigin) {
+      if (profileOrigin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${profileOrigin}`);
+    } else {
+      const suffix = allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT;
+      conflicts.push(`${snapshot.file}: perfil [${profile}] usa provedor customizado não suportado com segurança${suffix}`);
+    }
+  }
+
+  if (snapshot.preferredAuthMethod === "apikey") conflicts.push(`${snapshot.file}: preferred_auth_method=apikey`);
+  if (snapshot.forcedLoginMethod === "api") conflicts.push(`${snapshot.file}: forced_login_method=api`);
+  if (snapshot.sandboxWorkspaceNetworkAccess === true) warnings.push(`${snapshot.file}: sandbox_workspace_write.network_access=true (a ponte força false no executor)`);
 }
 
 /** Modelo padrão do Codex (chave `model` de primeiro nível do config.toml; não é segredo). */
-export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv): string | null {
-  const f = join(env.CODEX_HOME ?? join(paths.home, ".codex"), "config.toml");
-  if (!existsSync(f)) return null;
-  for (const raw of readFileSync(f, "utf8").split(/\r?\n/)) {
-    const line = raw.replace(/#.*$/, "").trim();
-    if (line.startsWith("[")) break; // só o nível raiz
-    const m = /^model\s*=\s*["']([^"']+)["']/.exec(line);
-    if (m) return m[1] as string;
+export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, ignoreUserConfig = false): string | null {
+  const files = ignoreUserConfig
+    ? [join(paths.projectRoot, ".codex", "config.toml")]
+    : [join(env.CODEX_HOME ?? join(paths.home, ".codex"), "config.toml"), join(paths.projectRoot, ".codex", "config.toml")];
+  let model: string | null = null;
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    for (const raw of readFileSync(f, "utf8").split(/\r?\n/)) {
+      const line = raw.replace(/#.*$/, "").trim();
+      if (line.startsWith("[")) break; // só o nível raiz
+      const m = /^model\s*=\s*["']([^"']+)["']/.exec(line);
+      if (m) model = m[1] as string;
+    }
   }
-  return null;
+  return model;
 }
 
-export function codexConfigConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, allowLoopbackProxy = false): { conflicts: string[]; warnings: string[] } {
+export function codexConfigConflicts(
+  paths: AuthPaths,
+  env: NodeJS.ProcessEnv,
+  allowLoopbackProxy = false,
+  ignoreUserConfig = false,
+): { conflicts: string[]; warnings: string[] } {
   const codexHome = env.CODEX_HOME ?? join(paths.home, ".codex");
-  const files = [join(codexHome, "config.toml"), join(paths.projectRoot, ".codex", "config.toml")];
+  const userFile = join(codexHome, "config.toml");
+  const projectFile = join(paths.projectRoot, ".codex", "config.toml");
   const conflicts: string[] = [];
   const warnings: string[] = [];
-  const global = existsSync(files[0]!) ? parseCodexConfig(files[0]!) : undefined;
-  const project = existsSync(files[1]!) ? parseCodexConfig(files[1]!) : undefined;
-  const snapshots = [global, project].filter((snapshot): snapshot is CodexConfigSnapshot => snapshot !== undefined);
+  if (ignoreUserConfig && existsSync(userFile)) warnings.push(`${userFile}: configuração de usuário ignorada pelo executor (--ignore-user-config)`);
+  const system = readCodexSnapshot(paths.codexSystemConfig, conflicts);
+  const global = !ignoreUserConfig ? readCodexSnapshot(userFile, conflicts) : undefined;
+  const project = readCodexSnapshot(projectFile, conflicts);
+  const managed = readCodexSnapshot(paths.codexManagedConfig, conflicts);
+  const requirements = readCodexSnapshot(paths.codexRequirements, conflicts);
+  const snapshots = [system, global, project].filter((snapshot): snapshot is CodexConfigSnapshot => snapshot !== undefined);
   for (const snapshot of snapshots) {
-    if (snapshot.rootModelProviderInvalid) conflicts.push(`${snapshot.file}: model_provider não é uma string TOML reconhecível`);
-    for (const _ of snapshot.invalidProviderTables) conflicts.push(`${snapshot.file}: tabela de provedor customizado não é suportada com segurança`);
-    for (const entry of snapshot.unsupportedRoutingEntries) conflicts.push(`${snapshot.file}: forma TOML não suportada para ${entry}`);
+    validateCodexSnapshotSyntax(snapshot, conflicts);
     for (const [profile, providerName] of snapshot.profileProviders) {
       if (snapshot !== project) {
         if (providerName !== undefined && providerName !== "openai") warnings.push(`${snapshot.file}: perfil [${profile}] usa provedor customizado`);
@@ -535,8 +726,8 @@ export function codexConfigConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, a
         conflicts.push(`${snapshot.file}: perfil [${profile}] não referencia um provedor reconhecível`);
         continue;
       }
-      const providerIsBuiltInOpenai = providerName === "openai" && !global?.providers.has("openai") && !project?.providers.has("openai");
-      const info = mergeCodexProvider(global?.providers.get(providerName), project?.providers.get(providerName));
+      const providerIsBuiltInOpenai = providerName === "openai" && !system?.providers.has("openai") && !global?.providers.has("openai") && !project?.providers.has("openai");
+      const info = mergeCodexProvider(system?.providers.get(providerName), global?.providers.get(providerName), project?.providers.get(providerName));
       const origin = providerIsBuiltInOpenai ? "openai" : providerIsLoopbackAuthorized(info, allowLoopbackProxy);
       if (origin) {
         if (origin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
@@ -547,14 +738,26 @@ export function codexConfigConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, a
     }
   }
 
-  const selectedProvider = effectiveString(global, project, "rootModelProvider");
+  const selectedProvider = effectiveString(system, global, project, "rootModelProvider");
   const effectiveSelectedProvider = selectedProvider ?? "openai";
-  const providerNames = new Set<string>([...(global?.providers.keys() ?? []), ...(project?.providers.keys() ?? [])]);
-  const validateSelectedProvider = effectiveSelectedProvider !== "openai" || global?.providers.has(effectiveSelectedProvider) === true || project?.providers.has(effectiveSelectedProvider) === true;
+  const providerNames = new Set<string>([...(system?.providers.keys() ?? []), ...(global?.providers.keys() ?? []), ...(project?.providers.keys() ?? [])]);
+  const validateSelectedProvider = effectiveSelectedProvider !== "openai" || system?.providers.has(effectiveSelectedProvider) === true || global?.providers.has(effectiveSelectedProvider) === true || project?.providers.has(effectiveSelectedProvider) === true;
   if (validateSelectedProvider) {
-    const info = mergeCodexProvider(global?.providers.get(effectiveSelectedProvider), project?.providers.get(effectiveSelectedProvider));
+    const info = mergeCodexProvider(system?.providers.get(effectiveSelectedProvider), global?.providers.get(effectiveSelectedProvider), project?.providers.get(effectiveSelectedProvider));
     const origin = providerIsLoopbackAuthorized(info, allowLoopbackProxy);
-    const source = project?.providers.has(effectiveSelectedProvider) ? project.file : global?.providers.has(effectiveSelectedProvider) ? global.file : project?.rootModelProvider !== undefined ? project.file : global?.file;
+    const source = project?.providers.has(effectiveSelectedProvider)
+      ? project.file
+      : global?.providers.has(effectiveSelectedProvider)
+        ? global.file
+        : system?.providers.has(effectiveSelectedProvider)
+          ? system.file
+          : project?.rootModelProvider !== undefined
+            ? project.file
+            : global?.rootModelProvider !== undefined
+              ? global.file
+              : system?.rootModelProvider !== undefined
+                ? system.file
+                : undefined;
     if (origin && source) {
       warnings.push(`${source}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
     } else if (source) {
@@ -570,7 +773,7 @@ export function codexConfigConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, a
   if (project) {
     for (const [name] of project.providers) {
       if (validateSelectedProvider && name === effectiveSelectedProvider) continue;
-      const info = mergeCodexProvider(global?.providers.get(name), project.providers.get(name));
+      const info = mergeCodexProvider(system?.providers.get(name), global?.providers.get(name), project.providers.get(name));
       const origin = providerIsLoopbackAuthorized(info, allowLoopbackProxy);
       if (origin) warnings.push(`${project.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
       else {
@@ -581,17 +784,83 @@ export function codexConfigConflicts(paths: AuthPaths, env: NodeJS.ProcessEnv, a
   }
   for (const name of providerNames) {
     if (name !== effectiveSelectedProvider && !project?.providers.has(name)) {
-      const source = global?.providers.has(name) ? global.file : undefined;
+      const source = global?.providers.has(name) ? global.file : system?.providers.has(name) ? system.file : undefined;
       if (source) warnings.push(`${source}: define provedor customizado (verificar se não está ativo)`);
     }
   }
 
-  const preferredAuthMethod = effectiveString(global, project, "preferredAuthMethod");
-  if (preferredAuthMethod === "apikey") conflicts.push(`${project?.preferredAuthMethod !== undefined ? project.file : global?.file}: preferred_auth_method=apikey`);
-  const forcedLoginMethod = effectiveString(global, project, "forcedLoginMethod");
-  if (forcedLoginMethod === "api") conflicts.push(`${project?.forcedLoginMethod !== undefined ? project.file : global?.file}: forced_login_method=api`);
-  const networkAccess = project?.sandboxWorkspaceNetworkAccess ?? global?.sandboxWorkspaceNetworkAccess;
-  if (networkAccess === true) warnings.push(`${project?.sandboxWorkspaceNetworkAccess !== undefined ? project.file : global?.file}: sandbox_workspace_write.network_access=true (a ponte força false no executor)`);
+  const openaiBaseUrl = effectiveRootUrl(system, global, project, "rootOpenaiBaseUrl");
+  const openaiBaseSource = project?.rootOpenaiBaseUrl !== undefined
+    ? project.file
+    : global?.rootOpenaiBaseUrl !== undefined
+      ? global.file
+      : system?.rootOpenaiBaseUrl !== undefined
+        ? system.file
+        : undefined;
+  if (openaiBaseUrl !== undefined && !isOfficialBaseUrl(openaiBaseUrl, "openai") && openaiBaseSource) {
+    conflicts.push(`${openaiBaseSource}: openai_base_url seleciona endpoint não oficial`);
+  }
+  const chatgptBaseUrl = effectiveRootUrl(system, global, project, "rootChatgptBaseUrl");
+  const chatgptBaseSource = project?.rootChatgptBaseUrl !== undefined
+    ? project.file
+    : global?.rootChatgptBaseUrl !== undefined
+      ? global.file
+      : system?.rootChatgptBaseUrl !== undefined
+        ? system.file
+        : undefined;
+  if (chatgptBaseUrl !== undefined && !isOfficialBaseUrl(chatgptBaseUrl, "chatgpt") && chatgptBaseSource) {
+    conflicts.push(`${chatgptBaseSource}: chatgpt_base_url seleciona endpoint não oficial`);
+  }
+
+  // Codex only applies project layers after its trust decision. A safe project
+  // overlay cannot prove that an unsafe system/user route is really masked;
+  // keep this path fail-closed because this checker does not implement trust.
+  const projectHasRoutingOverride = project !== undefined && (
+    project.rootModelProvider !== undefined
+    || project.providers.size > 0
+    || project.profileProviders.size > 0
+    || project.rootOpenaiBaseUrl !== undefined
+    || project.rootChatgptBaseUrl !== undefined
+  );
+  const baseRouteSource = global?.file ?? system?.file;
+  if (projectHasRoutingOverride && baseRouteSource && effectiveBaseRouteRisk(system, global, allowLoopbackProxy) && conflicts.length === 0) {
+    conflicts.push(`${baseRouteSource}: roteamento system/usuário não pode ser mascarado por configuração de projeto sem confiança verificável`);
+  }
+
+  const preferredAuthMethod = effectiveString(system, global, project, "preferredAuthMethod");
+  const preferredSource = project?.preferredAuthMethod !== undefined
+    ? project.file
+    : global?.preferredAuthMethod !== undefined
+      ? global.file
+      : system?.preferredAuthMethod !== undefined
+        ? system.file
+        : undefined;
+  if (preferredAuthMethod === "apikey" && preferredSource) conflicts.push(`${preferredSource}: preferred_auth_method=apikey`);
+  const forcedLoginMethod = effectiveString(system, global, project, "forcedLoginMethod");
+  const forcedSource = project?.forcedLoginMethod !== undefined
+    ? project.file
+    : global?.forcedLoginMethod !== undefined
+      ? global.file
+      : system?.forcedLoginMethod !== undefined
+        ? system.file
+        : undefined;
+  if (forcedLoginMethod === "api" && forcedSource) conflicts.push(`${forcedSource}: forced_login_method=api`);
+  const networkAccess = project?.sandboxWorkspaceNetworkAccess ?? global?.sandboxWorkspaceNetworkAccess ?? system?.sandboxWorkspaceNetworkAccess;
+  const networkSource = project?.sandboxWorkspaceNetworkAccess !== undefined
+    ? project.file
+    : global?.sandboxWorkspaceNetworkAccess !== undefined
+      ? global.file
+      : system?.sandboxWorkspaceNetworkAccess !== undefined
+        ? system.file
+        : undefined;
+  if (networkAccess === true && networkSource) warnings.push(`${networkSource}: sandbox_workspace_write.network_access=true (a ponte força false no executor)`);
+
+  // Legacy managed and requirements TOMLs are checked independently. Their
+  // values are not overlaid with user/project files, so a lower layer cannot
+  // hide a managed route. MDM preferences and EnterpriseManaged cloud bundles
+  // are intentionally outside this local checker and remain unverifiable.
+  if (managed) validateStandaloneManagedCodexSnapshot(managed, allowLoopbackProxy, conflicts, warnings);
+  if (requirements) validateStandaloneManagedCodexSnapshot(requirements, allowLoopbackProxy, conflicts, warnings);
   return { conflicts, warnings };
 }
 
@@ -627,10 +896,14 @@ export function checkAuth(
   cfg: DuoConfig,
   paths: AuthPaths,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  sources: { settingSources?: string; ignoreUserConfig?: boolean } = {},
 ): AuthCheck {
   const { env, removed } = childEnv(baseEnv);
   const extraUsage = cfg.billing.acknowledgeUnverifiableExtraUsage[provider] ? "unverifiable-acknowledged" : "unverifiable-not-acknowledged";
-  const settings = provider === "claude" ? claudeSettingsConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy) : codexConfigConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy);
+  const settings =
+    provider === "claude"
+      ? claudeSettingsConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, sources.settingSources ?? cfg.executors.claude.settingSources)
+      : codexConfigConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, sources.ignoreUserConfig ?? cfg.executors.codex.ignoreUserConfig);
   const base = {
     provider,
     conflicts: settings.conflicts,

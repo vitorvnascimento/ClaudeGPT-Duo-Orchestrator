@@ -1,11 +1,14 @@
 // Estado local em JSON/JSONL com escrita atômica (arquivo temporário + rename).
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { duoDir } from "../paths.js";
 import { isPidAlive } from "../adapters/process.js";
 import { redactDeep } from "../redact.js";
-import type { Run, Task } from "./types.js";
+import { chainStatus, maxEffort, maxTier } from "../orchestration/chain.js";
+import { assessComplexity } from "../orchestration/complexity.js";
+import type { Chain, DelegationRequest, Run, Task } from "./types.js";
+import type { Tier } from "../adapters/tiers.js";
 
 export function writeJsonAtomic(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -37,6 +40,32 @@ export function newId(prefix: "run" | "task"): string {
   return `${prefix}-${ts}-${randomBytes(3).toString("hex")}`;
 }
 
+/** O_EXCL + expiração; callbacks síncronos, sem executar CLI ou aguardar I/O externo. */
+export function withRecordLock<T>(path: string, fn: () => T): T {
+  const lock = `${path}.lock`, nonce = randomBytes(16).toString("hex");
+  mkdirSync(dirname(lock), { recursive: true });
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    let fd: number;
+    try { fd = openSync(lock, "wx", 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const owner = readJson<{ pid: number; nonce: string }>(lock);
+      try {
+        const stale = owner ? !isPidAlive(owner.pid) : Date.now() - statSync(lock).mtimeMs > 10 * 60 * 1000;
+        if (stale && readJson<{ nonce: string }>(lock)?.nonce === owner?.nonce) { rmSync(lock, { force: true }); continue; }
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+      if (Date.now() >= deadline) throw new Error(`timeout no lock de estado: ${lock}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      continue;
+    }
+    try { writeSync(fd, JSON.stringify({ pid: process.pid, nonce })); }
+    finally { closeSync(fd); }
+    try { return fn(); }
+    finally { if (readJson<{ nonce: string }>(lock)?.nonce === nonce) rmSync(lock, { force: true }); }
+  }
+}
+
 export class Store {
   readonly base: string;
   constructor(readonly projectRoot: string) {
@@ -51,8 +80,22 @@ export class Store {
   }
 
   saveRun(run: Run): void {
-    run.updatedAt = new Date().toISOString();
-    writeJsonAtomic(join(this.runDir(run.runId), "run.json"), run);
+    const path = join(this.runDir(run.runId), "run.json");
+    withRecordLock(path, () => {
+      run.updatedAt = new Date().toISOString();
+      writeJsonAtomic(path, run);
+    });
+  }
+  updateRun(runId: string, change: (run: Run) => void, initial?: Run): Run {
+    const path = join(this.runDir(runId), "run.json");
+    return withRecordLock(path, () => {
+      const run = this.loadRun(runId) ?? initial;
+      if (!run) throw new Error(`run ausente: ${runId}`);
+      change(run);
+      run.updatedAt = new Date().toISOString();
+      writeJsonAtomic(path, run);
+      return run;
+    });
   }
   loadRun(runId: string): Run | null {
     if (!/^run-[a-z0-9-]{6,64}$/.test(runId)) return null;
@@ -60,10 +103,88 @@ export class Store {
   }
   saveTask(task: Task): void {
     task.updatedAt = new Date().toISOString();
-    writeJsonAtomic(join(this.taskDir(task.runId, task.taskId), "task.json"), redactDeep(task));
+    const save = () => writeJsonAtomic(join(this.taskDir(task.runId, task.taskId), "task.json"), redactDeep(task));
+    const chain = this.loadChain(task.runId, task.selection?.chainId ?? task.taskId);
+    if (!chain) { save(); return; }
+    this.updateChain(task.runId, chain.chainId, (fresh) => {
+      save();
+      const attempt = fresh.attempts.find((a) => a.taskId === task.taskId);
+      if (attempt) {
+        attempt.state = task.state;
+        attempt.model = task.model.requested;
+        attempt.effort = maxEffort(task.effort?.requested);
+        attempt.tier = task.selection?.tier ?? attempt.tier;
+      }
+      if (!fresh.owner && fresh.latestTaskId === task.taskId) fresh.status = chainStatus(task.state);
+    });
   }
   loadTask(runId: string, taskId: string): Task | null {
-    return readJson<Task>(join(this.taskDir(runId, taskId), "task.json"));
+    const task = readJson<Task>(join(this.taskDir(runId, taskId), "task.json"));
+    if (task) this.chainForTask(task);
+    return task;
+  }
+  chainPath(runId: string, chainId: string): string {
+    if (!/^run-[a-z0-9-]{6,64}$/.test(runId) || !/^task-[a-z0-9-]{6,64}$/.test(chainId)) throw new Error("identificador de Chain inválido");
+    return join(this.runDir(runId), "chains", `${chainId}.json`);
+  }
+  loadChain(runId: string, chainId: string): Chain | null {
+    return readJson<Chain>(this.chainPath(runId, chainId));
+  }
+  /** Migração de leitura: uma task antiga vira uma Chain unitária sem reescrever sua auditoria. */
+  chainForTask(task: Task, initial?: { request: DelegationRequest; floor: Tier }): Chain {
+    const chainId = task.selection?.chainId ?? task.taskId;
+    const path = this.chainPath(task.runId, chainId);
+    return withRecordLock(path, () => {
+      const saved = this.loadChain(task.runId, chainId);
+      if (saved) {
+        if (saved.status === "running" && (!saved.owner || !isPidAlive(saved.owner.pid))) {
+          const latest = readJson<Task>(join(this.taskDir(saved.runId, saved.latestTaskId), "task.json"));
+          if (latest) {
+            const attempt = saved.attempts.find((a) => a.taskId === latest.taskId);
+            if (attempt) attempt.state = latest.state;
+            saved.status = latest.state === "running" ? "blocked" : chainStatus(latest.state);
+            saved.owner = null;
+            saved.updatedAt = new Date().toISOString();
+            writeJsonAtomic(path, saved);
+          }
+        }
+        return saved;
+      }
+      if (chainId !== task.taskId) throw new Error(`Chain ausente: ${chainId}`);
+      const requestPath = join(this.taskDir(task.runId, task.taskId), "request.json");
+      const request = initial?.request ?? readJson<DelegationRequest>(requestPath);
+      const floor = initial?.floor ?? assessComplexity({ kind: task.kind, risk: task.risk, acceptance: { criteria: task.acceptanceCriteria ?? [], commands: task.acceptanceCommands ?? [] } }, (task.scope ?? []).map((rel) => ({ rel, isDir: false })), task.tags ?? []).floor;
+      const tier = task.selection?.tier ?? floor;
+      const chain: Chain = { version: 1, chainId, runId: task.runId, taskKey: task.taskKey ?? null, requestHash: task.requestHash ?? "",
+        originalRequestPath: requestPath, floorTier: floor, minTier: maxTier(floor, tier), minEffort: maxEffort(task.effort?.requested),
+        origin: { model: request?.model ? "explicit" : "auto", effort: request?.effort ? "explicit" : "auto" },
+        attempts: [{ taskId: task.taskId, attempt: 1, executor: task.executor, model: task.model.requested, effort: maxEffort(task.effort?.requested), tier, reason: "initial", state: task.state }],
+        status: chainStatus(task.state), latestTaskId: task.taskId, updatedAt: new Date().toISOString(),
+        owner: task.state === "running" && task.pids?.bridge ? { pid: task.pids.bridge, nonce: "legacy" } : null };
+      writeJsonAtomic(path, chain);
+      return chain;
+    });
+  }
+  updateChain(runId: string, chainId: string, change: (chain: Chain) => void): Chain {
+    const path = this.chainPath(runId, chainId);
+    return withRecordLock(path, () => {
+      const chain = this.loadChain(runId, chainId);
+      if (!chain) throw new Error(`Chain ausente: ${chainId}`);
+      const { minTier, minEffort, floorTier } = chain;
+      change(chain);
+      chain.floorTier = floorTier;
+      chain.minTier = maxTier(floorTier, minTier, chain.minTier, ...chain.attempts.map((a) => a.tier));
+      chain.minEffort = maxEffort(minEffort, chain.minEffort, ...chain.attempts.map((a) => a.effort));
+      chain.updatedAt = new Date().toISOString();
+      writeJsonAtomic(path, chain);
+      return chain;
+    });
+  }
+  listChains(runId: string): Chain[] {
+    const run = this.loadRun(runId);
+    if (run) this.listTasks(run); // cria somente Chains implícitas ausentes
+    const dir = join(this.runDir(runId), "chains");
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => this.loadChain(runId, f.slice(0, -5))).filter((c): c is Chain => c !== null) : [];
   }
   findTask(taskId: string): Task | null {
     if (!/^task-[a-z0-9-]{6,64}$/.test(taskId)) return null;
@@ -82,7 +203,7 @@ export class Store {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   listTasks(run: Run): Task[] {
-    return run.taskIds.map((id) => this.loadTask(run.runId, id)).filter((t): t is Task => t !== null);
+    return (this.loadRun(run.runId) ?? run).taskIds.map((id) => this.loadTask(run.runId, id)).filter((t): t is Task => t !== null);
   }
   telemetry(event: Record<string, unknown>): void {
     appendJsonl(join(this.base, "telemetry.jsonl"), { at: new Date().toISOString(), ...event });

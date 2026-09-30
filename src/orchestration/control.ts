@@ -21,6 +21,13 @@ export function refreshInterrupted(store: Store): { taskId: string; orphanChild:
       const orphan = task.pids.child && isPidAlive(task.pids.child) ? task.pids.child : null;
       transition(task, "blocked", `interrompida: o processo da ponte não está mais ativo${orphan ? ` (executor órfão ainda ativo, pid ${orphan}; use duo cancel)` : ""}`);
       store.saveTask(task);
+      const chain = store.chainForTask(task);
+      store.updateChain(run.runId, chain.chainId, (fresh) => {
+        if (fresh.latestTaskId === task.taskId && (!fresh.owner || !isPidAlive(fresh.owner.pid))) {
+          fresh.status = "blocked";
+          fresh.owner = null;
+        }
+      });
       found.push({ taskId: task.taskId, orphanChild: orphan });
     }
   }
@@ -31,9 +38,12 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
   const store = new Store(projectRoot);
   const run = store.loadRun(runId);
   if (!run) return { ok: false, message: `run não encontrado: ${runId}`, cancelled: [] };
-  run.cancelled = true;
-  run.nextStep = "run cancelado pelo usuário";
-  store.saveRun(run);
+  store.updateRun(runId, (fresh) => { fresh.cancelled = true; fresh.nextStep = "run cancelado pelo usuário"; });
+  for (const chain of store.listChains(runId)) {
+    store.updateChain(runId, chain.chainId, (fresh) => {
+      if (fresh.status === "running" || fresh.status === "blocked") fresh.status = "cancelled";
+    });
+  }
 
   // 1) pede à ponte ativa que encerre o executor e registre o checkpoint.
   for (const task of store.listTasks(run)) {
@@ -100,8 +110,7 @@ export function applyTask(projectRoot: string, taskId: string): { ok: boolean; m
   store.saveTask(task);
   const run = store.loadRun(task.runId);
   if (run) {
-    run.decisions.push({ at: new Date().toISOString(), taskId, kind: "note", text: "patch do worktree aplicado ao working tree" });
-    store.saveRun(run);
+    store.updateRun(run.runId, (fresh) => { fresh.decisions.push({ at: new Date().toISOString(), taskId, kind: "note", text: "patch do worktree aplicado ao working tree" }); });
   }
   store.telemetry({ event: "task_applied", runId: task.runId, taskId });
   return {
@@ -120,8 +129,7 @@ export function acceptTask(projectRoot: string, taskId: string, accepted: boolea
   store.saveTask(task);
   const run = store.loadRun(task.runId);
   if (run) {
-    run.decisions.push({ at: task.accepted.at, taskId, kind: accepted ? "accepted" : "rejected", text: note || (accepted ? "aceito" : "rejeitado") });
-    store.saveRun(run);
+    store.updateRun(run.runId, (fresh) => { fresh.decisions.push({ at: task.accepted!.at, taskId, kind: accepted ? "accepted" : "rejected", text: note || (accepted ? "aceito" : "rejeitado") }); });
   }
   store.telemetry({ event: accepted ? "task_accepted" : "task_rejected", runId: task.runId, taskId });
   return { ok: true, message: `${taskId} ${accepted ? "aceita" : "rejeitada"}` };

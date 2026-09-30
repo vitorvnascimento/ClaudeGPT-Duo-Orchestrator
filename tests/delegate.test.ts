@@ -38,6 +38,15 @@ function task(s: Sandbox, taskId: unknown): Task {
   return t;
 }
 
+function chain(s: Sandbox, t: Task) {
+  return new Store(s.root).chainForTask(t);
+}
+
+function fallbacks(s: Sandbox, t: Task) {
+  const attempts = chain(s, t).attempts;
+  return attempts.filter((a) => a.reason === "quota" || a.reason === "capacity");
+}
+
 const APP_EDIT = JSON.stringify({ "src/app.ts": "export const app = 1;\nexport const nova = 2;\n" });
 
 const adaptiveAcceptance = { criteria: ["nova exportada"], commands: [{ name: "nova", argv: ["node", "-e", 'process.exit(require("fs").readFileSync("src/app.ts", "utf8").includes("nova") ? 0 : 1)'] }] };
@@ -58,8 +67,8 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.equal(t.executor, brain); assert.equal(t.selection?.tier, "standard");
     assert.equal(t.selection?.attempt, 2); assert.equal(first.state, "blocked");
     assert.notEqual(t.worktree, first.worktree); assert.ok(existsSync(first.worktree!));
-    assert.equal(t.selection?.fallbacks?.length, 1); assert.equal(t.selection?.fallbacks?.[0]?.from.executor, first.executor);
-    assert.equal(t.selection?.fallbacks?.[0]?.to.executor, brain);
+    assert.equal(fallbacks(s, t).length, 1); assert.equal(chain(s, t).attempts[0]?.executor, first.executor);
+    assert.equal(fallbacks(s, t)[0]?.executor, brain);
     assert.equal(quotaStates(new Store(s.root))[first.executor]?.status, "exhausted");
     assert.match(String(t.outcome), /executado por .* após cota esgotada em/);
     assert.equal(t.verification?.acceptance[0]?.passed, true);
@@ -67,7 +76,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     for (const call of calls) assert.equal(call.depth, "1");
     assert.ok(s.log().some((e) => e.cmd === "login-status")); assert.ok(s.log().some((e) => e.cmd === "auth-status"));
     const resume = await delegate({ cwd: s.root, resumeTaskId: first.taskId, env: { ...s.env, ...adaptiveEnv }, authPaths: s.authPaths });
-    assert.equal(resume.summary.state, "blocked"); assert.match(String(resume.summary.outcome), /cota esgotada/);
+    assert.equal(resume.summary.state, "rejected"); assert.match(String(resume.summary.error), /tentativa substituída/);
   });
   for (const executor of ["codex", "claude"] as const) it(`${executor} sem capacidade: outro modelo do mesmo nível, sem esgotar a conta`, async () => {
     const s = setup();
@@ -77,7 +86,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
     const t = task(s, out.summary.taskId), first = task(s, t.selection?.attemptOf);
     assert.equal(first.state, "blocked"); assert.match(String(first.outcome), /sem capacidade/);
-    assert.equal(t.selection?.fallbacks?.[0]?.reason, "modelo sem capacidade no fornecedor");
+    assert.equal(fallbacks(s, t)[0]?.reason, "capacity");
     assert.notEqual(t.model.requested, first.model.requested, "o modelo sem capacidade não é repetido");
     assert.ok(tierRank(t.selection!.tier) >= tierRank("standard"), "nunca abaixo do nível");
     assert.notEqual(quotaStates(new Store(s.root))[executor]?.status, "exhausted", "capacidade não esgota a conta");
@@ -97,7 +106,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     const t = task(s, out.summary.taskId);
     assert.equal(t.executor, "codex"); assert.equal(t.model.requested, "gpt-6-sol");
     assert.deepEqual(quotaStates(new Store(s.root)).codex?.affectedModels, ["gpt-6.1-sol"]);
-    assert.equal(t.selection?.fallbacks?.[0]?.resetsAt, new Date(Math.floor(Date.parse(reset) / 1000) * 1000).toISOString());
+    assert.equal(quotaStates(new Store(s.root)).codex?.resetsAt, new Date(Math.floor(Date.parse(reset) / 1000) * 1000).toISOString());
   });
   it("só resta nível inferior: blocked identifica conta/reset e preserva task", async () => {
     const s = setup({ routing: { include: ["claude:claude-opus-5-5", "codex:gpt-6-luna"] } });
@@ -124,7 +133,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6.1-sol", complexity: "standard", acceptance: okAcceptance }), quotaEnv);
     assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
     assert.match(String(out.summary.outcome), /faça no cérebro/);
-    assert.equal(task(s, out.summary.taskId).selection?.fallbacks?.length, 1);
+    assert.equal(fallbacks(s, task(s, out.summary.taskId)).length, 1);
   });
   it("adaptive=false registra cota e mantém blocked sem fallback", async () => {
     const s = setup({ routing: { adaptive: { enabled: false } } });
@@ -145,7 +154,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
     assert.equal(s.execCalls().length, 1);
     assert.match(String(out.summary.outcome), /esforço.*high.*codex.*--config/i);
-    assert.equal(task(s, out.summary.taskId).selection?.fallbacks?.length, 1);
+    assert.equal(fallbacks(s, task(s, out.summary.taskId)).length, 1);
   });
   it("verificação após fallback ainda escala e conserva a cadeia de tentativas", async () => {
     const s = setup({ routing: { adaptive: { maxAttempts: 3 } }, limits: { maxDelegationsPerRun: 3 } });
@@ -156,7 +165,7 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
     const t = task(s, out.summary.taskId);
     assert.equal(t.selection?.attempt, 3); assert.equal(t.selection?.tier, "standard");
-    assert.equal(t.selection?.fallbacks?.length, 1); assert.ok(t.selection?.escalatedFrom);
+    assert.equal(fallbacks(s, t).length, 1); assert.equal(chain(s, t).attempts.at(-1)?.reason, "escalation");
     assert.equal(s.execCalls().length, 3);
   });
 });
@@ -224,7 +233,13 @@ describe("seleção e escalada adaptativas", () => {
     assert.equal(first.summary.state, "blocked");
     const resumed = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), env: { ...s.env, ...adaptiveEnv, FAKE_WRITE: APP_EDIT }, authPaths: s.authPaths });
     assert.equal(resumed.summary.state, "succeeded", JSON.stringify(resumed.summary));
-    assert.deepEqual(resumed.summary.selection, first.summary.selection);
+    const initial = task(s, first.summary.taskId), latest = task(s, resumed.summary.taskId);
+    assert.equal(latest.selection?.chainId, initial.selection?.chainId);
+    assert.equal(latest.selection?.attempt, 2);
+    assert.equal(chain(s, latest).attempts.at(-1)?.reason, "resume");
+    assert.equal(initial.state, "blocked", "auditoria anterior preservada");
+    assert.equal(latest.model.requested, initial.model.requested);
+    assert.deepEqual(latest.effort, initial.effort);
     assert.deepEqual(s.execCalls().map((c) => c.model), ["gpt-6-luna", "gpt-6-luna"]);
   });
   it("no-adaptive na retomada desliga também a classificação/escalada por incapacidade", async () => {

@@ -1,5 +1,5 @@
 import type { CodexRolloutEvidence } from "../adapters/codex-rollout.js";
-import type { Tier } from "../adapters/tiers.js";
+import type { Effort, Tier } from "../adapters/tiers.js";
 import type { Policy, Provider } from "../config.js";
 
 export type TaskState = "planned" | "approved" | "running" | "blocked" | "succeeded" | "failed" | "cancelled";
@@ -96,6 +96,7 @@ export type Verification = {
 };
 
 export type Selection = {
+  chainId?: string;
   adaptive: boolean;
   tier: Tier;
   complexitySignals: string[];
@@ -105,9 +106,40 @@ export type Selection = {
   attempt: number;
   attemptOf: string | null;
   chainRoot?: string;
+  /** Somente leitura de auditorias antigas; novas tentativas guardam a cadeia em Chain. */
   origin?: { model: "explicit" | "auto"; effort: "explicit" | "auto" };
   fallbacks?: { from: { executor: Provider; model: string | null }; to: { executor: Provider; model: string | null }; reason: string; resetsAt: string | null }[];
   escalatedFrom?: { model: string | null; effort: string | null; reason: string };
+};
+export type ChainAttempt = {
+  taskId: string;
+  attempt: number;
+  executor: Provider;
+  model: string | null;
+  effort: Effort | null;
+  tier: Tier;
+  reason: "initial" | "escalation" | "quota" | "capacity" | "resume";
+  state: TaskState;
+  /** Cooldown observado nesta tentativa, preservado mesmo sem o cache global. */
+  capacityUntil?: string;
+};
+export type Chain = {
+  version: 1;
+  chainId: string;
+  runId: string;
+  taskKey: string | null;
+  requestHash: string;
+  originalRequestPath: string;
+  floorTier: Tier;
+  minTier: Tier;
+  minEffort: Effort | null;
+  origin: { model: "explicit" | "auto"; effort: "explicit" | "auto" };
+  attempts: ChainAttempt[];
+  status: "running" | "succeeded" | "failed" | "blocked" | "cancelled";
+  latestTaskId: string;
+  updatedAt: string;
+  /** Reserva entre gates/tentativas; o lock de arquivo só cobre transações curtas. */
+  owner: { pid: number; nonce: string } | null;
 };
 
 export type Task = {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { ConfigError, configPath, DEFAULT_CONFIG, loadConfig } from "../src/config.js";
-import { childEnv, claudeSettingsConflicts, codexConfigConflicts, loopbackProxyOrigin, type AuthPaths } from "../src/permissions/auth.js";
+import { childEnv, checkAuth, claudeSettingsConflicts, codexConfigConflicts, codexConfiguredModel, loopbackProxyOrigin, type AuthPaths } from "../src/permissions/auth.js";
 
 describe("proxy local de loopback", () => {
   const roots: string[] = [];
@@ -209,7 +209,9 @@ describe("proxy local de loopback", () => {
       "[model_providers.headroom]",
       "requires_openai_auth = true",
     ].join("\n"));
-    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "campos complementares de camadas diferentes devem ser efetivos");
+    const untrustedOverlay = codexConfigConflicts(s.paths, s.env, true);
+    assert.equal(untrustedOverlay.conflicts.length, 1, "projeto não pode completar rota insegura do usuário sem confiança");
+    assert.match(untrustedOverlay.conflicts[0]!, /confiança verificável/);
 
     writeFileSync(projectConfig, 'model_provider = "remote"\n[model_providers.remote]\nbase_url = "https://gateway.example.test/v1"\nrequires_openai_auth = true\n');
     assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "seleção remota do projeto deve ser efetiva");
@@ -224,7 +226,7 @@ describe("proxy local de loopback", () => {
     assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, [], "configuração de projeto deve funcionar sem camada global");
   });
 
-  it("avalia a configuração efetiva do Claude na ordem usuário, projeto e local", () => {
+  it("avalia a configuração efetiva do Claude na ordem usuário, projeto e local quando todas as fontes são carregadas", () => {
     const s = sandbox();
     const projectDir = join(s.paths.projectRoot, ".claude");
     const projectSettings = join(projectDir, "settings.json");
@@ -232,15 +234,196 @@ describe("proxy local de loopback", () => {
 
     writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
     writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
-    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true).conflicts, [], "projeto deve substituir a URL do usuário");
+    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true, "user,project,local").conflicts, [], "projeto deve substituir a URL do usuário");
 
     writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
     writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
-    assert.equal(claudeSettingsConflicts(s.paths, s.env, true).conflicts.length, 1, "URL remota do projeto deve prevalecer");
+    assert.equal(claudeSettingsConflicts(s.paths, s.env, true, "user,project,local").conflicts.length, 1, "URL remota do projeto deve prevalecer");
 
     writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example.test/v1" } }));
     writeFileSync(join(projectDir, "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
-    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true).conflicts, [], "settings.local deve prevalecer sobre projeto");
+    assert.deepEqual(claudeSettingsConflicts(s.paths, s.env, true, "user,project,local").conflicts, [], "settings.local deve prevalecer sobre projeto");
+  });
+
+  it("respeita --setting-sources user e avisa sem expor valores das fontes ignoradas", () => {
+    const s = sandbox();
+    const projectDir = join(s.paths.projectRoot, ".claude");
+    const projectSettings = join(projectDir, "settings.json");
+    mkdirSync(projectDir, { recursive: true });
+
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://user.example.test/v1" } }));
+    writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    const userRemote = claudeSettingsConflicts(s.paths, s.env, true, "user");
+    assert.equal(userRemote.conflicts.length, 1, "URL remota do usuário continua efetiva");
+    assert.ok(userRemote.warnings.some((warning) => warning.includes(projectSettings) && warning.includes("ignorada")));
+    assert.ok(!JSON.stringify(userRemote.warnings).includes("127.0.0.1:8787"));
+
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    writeFileSync(projectSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://project.example.test/v1" } }));
+    const userLoopback = claudeSettingsConflicts(s.paths, s.env, true, "user");
+    assert.deepEqual(userLoopback.conflicts, [], "URL remota do projeto não é carregada pelo executor");
+    assert.ok(userLoopback.warnings.some((warning) => warning.includes(projectSettings) && warning.includes("ignorada")));
+    assert.ok(!JSON.stringify(userLoopback.warnings).includes("project.example.test"));
+  });
+
+  it("bloqueia fonte desconhecida do Claude mesmo ao inspecionar camadas para diagnóstico", () => {
+    const s = sandbox();
+    const projectDir = join(s.paths.projectRoot, ".claude");
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://user.example.test/v1" } }));
+    writeFileSync(join(projectDir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+
+    const result = claudeSettingsConflicts(s.paths, s.env, true, "user,unknown");
+    assert.equal(result.conflicts.length, 1);
+    assert.match(result.conflicts[0]!, /fonte não reconhecida/);
+  });
+
+  it("não deixa projeto loopback mascarar usuário Codex remoto sem confiança verificável", () => {
+    const s = sandbox();
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "remote"',
+      "[model_providers.remote]",
+      'base_url = "https://user.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(projectConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    const result = codexConfigConflicts(s.paths, s.env, true, false);
+    assert.equal(result.conflicts.length, 1);
+    assert.match(result.conflicts[0]!, /confiança verificável/);
+  });
+
+  it("checkAuth usa as fontes efetivas do Claude e do Codex", () => {
+    const s = sandbox();
+    const projectClaudeDir = join(s.paths.projectRoot, ".claude");
+    mkdirSync(projectClaudeDir, { recursive: true });
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
+    writeFileSync(join(projectClaudeDir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://project.example.test/v1" } }));
+
+    const status = `process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }))`;
+    const resolved = { ok: true as const, command: process.execPath, prefixArgs: ["-e", status], source: "path" as const };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.billing.allowLoopbackProxy = true;
+    cfg.billing.acknowledgeUnverifiableExtraUsage.claude = true;
+    const claude = checkAuth("claude", resolved, cfg, s.paths, s.env);
+    assert.equal(claude.ok, true);
+    assert.deepEqual(claude.conflicts, []);
+    assert.ok(claude.warnings.some((warning) => !warning.includes("project.example.test") && warning.includes("ignorada")));
+
+    const projectCodexDir = join(s.paths.projectRoot, ".codex");
+    mkdirSync(projectCodexDir, { recursive: true });
+    writeFileSync(s.codexConfig, [
+      'model_provider = "remote"',
+      "[model_providers.remote]",
+      'base_url = "https://user.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(join(projectCodexDir, "config.toml"), [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    cfg.executors.codex.ignoreUserConfig = true;
+    cfg.billing.acknowledgeUnverifiableExtraUsage.codex = true;
+    const codexStatus = `process.stdout.write("Logged in using ChatGPT\\n")`;
+    const codexResolved = { ok: true as const, command: process.execPath, prefixArgs: ["-e", codexStatus], source: "path" as const };
+    const codex = checkAuth("codex", codexResolved, cfg, s.paths, s.env);
+    assert.equal(codex.ok, true);
+    assert.deepEqual(codex.conflicts, []);
+    assert.ok(codex.warnings.some((warning) => warning.includes("--ignore-user-config")));
+  });
+
+  it("considera o TOML system quando --ignore-user-config remove a camada do usuário", () => {
+    const s = sandbox();
+    const systemConfig = join(s.root, "system-config.toml");
+    s.paths.codexSystemConfig = systemConfig;
+    writeFileSync(s.codexConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(systemConfig, [
+      'model_provider = "remote"',
+      "[model_providers.remote]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    const result = codexConfigConflicts(s.paths, s.env, true, true);
+    assert.equal(result.conflicts.length, 1);
+    assert.match(result.conflicts[0]!, /system-config\.toml/);
+    assert.ok(result.warnings.some((warning) => warning.includes("--ignore-user-config")));
+  });
+
+  it("não autoriza projeto loopback a mascarar system remoto sem confiança verificável", () => {
+    const s = sandbox();
+    const systemConfig = join(s.root, "system-config.toml");
+    const projectConfig = join(s.paths.projectRoot, ".codex", "config.toml");
+    s.paths.codexSystemConfig = systemConfig;
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(systemConfig, [
+      'model_provider = "remote"',
+      "[model_providers.remote]",
+      'base_url = "https://gateway.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(projectConfig, [
+      'model_provider = "headroom"',
+      "[model_providers.headroom]",
+      'base_url = "http://127.0.0.1:8787/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+
+    const result = codexConfigConflicts(s.paths, s.env, true, true);
+    assert.equal(result.conflicts.length, 1);
+    assert.match(result.conflicts[0]!, /confiança verificável/);
+  });
+
+  it("inspeciona managed e requirements sem permitir overlay de projeto", () => {
+    const s = sandbox();
+    const managedConfig = join(s.root, "managed-config.toml");
+    const requirements = join(s.root, "requirements.toml");
+    s.paths.codexManagedConfig = managedConfig;
+    s.paths.codexRequirements = requirements;
+    writeFileSync(managedConfig, [
+      'model_provider = "remote"',
+      "[model_providers.remote]",
+      'base_url = "https://managed.example.test/v1"',
+      "requires_openai_auth = true",
+    ].join("\n"));
+    writeFileSync(requirements, 'chatgpt_base_url = "https://managed.example.test/backend-api/"\n');
+
+    const result = codexConfigConflicts(s.paths, s.env, true);
+    assert.equal(result.conflicts.length, 2);
+    assert.ok(result.conflicts.some((conflict) => conflict.includes("managed-config.toml")));
+    assert.ok(result.conflicts.some((conflict) => conflict.includes("requirements.toml")));
+  });
+
+  it("detecta openai_base_url remoto e preserva o endpoint oficial", () => {
+    const s = sandbox();
+    writeFileSync(s.codexConfig, 'openai_base_url = "https://gateway.example.test/v1"\n');
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
+
+    writeFileSync(s.codexConfig, 'openai_base_url = "https://api.openai.com/v1/"\n');
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, []);
+  });
+
+  it("codexConfiguredModel respeita a fonte de configuração ignorada", () => {
+    const s = sandbox();
+    mkdirSync(join(s.paths.projectRoot, ".codex"), { recursive: true });
+    writeFileSync(s.codexConfig, 'model = "user-model"\n');
+    writeFileSync(join(s.paths.projectRoot, ".codex", "config.toml"), 'model = "project-model"\n');
+    assert.equal(codexConfiguredModel(s.paths, s.env), "project-model", "configuração de projeto tem precedência sobre usuário");
+    assert.equal(codexConfiguredModel(s.paths, s.env, true), "project-model");
   });
 
   it("valida toda tabela de provedor e perfil introduzidos pelo projeto", () => {
@@ -311,14 +494,16 @@ describe("proxy local de loopback", () => {
     assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1);
   });
 
-  it("aplica settings locais do usuário antes das settings do projeto", () => {
+  it("não trata settings.local do diretório do usuário como fonte do Claude", () => {
     const s = sandbox();
     const projectDir = join(s.paths.projectRoot, ".claude");
     mkdirSync(projectDir, { recursive: true });
-    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://user.example.test/v1" } }));
+    writeFileSync(s.claudeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
     writeFileSync(join(s.paths.home, ".claude", "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787/v1" } }));
     writeFileSync(join(projectDir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://project.example.test/v1" } }));
-    assert.equal(claudeSettingsConflicts(s.paths, s.env, true).conflicts.length, 1);
+    const result = claudeSettingsConflicts(s.paths, s.env, true, "user");
+    assert.equal(result.conflicts.length, 0, "a única fonte carregada é o settings.json do usuário");
+    assert.ok(result.warnings.some((warning) => warning.includes(join(projectDir, "settings.json")) && warning.includes("ignorada")));
   });
 
   it("falha fechado para formas TOML de roteamento ainda não suportadas", () => {

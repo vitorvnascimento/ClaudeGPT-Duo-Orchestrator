@@ -1,7 +1,7 @@
 // Fluxo determinístico de uma delegação: valida, aplica restrições, aciona a CLI do executor,
 // verifica o resultado de forma independente e registra estado e métricas. Não é um segundo cérebro.
-import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, type Catalog, type ModelInfo } from "../adapters/catalog.js";
@@ -20,15 +20,16 @@ import { createStreamRedactor, redact, redactDeep } from "../redact.js";
 import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorLock, newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
-import { isWriteKind, type AcceptanceResult, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
+import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
 import { buildExecutorPrompt } from "./prompt.js";
-import { EFFORTS, selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
+import { selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
 import { confirmFloor, selectModel, type ModelSelection } from "./select.js";
 import { observeTaskQuota, quotaBlock, quotaStates } from "./quota.js";
-import { recordCapacity } from "./capacity.js";
+import { capacityBlock, recordCapacity } from "./capacity.js";
+import { chainPolicy, chainStatus, effortRank, maxEffort, maxTier } from "./chain.js";
 import { deriveTags, evaluateCandidates, liveAvailability } from "./router.js";
 
 export const EXIT = { ok: 0, failed: 1, invalid: 2, blocked: 3, cancelled: 4 } as const;
@@ -70,8 +71,6 @@ function blockTask(task: Task, reason: string): void {
   else { task.outcome = reason; task.updatedAt = new Date().toISOString(); }
 }
 
-const chainRoot = (task: Task): string => task.selection?.chainRoot ?? task.selection?.attemptOf ?? task.taskId;
-const effortRank = (effort: string | null | undefined): number => EFFORTS.indexOf(effort as Effort);
 
 function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig): Task {
   const taskId = newId("task");
@@ -162,7 +161,6 @@ function runGates(
   cfg: DuoConfig,
   projectRoot: string,
   env: NodeJS.ProcessEnv,
-  authPaths: AuthPaths,
   catalog: Catalog | null,
 ): { ok: true; gates: Gates } | { ok: false; reason: string } {
   const policy = policyBlockReason(req, cfg, run);
@@ -206,10 +204,6 @@ function runGates(
     return { ok: false, reason: "o Claude Code não gera imagens raster; use um executor com image_generation (duo models)" };
   }
 
-  const auth = checkAuth(req.executor, resolved, cfg, authPaths, env);
-  const authReason = authBlockReason(auth);
-  if (authReason) return { ok: false, reason: `autenticação/cobrança: ${authReason}` };
-
   return { ok: true, gates: { resolved, caps, entries: scope.entries } };
 }
 
@@ -242,7 +236,19 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   let req: DelegationRequest;
   let task: Task;
   let run: Run;
+  let chain: Chain;
   let resuming = false;
+  const owner = { pid: process.pid, nonce: randomBytes(16).toString("hex") };
+  const reused = (current: Chain): DelegateOutcome => {
+    const result = store.loadTask(current.runId, chainPolicy(current).latestTaskId);
+    return result ? { exitCode: exitFor(result.state), summary: { ...summarize(result), reused: true, note: "resultado já existente para esta cadeia; nenhuma nova invocação" } }
+      : invalid(`última tentativa ausente: ${current.latestTaskId}`);
+  };
+  const assessmentFor = (request: DelegationRequest) => {
+    const scope = validateScope(projectRoot, request.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: !isWriteKind(request.kind) });
+    const entries = scope.ok ? scope.entries : [];
+    return assessComplexity(request, entries, scope.ok ? deriveTags(projectRoot, entries, true) : [], cfg.routing.adaptive.lightMaxFiles);
+  };
 
   if (opts.resumeTaskId) {
     const found = store.findTask(opts.resumeTaskId);
@@ -251,250 +257,330 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const r = store.loadRun(task.runId);
     if (!r) return invalid(`run ausente para a task ${task.taskId}`);
     run = r;
-    if (task.state === "running") {
-      if (task.pids.bridge && isPidAlive(task.pids.bridge)) return invalid(`task ${task.taskId} ainda está em execução (pid ${task.pids.bridge})`);
-      blockTask(task, "interrompida: o processo da ponte não está mais ativo");
-      store.saveTask(task);
-    }
-    if (task.pids.child && isPidAlive(task.pids.child)) {
-      return invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`);
-    }
-    if (task.state !== "blocked") return invalid(`só tarefas em blocked podem ser retomadas (estado atual: ${task.state})`);
-    const root = store.findTask(chainRoot(task)) ?? task;
-    const saved = readJson<DelegationRequest>(join(root.artifactsDir, "request.json"));
-    if (!saved) return invalid("request.json da task não encontrado");
+    chain = store.chainForTask(task);
+    const policy = chainPolicy(chain, { resumeTaskId: task.taskId });
+    if (policy.resumeError) return invalid(policy.resumeError);
+    if (policy.succeeded) return reused(chain);
+    const saved = readJson<DelegationRequest>(chain.originalRequestPath);
+    if (!saved) return invalid("request.json da cadeia não encontrado");
     req = saved;
+    let refused: DelegateOutcome | null = null;
+    chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
+      const policy = chainPolicy(fresh, { resumeTaskId: task.taskId });
+      if (policy.resumeError) { refused = invalid(policy.resumeError); return; }
+      // Reutilização é feita fora do lock (loadTask também faz migração sob lock).
+      if (policy.succeeded) return;
+      if (task.pids.child && isPidAlive(task.pids.child)) {
+        refused = invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`); return;
+      }
+      if (["planned", "approved", "running"].includes(task.state) && !policy.running) blockTask(task, "interrompida: o processo da ponte não está mais ativo");
+      if (task.state !== "blocked") { refused = invalid(`só tarefas em blocked podem ser retomadas (estado atual: ${task.state})`); return; }
+      fresh.status = "running";
+      fresh.owner = owner;
+    });
+    if (refused) return refused;
+    if (chainPolicy(chain).succeeded) return reused(chain);
     resuming = task.base !== null;
   } else {
     if (!opts.requestPath) return invalid("informe --request <arquivo.json> ou --resume <taskId>");
     const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false);
     if (!parsed.ok) return parsed.out;
     req = parsed.req;
-    if (req.runId) {
-      const r = store.loadRun(req.runId);
-      if (!r) return invalid(`run não encontrado: ${req.runId}`);
-      run = r;
-    } else {
-      run = newRun(req, cfg);
-    }
-    let retryOf: string | undefined;
-    if (req.taskKey) {
-      const { runId: _r, taskKey: _k, ...hashable } = req;
-      const hash = stableHash(hashable);
-      const latest = new Map<string, Task>();
-      for (const prev of store.listTasks(run).filter((t) => t.taskKey === req.taskKey)) {
-        const root = chainRoot(prev), last = latest.get(root);
-        if (!last || (prev.selection?.attempt ?? 1) >= (last.selection?.attempt ?? 1)) latest.set(root, prev);
+    const existing = req.runId ? store.loadRun(req.runId) : null;
+    if (req.runId && !existing) return invalid(`run não encontrado: ${req.runId}`);
+    run = existing ?? newRun(req, cfg);
+    let refused: DelegateOutcome | null = null;
+    let reuse: Chain | null = null;
+    // A reserva de taskKey e a inclusão da task são uma única transação do run.
+    run = store.updateRun(run.runId, (fresh) => {
+      let retryOf: string | undefined;
+      if (req.taskKey) {
+        const { runId: _r, taskKey: _k, ...hashable } = req;
+        const hash = stableHash(hashable);
+        const matches = store.listChains(fresh.runId).filter((c) => c.taskKey === req.taskKey);
+        reuse = matches.find((c) => c.requestHash === hash && chainPolicy(c).succeeded) ?? null;
+        if (reuse) return;
+        for (const prior of matches) {
+          const policy = chainPolicy(prior);
+          if (prior.status === "running") { refused = invalid(`taskKey ${req.taskKey} já está em execução (${policy.latestTaskId})`); return; }
+          if (prior.status === "blocked") { refused = invalid(`taskKey ${req.taskKey} está bloqueada (${policy.latestTaskId}); use duo delegate --resume ${policy.latestTaskId}`); return; }
+          retryOf = policy.latestTaskId;
+        }
       }
-      const reused = [...latest.values()].find((t) => t.state === "succeeded" && (store.findTask(chainRoot(t))?.requestHash ?? t.requestHash) === hash);
-      if (reused) return { exitCode: EXIT.ok, summary: { ...summarize(reused), reused: true, note: "resultado já existente para este taskKey; nenhuma nova invocação" } };
-      for (const prev of latest.values()) {
-        if (prev.state === "running" || prev.state === "approved") return invalid(`taskKey ${req.taskKey} já está em execução (${prev.taskId})`);
-        if (prev.state === "blocked") return invalid(`taskKey ${req.taskKey} está bloqueada (${prev.taskId}); use duo delegate --resume ${prev.taskId}`);
-        retryOf = prev.taskId;
-      }
-    }
-    task = newTask(req, run, store, cfg);
-    if (retryOf) task.retryOf = retryOf;
-    run.taskIds.push(task.taskId);
-    store.saveRun(run);
-    mkdirSync(task.artifactsDir, { recursive: true });
-    writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
-    store.saveTask(task);
+      task = newTask(req, fresh, store, cfg);
+      if (retryOf) task.retryOf = retryOf;
+      mkdirSync(task.artifactsDir, { recursive: true });
+      writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
+      chain = store.chainForTask(task, { request: req, floor: assessmentFor(req).floor });
+      chain = store.updateChain(fresh.runId, chain.chainId, (current) => { current.status = "running"; current.owner = owner; });
+      store.saveTask(task);
+      fresh.taskIds.push(task.taskId);
+    }, run);
+    if (refused) return refused;
+    if (reuse) return reused(reuse);
   }
-
-  let catalog: Catalog | null = null;
+  // Todas as saídas, inclusive gates/exceções, liberam a reserva persistida.
+  task = task!;
+  chain = chain!;
   try {
-    catalog = await loadCatalog(store, cfg, { env });
-  } catch {
-    catalog = null; // sem catálogo, a disponibilidade do modelo é confirmada na execução
-  }
-  const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
-  const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: !isWriteKind(req.kind) });
-  const entriesForSelection = scope.ok ? scope.entries : [];
-  const tags = scope.ok ? deriveTags(projectRoot, entriesForSelection, adaptive) : [];
-  const assessment = assessComplexity(req, entriesForSelection, tags, cfg.routing.adaptive.lightMaxFiles);
-  let target: Tier = assessment.tier;
-  let escalateToMax = false;
-  let previous: Task | null = null;
-  const originalReq = req;
-  const rootId = chainRoot(task);
-  const chainTasks = () => store.listTasks(run).filter((t) => chainRoot(t) === rootId);
-  const chainAttempt = () => Math.max(task.selection?.attempt ?? 1, ...chainTasks().map((t) => t.selection?.attempt ?? 1));
-  let minimumEffort = EFFORTS[Math.max(-1, ...chainTasks().map((t) => effortRank(t.effort?.requested)))];
-  const origin = task.selection?.origin ?? { model: originalReq.model ? "explicit" as const : "auto" as const, effort: originalReq.effort ? "explicit" as const : "auto" as const };
-  let quotaChoice: ModelSelection | null = null;
-  let fallbacks: NonNullable<Task["selection"]>["fallbacks"] = task.selection?.fallbacks;
-  for (;;) {
-    let execReq = { ...originalReq, executor: task.executor };
-    const restoring = !!opts.resumeTaskId && previous === null && !!task.selection;
-    if (restoring) {
-      if (task.model.requested) execReq.model = task.model.requested;
-      if (task.effort?.requested) execReq.effort = task.effort.requested as Effort;
-      task.selection!.chainRoot ??= rootId;
-      task.selection!.origin ??= origin;
-    }
-    if (adaptive && !restoring) {
-      if (assessment.signals.includes("risk=high")) task.risk = "high";
-      const candidates = evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: target }, liveAvailability(store, cfg, env, authPaths), catalog).evals;
-      const chosen: ModelSelection | null = quotaChoice ?? (escalateToMax && previous?.model.requested ? { model: previous.model.requested, tier: previous.selection?.tier ?? "deep", effort: null, reason: ["deep sem nível acima: mesmo modelo, esforço máximo suportado"] } : origin.model === "auto" ? selectModel(catalog, cfg, task.executor, target, { candidates, floor: assessment.floor, needs: req.needs, minimumEffort, allowDowngrade: previous === null && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") }) : null);
-      if (previous && origin.model === "explicit" && previous.model.requested) execReq.model = previous.model.requested;
-      if (chosen) execReq.model = chosen.model;
-      execReq.model ??= cfg.executors[task.executor].model ?? undefined;
-      if (!execReq.model && task.executor === "codex") {
-        try { execReq.model = codexConfiguredModel(authPaths, env) ?? undefined; }
-        catch { /* padrão ilegível continua desconhecido; piso deep bloqueia abaixo */ }
-      }
-      const info: ModelInfo | null = execReq.model && catalog ? findModel(catalog, task.executor, execReq.model) : null;
-      const actualTier: Tier = info ? tierOf(info, cfg).tier : execReq.model ? tierOf({ id: execReq.model, aliases: [], displayName: execReq.model }, cfg).tier : target;
-      const explicitEffort = originalReq.effort && effortRank(originalReq.effort) >= effortRank(minimumEffort) ? originalReq.effort : null;
-      const effort: DelegationRequest["effort"] | null = quotaChoice?.effort ?? explicitEffort ?? (info ? selectEffort(actualTier, info, { escalateToMax, minimum: minimumEffort }) : null);
-      if (effort) execReq.effort = effort;
-      task.model.requested = execReq.model ?? cfg.executors[task.executor].model ?? null;
-      task.effort = { requested: execReq.effort ?? null };
-      task.selection = { adaptive: true, tier: actualTier, complexitySignals: assessment.signals, model: task.model.requested, effort: task.effort.requested,
-        reason: [...(quotaChoice ? ["fallback de cota: modelo equivalente selecionado", ...quotaChoice.reason] : originalReq.model ? ["model explícito preservado"] : chosen?.reason ?? ["catálogo/candidato indisponível: sem seleção automática de modelo ou esforço"]), ...(originalReq.effort ? ["effort explícito preservado"] : [])],
-        attempt: previous ? chainAttempt() + 1 : task.selection?.attempt ?? 1, attemptOf: task.taskId === rootId ? null : rootId, chainRoot: rootId, origin,
-        ...(fallbacks?.length ? { fallbacks } : {}),
-        ...(previous && !quotaChoice ? { escalatedFrom: { model: previous.model.requested, effort: previous.effort?.requested ?? null, reason: previous.outcome ?? "verificação reprovou" } } : {}) };
-      const pc = catalog?.providers[task.executor];
-      if (!originalReq.model && !chosen && pc?.ok && !pc.stale && pc.models.length && scope.ok) {
-        blockTask(task, "nenhum modelo automático elegível no nível-alvo ou acima; confira include/exclude, capacidade e uso extra");
+    if (opts.resumeTaskId) store.saveTask(task);
+    const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
+    const appendAttempt = (next: Task, reason: ChainAttempt["reason"], tier: Tier, effort: Effort | null = null) => {
+      mkdirSync(next.artifactsDir, { recursive: true });
+      writeJsonAtomic(join(next.artifactsDir, "request.json"), redactDeep(req));
+      store.saveTask(next);
+      run = store.updateRun(run.runId, (freshRun) => {
+        chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
+          if (fresh.owner?.nonce !== owner.nonce) throw new Error("reserva da Chain perdida");
+          fresh.minTier = maxTier(fresh.minTier, tier);
+          fresh.minEffort = maxEffort(fresh.minEffort, effort);
+          fresh.attempts.push({ taskId: next.taskId, attempt: fresh.attempts.length + 1, executor: next.executor,
+            model: next.model.requested, effort: maxEffort(next.effort?.requested), tier, reason, state: next.state });
+          fresh.latestTaskId = next.taskId;
+          if (freshRun.cancelled) { fresh.status = "cancelled"; }
+        });
+        freshRun.taskIds.push(next.taskId);
+      });
+    };
+    if (opts.resumeTaskId && adaptive) {
+      const policy = chainPolicy(chain, { maxAttempts: cfg.routing.adaptive.maxAttempts });
+      if (!policy.canRetry) {
+        task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      quotaChoice = null;
+      const prior = task;
+      const next = newTask(req, run, store, cfg);
+      next.executor = prior.executor;
+      next.model = { ...prior.model, reported: null, reportedSource: "unavailable" };
+      next.effort = prior.effort;
+      next.base = prior.base;
+      next.worktree = prior.worktree;
+      next.native = { ...prior.native };
+      next.selection = { adaptive: true, chainId: chain.chainId, tier: policy.floor, complexitySignals: [],
+        model: next.model.requested, effort: next.effort?.requested ?? null, reason: ["retomada da última tentativa"],
+        attempt: policy.attempts + 1, attemptOf: chain.chainId, chainRoot: chain.chainId };
+      const snapshot = join(prior.artifactsDir, "snapshot");
+      if (existsSync(snapshot)) cpSync(snapshot, join(next.artifactsDir, "snapshot"), { recursive: true });
+      appendAttempt(next, "resume", policy.floor);
+      task = next;
     }
-    if (adaptive) {
-      if (assessment.signals.includes("risk=high")) task.risk = "high";
-      if (task.selection) task.selection.complexitySignals = assessment.signals;
-      const confirmed = confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
-        floor: assessment.floor, effort: task.effort?.requested ?? null, automatic: origin.model === "auto" || !!fallbacks?.length,
-        needs: task.needs, minimumEffort });
-      if (task.selection) task.selection.tier = confirmed.tier;
-      if (!confirmed.ok) {
-        task.selection?.reason.push(confirmed.reason);
-        blockTask(task, confirmed.reason); store.saveTask(task);
-        return { exitCode: EXIT.blocked, summary: summarize(task) };
-      }
-      if (confirmed.effort) {
-        execReq.effort = confirmed.effort;
-        task.effort = { requested: confirmed.effort };
-        if (task.selection) task.selection.effort = confirmed.effort;
-      }
-      if (effortRank(task.effort?.requested) > effortRank(minimumEffort)) minimumEffort = task.effort?.requested as Effort;
-    }
-    if (req.brain === task.executor && (!task.model.requested || !adaptive && !originalReq.model)) {
-      blockTask(task, "delegar ao mesmo cliente exige model explícito ou seleção automática de outro modelo; faça você mesmo");
-      store.saveTask(task);
-      return { exitCode: EXIT.blocked, summary: summarize(task) };
-    }
-    if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && modelMatches(task.model.requested, catalog ? findModel(catalog, task.executor, req.brainModel)?.id ?? req.brainModel : req.brainModel)) {
-      blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
-      store.saveTask(task);
-      return { exitCode: EXIT.blocked, summary: summarize(task) };
-    }
-    const quotaReason = quotaBlock(quotaStates(store)[task.executor], task.model.requested);
-    if (quotaReason) {
-      blockTask(task, `${task.executor}: ${quotaReason}; retome após o reset`);
-      store.saveTask(task);
-      return { exitCode: EXIT.blocked, summary: summarize(task) };
-    }
-    const gate = runGates(execReq, task, run, cfg, projectRoot, env, authPaths, catalog);
-    if (!gate.ok) {
-      blockTask(task, gate.reason);
-      store.saveTask(task);
-      store.telemetry({ event: "task_blocked", runId: run.runId, taskId: task.taskId, executor: task.executor, reason: gate.reason });
-      return { exitCode: EXIT.blocked, summary: summarize(task) };
-    }
-    const { resolved, caps, entries } = gate.gates;
-    task.tags = deriveTags(projectRoot, entries, adaptive);
-    const execCatalog = catalog?.providers[task.executor];
-    if (execCatalog?.stale && (task.model.requested || task.needs.includes("image_generation"))) {
-      const note = `catálogo do ${task.executor} desatualizado (de ${execCatalog.staleSince}): modelo/capacidade não confirmados antes da execução`;
-      if (!task.limitations.includes(note)) task.limitations.push(note);
-    }
-    transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação, política e autenticação aprovadas");
-    store.saveTask(task);
-    const lock = new ExecutorLock(projectRoot);
-    const acquired = lock.acquire(task.taskId, run.runId);
-    if (!acquired.ok) {
-      blockTask(task, `outro executor está ativo neste projeto (${acquired.holder?.taskId ?? "?"}, pid ${acquired.holder?.pid ?? "?"}); o MVP permite um executor por vez`);
-      store.saveTask(task);
-      return { exitCode: EXIT.blocked, summary: summarize(task) };
-    }
-    let out: DelegateOutcome;
+    let catalog: Catalog | null = null;
     try {
-      const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
-      const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-      out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, adaptive, catalog, floor: assessment.floor, automaticModel: origin.model === "auto" || !!fallbacks?.length, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
-    } finally { lock.release(); }
-    if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
-    if (chainAttempt() >= cfg.routing.adaptive.maxAttempts) {
-      task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
-      store.saveTask(task);
-      return { exitCode: out.exitCode, summary: summarize(task) };
+      catalog = await loadCatalog(store, cfg, { env });
+    } catch {
+      catalog = null; // sem catálogo, a disponibilidade do modelo é confirmada na execução
     }
-    if (task.isolation === "in-place" && (task.verification?.filesChangedActual.length
-      || (task.base && diffStates(projectRoot, baseState(task), entries.map((e) => e.rel)).changed.some((p) => !p.startsWith(".duo/"))))) {
-      task.limitations.push(`${out.quotaExceeded || out.capacityUntil ? "fallback de cota/capacidade não aplicado" : "escalada não aplicada"}: a tentativa alterou arquivos in-place; decida no cérebro`);
-      store.saveTask(task);
-      return { exitCode: out.exitCode, summary: summarize(task) };
-    }
-    let retryExecutor = task.executor;
-    if (out.quotaExceeded || out.capacityUntil) {
-      const capacity = !out.quotaExceeded;
-      if (!capacity && task.executor === "codex") catalog = await loadCatalog(store, cfg, { env }).catch(() => catalog);
-      const exhausted = quotaStates(store)[task.executor];
-      const currentTier = task.selection?.tier ?? target;
-      const evals = evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: currentTier }, liveAvailability(store, cfg, env, authPaths), catalog).evals;
-      // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
-      const providers: Provider[] = capacity || exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
-      let next: { executor: Provider; selected: ModelSelection } | null = null;
-      for (const executor of providers) {
-        const selected = selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
-        if (selected) { next = { executor, selected }; break; }
+    const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: !isWriteKind(req.kind) });
+    const entriesForSelection = scope.ok ? scope.entries : [];
+    const tags = scope.ok ? deriveTags(projectRoot, entriesForSelection, adaptive) : [];
+    const assessment = assessComplexity(req, entriesForSelection, tags, cfg.routing.adaptive.lightMaxFiles);
+    const originalReq = req;
+    const rootId = chain.chainId;
+    const coolingAttempt = (executor: Provider, model: string | null) => {
+      const id = (value: string | null) => value && (catalog ? findModel(catalog, executor, value)?.id ?? value : value).toLowerCase();
+      return chainPolicy(store.loadChain(run.runId, rootId)!).unavailable.find((a) => a.executor === executor && id(a.model) === id(model));
+    };
+    const availableCandidates = (tier: Tier) => {
+      return evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: tier }, liveAvailability(store, cfg, env, authPaths, true), catalog).evals.map((candidate) =>
+        coolingAttempt(candidate.executor, candidate.model) ? { ...candidate, available: false } : candidate);
+    };
+    for (;;) {
+      chain = store.loadChain(run.runId, rootId)!;
+      if (adaptive) chain = store.updateChain(run.runId, rootId, (fresh) => { fresh.minTier = maxTier(fresh.minTier, assessment.floor); });
+      const policy = chainPolicy(chain, { maxAttempts: cfg.routing.adaptive.maxAttempts });
+      let minimumEffort = policy.minimumEffort;
+      const origin = policy.origin;
+      const target = maxTier(assessment.tier, policy.floor);
+      let execReq = { ...originalReq, executor: task.executor };
+      // Retentativas já têm a escolha persistida; não dependem de variáveis da iteração anterior.
+      const restoring = !!task.selection && (!!opts.resumeTaskId || chain.attempts.at(-1)?.reason !== "initial");
+      if (restoring) {
+        if (task.model.requested) execReq.model = task.model.requested;
+        if (task.effort?.requested) execReq.effort = task.effort.requested as Effort;
       }
-      if (!next) {
-        task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
+      if (adaptive && !restoring) {
+        if (assessment.signals.includes("risk=high")) task.risk = "high";
+        const candidates = availableCandidates(target);
+        const chosen = origin.model === "auto" ? selectModel(catalog, cfg, task.executor, target, { candidates, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") }) : null;
+        if (chosen) execReq.model = chosen.model;
+        execReq.model ??= cfg.executors[task.executor].model ?? undefined;
+        if (!execReq.model && task.executor === "codex") {
+          try { execReq.model = codexConfiguredModel(authPaths, env, cfg.executors.codex.ignoreUserConfig) ?? undefined; }
+          catch { /* padrão ilegível continua desconhecido; piso deep bloqueia abaixo */ }
+        }
+        const info: ModelInfo | null = execReq.model && catalog ? findModel(catalog, task.executor, execReq.model) : null;
+        const actualTier: Tier = info ? tierOf(info, cfg).tier : execReq.model ? tierOf({ id: execReq.model, aliases: [], displayName: execReq.model }, cfg).tier : target;
+        const explicitEffort = originalReq.effort && effortRank(originalReq.effort) >= effortRank(minimumEffort) ? originalReq.effort : null;
+        const effort: DelegationRequest["effort"] | null = explicitEffort ?? (info ? selectEffort(actualTier, info, { minimum: minimumEffort }) : null);
+        if (effort) execReq.effort = effort;
+        task.model.requested = execReq.model ?? cfg.executors[task.executor].model ?? null;
+        task.effort = { requested: execReq.effort ?? null };
+        task.selection = { adaptive: true, tier: actualTier, complexitySignals: assessment.signals, model: task.model.requested, effort: task.effort.requested,
+          reason: [...(originalReq.model ? ["model explícito preservado"] : chosen?.reason ?? ["catálogo/candidato indisponível: sem seleção automática de modelo ou esforço"]), ...(originalReq.effort ? ["effort explícito preservado"] : [])],
+          chainId: rootId, attempt: policy.attempts, attemptOf: task.taskId === rootId ? null : rootId, chainRoot: rootId };
+        const pc = catalog?.providers[task.executor];
+        if (!originalReq.model && !chosen && pc?.ok && !pc.stale && pc.models.length && scope.ok) {
+          blockTask(task, "nenhum modelo automático elegível no nível-alvo ou acima; confira include/exclude, capacidade e uso extra");
+          store.saveTask(task);
+          return { exitCode: EXIT.blocked, summary: summarize(task) };
+        }
+      }
+      if (adaptive) {
+        if (assessment.signals.includes("risk=high")) task.risk = "high";
+        if (task.selection) task.selection.complexitySignals = assessment.signals;
+        const confirmed = confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
+          floor: policy.floor, effort: task.effort?.requested ?? null, automatic: policy.automatic,
+          needs: task.needs, minimumEffort });
+        if (task.selection) task.selection.tier = confirmed.tier;
+        if (!confirmed.ok) {
+          task.selection?.reason.push(confirmed.reason);
+          blockTask(task, confirmed.reason); store.saveTask(task);
+          return { exitCode: EXIT.blocked, summary: summarize(task) };
+        }
+        if (confirmed.effort) {
+          execReq.effort = confirmed.effort;
+          task.effort = { requested: confirmed.effort };
+          if (task.selection) task.selection.effort = confirmed.effort;
+        }
+        chain = store.updateChain(run.runId, rootId, (fresh) => {
+          fresh.minTier = maxTier(fresh.minTier, confirmed.tier);
+          fresh.minEffort = maxEffort(fresh.minEffort, task.effort?.requested);
+        });
+      }
+      if (req.brain === task.executor && (!task.model.requested || !adaptive && !originalReq.model)) {
+        blockTask(task, "delegar ao mesmo cliente exige model explícito ou seleção automática de outro modelo; faça você mesmo");
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      const from = { executor: task.executor, model: task.model.requested };
-      fallbacks = [...(fallbacks ?? []), { from, to: { executor: next.executor, model: next.selected.model }, reason: capacity ? "modelo sem capacidade no fornecedor" : "cota esgotada", resetsAt: capacity ? out.capacityUntil ?? null : exhausted?.resetsAt ?? null }];
-      retryExecutor = next.executor;
-      quotaChoice = next.selected;
-      target = currentTier;
-      escalateToMax = false;
-    } else {
-      const pc = catalog?.providers[task.executor];
-      if (!pc?.ok || pc.stale) {
-        task.limitations.push("escalada não aplicada: catálogo indisponível para confirmar o próximo modelo/esforço");
+      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && modelMatches(task.model.requested, catalog ? findModel(catalog, task.executor, req.brainModel)?.id ?? req.brainModel : req.brainModel)) {
+        blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      const cooling = adaptive && (coolingAttempt(task.executor, task.model.requested)?.capacityUntil
+        ?? capacityBlock(store, task.executor, task.model.requested));
+      if (cooling) {
+        blockTask(task, `modelo ${task.model.requested ?? "padrão"} sem capacidade até ${cooling}; retome após o cooldown`);
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      const quotaReason = quotaBlock(quotaStates(store)[task.executor], task.model.requested);
+      if (quotaReason) {
+        blockTask(task, `${task.executor}: ${quotaReason}; retome após o reset`);
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      run = store.loadRun(run.runId)!;
+      const gate = runGates(execReq, task, run, cfg, projectRoot, env, catalog);
+      if (!gate.ok) {
+        blockTask(task, gate.reason);
+        store.saveTask(task);
+        store.telemetry({ event: "task_blocked", runId: run.runId, taskId: task.taskId, executor: task.executor, reason: gate.reason });
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      const { resolved, caps, entries } = gate.gates;
+      task.tags = deriveTags(projectRoot, entries, adaptive);
+      const execCatalog = catalog?.providers[task.executor];
+      if (execCatalog?.stale && (task.model.requested || task.needs.includes("image_generation"))) {
+        const note = `catálogo do ${task.executor} desatualizado (de ${execCatalog.staleSince}): modelo/capacidade não confirmados antes da execução`;
+        if (!task.limitations.includes(note)) task.limitations.push(note);
+      }
+      transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação e política aprovadas; autenticação será conferida no plano efetivo");
+      store.saveTask(task);
+      const lock = new ExecutorLock(projectRoot);
+      const acquired = lock.acquire(task.taskId, run.runId);
+      if (!acquired.ok) {
+        blockTask(task, `outro executor está ativo neste projeto (${acquired.holder?.taskId ?? "?"}, pid ${acquired.holder?.pid ?? "?"}); o MVP permite um executor por vez`);
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      let out: DelegateOutcome;
+      try {
+        const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
+        const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
+        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
+      } finally { lock.release(); }
+      if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
+      if (!chainPolicy(store.loadChain(run.runId, rootId)!, { maxAttempts: cfg.routing.adaptive.maxAttempts }).canRetry) {
+        task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
         store.saveTask(task);
         return { exitCode: out.exitCode, summary: summarize(task) };
       }
-      const currentTier: Tier = task.selection?.tier ?? target;
-      const nextTier: Tier | undefined = TIERS[tierRank(currentTier) + 1];
-      target = nextTier ?? "deep";
-      escalateToMax = !nextTier;
-      // Fixações explícitas nunca são substituídas; só repetir se há um aumento real disponível.
-      if (origin.model === "explicit" || escalateToMax) {
-        const info: ModelInfo | null = task.model.requested && catalog ? findModel(catalog, task.executor, task.model.requested) : null;
-        const nextEffort: DelegationRequest["effort"] | null = originalReq.effort ?? (info ? selectEffort("deep", info, { escalateToMax: true, minimum: minimumEffort }) : null);
-        if (!nextEffort || effortRank(nextEffort) <= effortRank(task.effort?.requested)) return out;
-        escalateToMax = true;
+      if (task.isolation === "in-place" && (task.verification?.filesChangedActual.length
+        || (task.base && diffStates(projectRoot, baseState(task), entries.map((e) => e.rel)).changed.some((p) => !p.startsWith(".duo/"))))) {
+        task.limitations.push(`${out.quotaExceeded || out.capacityUntil ? "fallback de cota/capacidade não aplicado" : "escalada não aplicada"}: a tentativa alterou arquivos in-place; decida no cérebro`);
+        store.saveTask(task);
+        return { exitCode: out.exitCode, summary: summarize(task) };
       }
+      minimumEffort = chainPolicy(store.loadChain(run.runId, rootId)!).minimumEffort;
+      let retryExecutor = task.executor;
+      let attemptReason: ChainAttempt["reason"];
+      let nextSelection: ModelSelection;
+      if (out.quotaExceeded || out.capacityUntil) {
+        const capacity = !out.quotaExceeded;
+        if (!capacity && task.executor === "codex") catalog = await loadCatalog(store, cfg, { env }).catch(() => catalog);
+        const exhausted = quotaStates(store)[task.executor];
+        const currentTier = chainPolicy(store.loadChain(run.runId, rootId)!).floor;
+        const evals = availableCandidates(currentTier);
+        // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
+        const providers: Provider[] = capacity || exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
+        let next: { executor: Provider; selected: ModelSelection } | null = null;
+        for (const executor of providers) {
+          const selected = selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+          if (selected) { next = { executor, selected }; break; }
+        }
+        if (!next) {
+          task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
+          store.saveTask(task);
+          return { exitCode: EXIT.blocked, summary: summarize(task) };
+        }
+        attemptReason = capacity ? "capacity" : "quota";
+        retryExecutor = next.executor;
+        nextSelection = { ...next.selected, reason: [`fallback de ${capacity ? "capacidade" : "cota"}: modelo equivalente selecionado`, ...next.selected.reason] };
+      } else {
+        attemptReason = "escalation";
+        const pc = catalog?.providers[task.executor];
+        if (!pc?.ok || pc.stale) {
+          task.limitations.push("escalada não aplicada: catálogo indisponível para confirmar o próximo modelo/esforço");
+          store.saveTask(task);
+          return { exitCode: out.exitCode, summary: summarize(task) };
+        }
+        const currentTier = chainPolicy(store.loadChain(run.runId, rootId)!).floor;
+        const nextTier: Tier | undefined = TIERS[tierRank(currentTier) + 1];
+        // Fixações explícitas nunca são substituídas; só repetir se há um aumento real disponível.
+        if (origin.model === "explicit" || !nextTier) {
+          const info: ModelInfo | null = task.model.requested && catalog ? findModel(catalog, task.executor, task.model.requested) : null;
+          const nextEffort: DelegationRequest["effort"] | null = originalReq.effort ?? (info ? selectEffort("deep", info, { escalateToMax: true, minimum: minimumEffort }) : null);
+          if (!task.model.requested || !nextEffort || effortRank(nextEffort) <= effortRank(task.effort?.requested)) return out;
+          nextSelection = { model: task.model.requested, effort: nextEffort, tier: currentTier, reason: ["mesmo modelo, esforço máximo suportado"] };
+        } else {
+          const selected = selectModel(catalog, cfg, task.executor, nextTier, { candidates: availableCandidates(nextTier), floor: nextTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+          if (!selected) {
+            task.limitations.push(`escalada não aplicada: nenhum modelo elegível de nível ${nextTier} ou superior`);
+            store.saveTask(task);
+            return { exitCode: out.exitCode, summary: summarize(task) };
+          }
+          nextSelection = { ...selected, effort: originalReq.effort && effortRank(originalReq.effort) >= effortRank(minimumEffort) ? originalReq.effort : selected.effort };
+        }
+      }
+      task = newTask(originalReq, run, store, cfg);
+      task.executor = retryExecutor;
+      task.requestHash = chain.requestHash;
+      task.model.requested = nextSelection.model;
+      task.effort = { requested: nextSelection.effort };
+      task.selection = { adaptive: true, chainId: rootId, tier: nextSelection.tier, complexitySignals: assessment.signals,
+        model: task.model.requested, effort: nextSelection.effort, reason: nextSelection.reason,
+        attempt: policy.attempts + 1, attemptOf: rootId, chainRoot: rootId };
+      appendAttempt(task, attemptReason, nextSelection.tier, nextSelection.effort);
+      resuming = false;
     }
-    previous = task;
-    task = newTask(originalReq, run, store, cfg);
-    task.executor = retryExecutor;
-    task.requestHash = (store.findTask(rootId) ?? previous).requestHash;
-    run.taskIds.push(task.taskId);
-    store.saveRun(run);
-    mkdirSync(task.artifactsDir, { recursive: true });
-    writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(originalReq));
-    store.saveTask(task);
-    resuming = false;
+  } finally {
+    store.updateChain(run.runId, chain.chainId, (fresh) => {
+      if (fresh.owner?.nonce !== owner.nonce) return;
+      fresh.status = store.loadRun(run.runId)?.cancelled ? "cancelled" : chainStatus(task.state === "running" ? "blocked" : task.state);
+      fresh.owner = null;
+    });
   }
 }
 
@@ -506,6 +592,7 @@ type ExecCtx = {
   store: Store;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
+  authPaths: AuthPaths;
   lock: ExecutorLock;
   resolved: Gates["resolved"];
   caps: Capabilities;
@@ -513,8 +600,7 @@ type ExecCtx = {
   resuming: boolean;
   adaptive: boolean;
   catalog: Catalog | null;
-  floor: Tier;
-  automaticModel: boolean;
+  chainId: string;
   timeoutSec: number;
   codexHome: string;
   signal?: AbortSignal;
@@ -550,7 +636,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
 
   let execCwd = projectRoot;
   if (worktreeMode) {
-    const wt = join(store.base, "worktrees", task.taskId);
+    const wt = task.worktree ?? join(store.base, "worktrees", task.taskId);
     if (!existsSync(wt)) {
       const r = worktreeAdd(projectRoot, wt, task.base.head as string);
       if (!r.ok) return block(`falha ao criar worktree: ${redact(r.stderr.slice(0, 300))}`);
@@ -576,7 +662,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   writeFileSync(join(task.artifactsDir, "prompt.txt"), redact(prompt));
 
   const writes = isWriteKind(task.kind);
-  const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId, DUO_ATTEMPT: String(task.selection?.attempt ?? 1) });
+  const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId, DUO_ATTEMPT: String(chainPolicy(store.loadChain(run.runId, ctx.chainId)!).attempts) });
   const adapter = ADAPTERS[task.executor];
   let plan: ReturnType<ExecutorAdapter["plan"]>;
   try {
@@ -600,13 +686,26 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   } catch (e) {
     return block(`não foi possível montar a invocação do ${task.executor}: ${(e as Error).message}`);
   }
+  // Valida o plano efetivo: flags ausentes não excluem fontes, e a worktree
+  // pode carregar settings diferentes das que estavam no diretório do cérebro.
+  const sourceIndex = plan.args.indexOf("--setting-sources");
+  const auth = checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
+    settingSources: sourceIndex < 0 ? "" : plan.args[sourceIndex + 1] ?? "",
+    ignoreUserConfig: plan.args.includes("--ignore-user-config"),
+  });
+  const authReason = authBlockReason(auth);
+  if (authReason) return block(`autenticação/cobrança: ${authReason}`);
   writeJsonAtomic(join(task.artifactsDir, "invocation.json"), redactDeep({ command: plan.command, args: plan.args, cwd: plan.cwd, enforced: plan.enforced }));
 
+  let policyReason: string | null = null;
+  store.updateRun(run.runId, (fresh) => {
+    policyReason = policyBlockReason(req, cfg, fresh);
+    if (!policyReason) fresh.invocations++;
+  });
+  if (policyReason) return block(`política: ${policyReason}`);
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;
   task.pids = { bridge: process.pid, child: null };
-  run.invocations++;
-  store.saveRun(run);
   store.saveTask(task);
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 
@@ -614,10 +713,14 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const nativeAbort = new AbortController();
   let nativeFailure: string | null = null;
   const confirmNative = (model: string | null, effort = task.effort?.requested ?? null): string | null => {
-    const checked = confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor: ctx.floor,
-      effort, automatic: ctx.automaticModel || !!(model && task.model.requested && !modelMatches(task.model.requested, model)),
-      needs: task.needs, minimumEffort: EFFORTS[effortRank(task.effort?.requested)] });
-    return checked.ok ? null : `modelo efetivo ${model ?? "desconhecido"} abaixo do piso ${ctx.floor} ou não confirmável: ${checked.reason}; resultado não integrado`;
+    const policy = chainPolicy(store.loadChain(run.runId, ctx.chainId)!);
+    const checked = confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor: policy.floor,
+      effort, automatic: policy.automatic || !!(model && task.model.requested && !modelMatches(task.model.requested, model)),
+      needs: task.needs, minimumEffort: policy.minimumEffort });
+    if (checked.ok && effortRank(checked.effort) > effortRank(policy.minimumEffort)) {
+      store.updateChain(run.runId, ctx.chainId, (fresh) => { fresh.minEffort = maxEffort(fresh.minEffort, checked.effort); });
+    }
+    return checked.ok ? null : `modelo efetivo ${model ?? "desconhecido"} abaixo do piso ${policy.floor} ou não confirmável: ${checked.reason}; resultado não integrado`;
   };
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
@@ -748,8 +851,14 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     },
     events: { ...outcome.events, oversize: result.oversizeLines },
   };
-  const fallbackNote = state === "succeeded" && task.selection?.fallbacks?.length
-    ? `; executado por ${task.executor}/${task.model.requested} após ${task.selection.fallbacks.map((f) => `${f.reason} em ${f.from.executor}/${f.from.model}`).join(", ")}` : "";
+  const attempts = store.loadChain(run.runId, ctx.chainId)!.attempts;
+  const fallbackNote = state === "succeeded" ? attempts.flatMap((a, i) => {
+    const prior = attempts[i - 1];
+    return prior && (a.reason === "quota" || a.reason === "capacity") ? [`; executado por ${task.executor}/${task.model.requested} após ${a.reason === "quota" ? "cota esgotada" : "modelo sem capacidade no fornecedor"} em ${prior.executor}/${prior.model}`] : [];
+  }).join("") : "";
+  if (capacityUntil) store.updateChain(run.runId, ctx.chainId, (fresh) => {
+    fresh.attempts.find((a) => a.taskId === task.taskId)!.capacityUntil = capacityUntil;
+  });
   const quotaNote = outcome.errorKind === "quota" ? ` ${task.executor}: ${quotaBlock(quotaStates(store)[task.executor], task.model.requested) ?? "cota esgotada"}.` : "";
   transition(task, state, reason + quotaNote + fallbackNote);
   store.saveTask(task);

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Claude Code simulado: imita `--version`, `--help`, `auth status` e `-p --output-format stream-json`.
+import { existsSync, readFileSync } from "node:fs";
 import {
   applyWrites, emit, emitPrivateKey, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
 } from "./fake-common.mjs";
@@ -28,7 +29,9 @@ if (has("--help")) {
 }
 if (args[0] === "auth" && args[1] === "status") {
   log({ cmd: "auth-status", env: sensitiveEnvSeen() });
-  const mode = process.env.FAKE_AUTH ?? "subscription";
+  const blockedCall = process.env.FAKE_AUTH_BLOCK_CALL && process.env.FAKE_LOG && existsSync(process.env.FAKE_LOG)
+    && readFileSync(process.env.FAKE_LOG, "utf8").split("\n").filter(Boolean).filter((line) => JSON.parse(line).cmd === "auth-status").length === Number(process.env.FAKE_AUTH_BLOCK_CALL);
+  const mode = blockedCall ? "none" : process.env.FAKE_AUTH ?? "subscription";
   const out = {
     subscription: { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "user@example.com", orgId: "org-1234567890abcdef", subscriptionType: "pro" },
     api_key: { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" },

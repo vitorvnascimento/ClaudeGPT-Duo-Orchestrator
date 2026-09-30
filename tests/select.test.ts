@@ -65,4 +65,13 @@ describe("seleção adaptativa I5/I8", () => {
     const candidates = [evidence("gpt-6.1-sol", 0.9)]; candidates[0]!.available = false;
     assert.equal(selectModel(adaptiveCatalog, DEFAULT_CONFIG, "codex", "standard", { candidates, floor: "standard" })?.model, "gpt-6-sol");
   });
+  it("mínimo de esforço descarta destino incompatível e procura equivalente; nunca reduz", () => {
+    const catalog = structuredClone(adaptiveCatalog);
+    catalog.providers.codex.models.find((m) => m.id === "gpt-6-astra")!.efforts = ["high"];
+    const ctx = { candidates: [], floor: "deep" as const, minimumEffort: "xhigh" as const, allowDowngrade: false };
+    const selected = selectModel(catalog, DEFAULT_CONFIG, "codex", "deep", ctx);
+    assert.equal(selected?.model, "gpt-5.6-astra"); assert.equal(selected?.effort, "xhigh");
+    catalog.providers.codex.models.find((m) => m.id === "gpt-5.6-astra")!.efforts = ["high"];
+    assert.equal(selectModel(catalog, DEFAULT_CONFIG, "codex", "deep", ctx), null);
+  });
 });

@@ -6,7 +6,7 @@ export type Tier = "light" | "standard" | "deep";
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = typeof EFFORTS[number];
 
-export function tierOf(model: ModelInfo, cfg: DuoConfig): { tier: Tier; presumed: boolean } {
+export function tierOf(model: Pick<ModelInfo, "id" | "aliases" | "displayName">, cfg: DuoConfig): { tier: Tier; presumed: boolean } {
   const names = [model.id, ...model.aliases, model.displayName];
   for (const rule of cfg.routing.adaptive.tiers) {
     if (names.some((name) => new RegExp(rule.match, "i").test(name))) return { tier: rule.tier, presumed: false };
@@ -40,7 +40,8 @@ export function extraUsage(model: ModelInfo): boolean {
   return /\[1m\]$/i.test(model.id) || /usage credits|per\s+Mtok|\$\s*\d+(?:[.,]\d+)?/i.test(model.description);
 }
 
-export function selectEffort(tier: Tier, model: ModelInfo, opts: { escalateToMax?: boolean } = {}): Effort | null {
+export function selectEffort(tier: Tier, model: ModelInfo, opts: { escalateToMax?: boolean; minimum?: Effort } = {}): Effort | null {
   const desired = opts.escalateToMax ? "xhigh" : ({ light: "low", standard: "medium", deep: "high" } as const)[tier];
-  return EFFORTS.slice(EFFORTS.indexOf(desired)).find((effort) => model.efforts.includes(effort)) ?? null;
+  const floor = Math.max(EFFORTS.indexOf(desired), opts.minimum ? EFFORTS.indexOf(opts.minimum) : 0);
+  return EFFORTS.slice(floor).find((effort) => model.efforts.includes(effort)) ?? null;
 }

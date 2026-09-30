@@ -287,7 +287,6 @@ function recommendResult(
   const { evals, filteredOut } = evaluateCandidates(store, cfg, q, availability, catalog, defaults);
   const assessment = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles);
   const adaptive = cfg.routing.adaptive.enabled;
-  const capableOnly = q.kind === "asset" || needs.includes("image_generation");
   const selections = (["claude", "codex"] as const).flatMap((provider) => {
     const selected = selectModel(catalog, cfg, provider, assessment.tier, { candidates: evals, floor: assessment.floor, needs, allowDowngrade: !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
     return selected ? [{ executor: provider, ...selected }] : [];
@@ -299,7 +298,9 @@ function recommendResult(
       const pc = catalog.providers[c.executor];
       if (!pc.ok || pc.stale) return true; // Fonte indisponível mantém a reserva da 0.2.0.
       const model = pc.models.find((m) => m.id === c.model);
-      return model && automaticModelAllowed(model, cfg) && (capableOnly || selections.some((m) => m.executor === c.executor && m.model === c.model && (!hasTarget || tierRank(m.tier) <= tierRank(assessment.tier) || c.evidence.sufficient)));
+      const selected = selections.find((m) => m.executor === c.executor && m.model === c.model);
+      return model && automaticModelAllowed(model, cfg) && selected !== undefined && tierRank(selected.tier) >= tierRank(assessment.floor)
+        && (!hasTarget || tierRank(selected.tier) <= tierRank(assessment.tier) || c.evidence.sufficient);
     });
   }
   // Disponível primeiro; depois score; empate técnico (< 0,05) desempata pelo menor tempo mediano medido.
@@ -331,13 +332,14 @@ function recommendResult(
   const selection: Selection | undefined = adaptive ? {
     adaptive: true, tier: info ? tierOf(info, cfg).tier : assessment.tier, complexitySignals: assessment.signals,
     model: info?.id ?? null, effort: info ? selectEffort(tierOf(info, cfg).tier, info) : null,
-    reason: capableOnly && info ? ["capacidade exigida: nível não filtra modelos"] : selected?.reason ?? ["catálogo/candidato indisponível: sem seleção automática de modelo ou esforço"],
+    reason: selected?.reason ?? ["nenhum modelo satisfaz a capacidade e o piso exigidos"],
     attempt: 1, attemptOf: null,
   } : undefined;
   const base = { query: q, candidates: evals, notes, ...(selection ? { selection } : {}) };
   if (!best) {
     const why = needs.length ? [`nenhum modelo disponível com ${needs.join(", ")}`] : ["nenhum candidato disponível para delegar"];
-    const canSelf = q.brain !== null && needs.every((n) => n === "code");
+    const hasKnownCatalog = adaptive && catalog !== null && Object.values(catalog.providers).some((provider) => provider.ok && !provider.stale);
+    const canSelf = !hasKnownCatalog && q.brain !== null && needs.every((n) => n === "code");
     return {
       ...base,
       decision: {
@@ -417,11 +419,10 @@ export function recommend(
 ): Recommendation {
   const r = recommendResult(store, cfg, q, availability, catalog, defaults);
   if (!cfg.routing.adaptive.enabled) return r;
-  const assessment = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles);
   const selection = r.selection!;
   const best = r.candidates.find((c) => c.available && c.model === selection.model && c.model !== null);
   const tier = selection.tier;
-  r.decision.tier = assessment.tier;
+  r.decision.tier = selection.tier;
   r.decision.effort = selection.effort;
   r.decision.why.push(...selection.reason);
   const brainInfo = q.brain && q.brainModel ? catalog?.providers[q.brain].models.find((m) => [m.id, ...m.aliases].includes(q.brainModel as string)) : null;

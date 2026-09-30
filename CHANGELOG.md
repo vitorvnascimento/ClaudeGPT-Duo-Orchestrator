@@ -23,6 +23,8 @@ Fases 1–3: catálogo, seleção adaptativa e continuidade sob cota (validaçã
 - Fallback I4 de nível igual/superior com `selection.fallbacks`, novas tentativas/worktrees, todos os gates e proteção de alterações in-place. A task original continua retomável; adaptive desligado não faz fallback.
 - `billing.allowLoopbackProxy` (false por padrão): exceção explícita para proxy HTTP/HTTPS loopback usando assinatura, sem chaves de API e com `requires_openai_auth` no Codex. Doctor informa autorização/dica; SECURITY documenta o risco.
 - Testes offline de parsing/privacidade/expiração, métodos account permitidos, seleção, fallback entre CLIs simuladas e validação de URLs loopback. Nenhuma versão foi alterada.
+- Correções adversariais: modelo efetivo e effort explícito respeitam o piso de risco/escopo; capacidade e nível são exigidos juntos, com tiers coerentes em recommend. Padrão desconhecido ou nível presumido não pode executar sob piso deep.
+- Pedido original preservado em request.json; invocation.json registra a execução resolvida. Retomadas conservam origem automática, raiz/contador da cadeia e esforço mínimo alcançado; fallbacks procuram destinos que sustentem esse esforço. taskKey reutiliza o resultado final pela identidade lógica original.
 
 ## 0.2.0 — 2026-09-29
 

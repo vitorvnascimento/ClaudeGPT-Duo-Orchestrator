@@ -4,7 +4,7 @@ import type { DuoConfig, Provider } from "../config.js";
 import { TIERS, tierRank } from "./complexity.js";
 import type { CandidateEval } from "./router.js";
 
-export type SelectionContext = { candidates: CandidateEval[]; floor: Tier; needs?: Capability[]; allowDowngrade?: boolean };
+export type SelectionContext = { candidates: CandidateEval[]; floor: Tier; needs?: Capability[]; allowDowngrade?: boolean; minimumEffort?: Effort };
 export type ModelSelection = { model: string; effort: Effort | null; tier: Tier; reason: string[] };
 
 export function automaticModelAllowed(model: ModelInfo, cfg: DuoConfig): boolean {
@@ -20,7 +20,8 @@ export function selectModel(catalog: Catalog | null, cfg: DuoConfig, executor: P
   const pc = catalog?.providers[executor];
   if (!pc?.ok || pc.stale || !pc.models.length) return null;
   const ev = (m: ModelInfo) => ctx.candidates.find((c) => c.executor === executor && c.model === m.id);
-  const eligible = pc.models.filter((m) => automaticModelAllowed(m, cfg) && (ctx.needs ?? []).every((n) => m.capabilities.includes(n)) && ev(m)?.available !== false);
+  const eligible = pc.models.filter((m) => automaticModelAllowed(m, cfg) && (ctx.needs ?? []).every((n) => m.capabilities.includes(n)) && ev(m)?.available !== false
+    && (!ctx.minimumEffort || selectEffort(tierOf(m, cfg).tier, m, { minimum: ctx.minimumEffort }) !== null));
   const reason: string[] = [`nível-alvo=${tier}; piso=${ctx.floor}`];
   const ranked = (target: Tier, downgrade = false) => {
     let models = eligible.filter((m) => tierOf(m, cfg).tier === target);
@@ -39,11 +40,11 @@ export function selectModel(catalog: Catalog | null, cfg: DuoConfig, executor: P
   const below = TIERS[tierRank(tier) - 1];
   if (ctx.allowDowngrade !== false && below && tierRank(below) >= tierRank(ctx.floor)) {
     const m = ranked(below, true)[0];
-    if (m) return { model: m.id, tier: below, effort: selectEffort(below, m), reason: [...reason, `redução protegida: ${m.id}, evidência suficiente no bucket >= ${cfg.routing.adaptive.downgradeMinSuccess}`] };
+    if (m) return { model: m.id, tier: below, effort: selectEffort(below, m, { minimum: ctx.minimumEffort }), reason: [...reason, `redução protegida: ${m.id}, evidência suficiente no bucket >= ${cfg.routing.adaptive.downgradeMinSuccess}`] };
   }
   for (const target of TIERS.slice(tierRank(tier))) {
     const m = ranked(target)[0];
-    if (m) return { model: m.id, tier: target, effort: selectEffort(target, m), reason: [...reason, `selecionado ${m.id}: evidência > recomendado pelo fornecedor > versão da família`, ...(target !== tier ? [`nível ${tier} sem candidato elegível; sobe para ${target}`] : [])] };
+    if (m) return { model: m.id, tier: target, effort: selectEffort(target, m, { minimum: ctx.minimumEffort }), reason: [...reason, `selecionado ${m.id}: evidência > recomendado pelo fornecedor > versão da família`, ...(target !== tier ? [`nível ${tier} sem candidato elegível; sobe para ${target}`] : [])] };
   }
   return null;
 }

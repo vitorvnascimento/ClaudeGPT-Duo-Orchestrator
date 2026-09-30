@@ -75,6 +75,7 @@ if (args[0] === "app-server") {
     model("gpt-5.5", "GPT-5.5", "Coding model.", { upgrade: "gpt-5.6-sol", upgradeInfo: { model: "gpt-5.6-sol", retirementAt: 1792004400 } }),
     model("codex-auto-review", "Codex Auto Review", "Automatic approval review model for Codex.", { hidden: true }),
   ];
+  for (const extra of JSON.parse(process.env.FAKE_CODEX_EXTRA_MODELS ?? "[]")) models.push(model(extra.id, extra.id, "test", extra));
   const send = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
   let initialized = false;
   let buf = "";

@@ -86,10 +86,11 @@ A consulta de versões é desligada com `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `C
 | Recurso | Contrato |
 | --- | --- |
 | `duo recommend` | Retorna `tier`, `effort` e `selection` junto da decisão de executor/modelo. `--request <pedido.json>` fornece objetivo, escopo e aceite reais; `--kind` sem aceite mantém piso `standard`. Sem `model` no pedido, escolhe dentro do `executor` informado. |
-| Pisos | Risco alto ou sensível exige `deep`; `light` exige risco baixo, arquivos limitados, nenhum diretório no escopo e comandos de aceite. |
+| Pisos | Risco alto ou sensível exige modelo efetivo `deep`, inclusive explícito/configurado/retomado; padrão desconhecido, nível presumido ou effort explícito abaixo de high bloqueiam nesse piso. Capacidade e nível são exigidos juntos. `light` exige risco baixo, arquivos limitados, nenhum diretório no escopo e comandos de aceite. |
 | Downgrade | Só com evidência suficiente, sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess` e respeito aos pisos. |
 | Escalada | Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa; `deep` usa `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece e, sem ele, só aumenta com suporte. Falha de infraestrutura não escala. |
 | Isolamento | Cada nova tentativa `worktree` usa worktree novo e preserva o anterior. `in-place` só tenta novamente sem alterações deixadas pelo executor. |
+| Retomada e identidade | `request.json` conserva o pedido original; seleção automática continua escalável. `chainRoot`/`attempt` mantêm o orçamento mesmo sem base. Esforço alcançado não diminui no fallback ou na retomada. `taskKey`/hash original identificam a cadeia e reutilizam seu sucesso final. Tasks antigas sem origin usam o pedido da raiz para distinguir campos explícitos. |
 | Forçar comportamento | `model`, `effort`, `complexity` (`light`, `standard` ou `deep`), `adaptive: false` e `duo delegate --no-adaptive`; `model`/`effort` explícitos permanecem na escalada. |
 | Uso extra | Exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo em `routing.include`. Fallback de cota exige modelo de nível igual/superior e todos os gates. |
 

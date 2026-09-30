@@ -40,6 +40,17 @@ function seed(store: Store, items: Seed[]): void {
 
 const allUp: AvailabilityFn = () => ({ available: true, reasons: [] });
 
+function standardOnlyCatalog(): typeof adaptiveCatalog {
+  return {
+    ...adaptiveCatalog,
+    providers: {
+      ...adaptiveCatalog.providers,
+      claude: { ...adaptiveCatalog.providers.claude, models: adaptiveCatalog.providers.claude.models.filter((m) => m.id === "claude-sonnet-5-5") },
+      codex: { ...adaptiveCatalog.providers.codex, models: adaptiveCatalog.providers.codex.models.filter((m) => m.id === "gpt-6.1-sol") },
+    },
+  };
+}
+
 describe("recomendação adaptativa", () => {
   it("prefere nível-alvo disponível em outra conta antes de subir", () => {
     sb = makeSandbox({ routing: { include: ["claude:claude-opus-5-5", "codex:gpt-6.1-sol"] } });
@@ -71,10 +82,44 @@ describe("recomendação adaptativa", () => {
     seed(store, Array.from({ length: 12 }, () => ({ executor: "codex" as const, model: "gpt-6-luna", ok: true })));
     const q = { kind: "implement" as const, tags: ["ts"], risk: "low" as const, brain: null, objective: "Adicionar constante", complexity: "standard" as const, paths: [{ rel: "src/app.ts", isDir: false }], acceptance: { criteria: ["ok"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } };
     assert.equal(recommend(store, cfg, q, allUp, adaptiveCatalog).selection?.tier, "light");
+    const reduced = recommend(store, cfg, q, allUp, adaptiveCatalog);
+    assert.equal(reduced.decision.tier, reduced.selection?.tier);
     assert.notEqual(recommend(store, cfg, { ...q, acceptance: { criteria: ["ok"] } }, allUp, adaptiveCatalog).selection?.tier, "light");
     seed(store, Array.from({ length: 15 }, () => ({ executor: "claude" as const, model: "claude-fable-5-1[1m]", ok: true })));
     const high = recommend(store, cfg, { ...q, risk: "high" }, allUp, adaptiveCatalog);
     assert.notEqual(high.selection?.model, "claude-fable-5-1[1m]");
+  });
+  it("exige capacidade e piso deep juntos; sem ambos decide por julgamento", () => {
+    sb = makeSandbox();
+    const store = new Store(sb.root);
+    const deepQueries = [
+      { kind: "asset" as const, tags: [], risk: "high" as const, brain: "claude" as const, needs: ["image_generation" as const] },
+      { kind: "asset" as const, complexity: "deep" as const, tags: [], risk: "low" as const, brain: "claude" as const, needs: ["image_generation" as const] },
+      { kind: "implement" as const, tags: [], risk: "high" as const, brain: "claude" as const },
+    ];
+    for (const query of deepQueries) {
+      const r = recommend(store, loadConfig(sb.root), query, allUp, adaptiveCatalog);
+      assert.equal(r.selection?.tier, "deep");
+      assert.equal(r.decision.tier, "deep");
+      assert.ok(r.selection?.model);
+      assert.equal(r.selection?.tier, r.decision.tier);
+    }
+
+    const standard = standardOnlyCatalog();
+    const standardQueries = [
+      { kind: "asset" as const, tags: [], risk: "high" as const, brain: "codex" as const, brainModel: "gpt-6.1-sol", needs: ["image_generation" as const] },
+      { kind: "asset" as const, complexity: "deep" as const, tags: [], risk: "low" as const, brain: "codex" as const, brainModel: "gpt-6.1-sol", needs: ["image_generation" as const] },
+      { kind: "implement" as const, tags: [], risk: "high" as const, brain: "codex" as const, brainModel: "gpt-6.1-sol" },
+    ];
+    for (const query of standardQueries) {
+      const r = recommend(store, loadConfig(sb.root), query, allUp, standard);
+      assert.equal(r.decision.action, "judgment");
+      assert.equal(r.decision.executor, null);
+      assert.equal(r.selection?.model, null);
+      assert.equal(r.selection?.tier, "deep");
+      assert.equal(r.decision.tier, "deep");
+      assert.equal(r.selection?.tier, r.decision.tier);
+    }
   });
 });
 
@@ -260,7 +305,7 @@ describe("catálogo das contas no roteador", async () => {
 
   it("arte: só modelos com geração de imagem concorrem; cérebro Claude delega ao gpt-6-astra", () => {
     sb = makeSandbox();
-    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "asset", tags: ["png"], risk: "low", brain: "claude", brainModel: "claude-opus-5-5", needs: ["image_generation"] }, allUp, catalog);
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "asset", tags: ["png"], risk: "high", brain: "claude", brainModel: "claude-opus-5-5", needs: ["image_generation"] }, allUp, catalog);
     assert.ok(r.candidates.every((c) => c.executor === "codex"));
     assert.equal(r.decision.action, "delegate");
     assert.equal(r.decision.executor, "codex");
@@ -271,7 +316,7 @@ describe("catálogo das contas no roteador", async () => {
   it("arte com cérebro Codex: se ele já é o gpt-6-astra faz sozinho; se é outro modelo, delega ao gpt-6-astra", () => {
     sb = makeSandbox();
     const cfg = loadConfig(sb.root);
-    const q = { kind: "asset" as const, tags: [], risk: "low" as const, brain: "codex" as const, needs: ["image_generation" as const] };
+    const q = { kind: "asset" as const, tags: [], risk: "high" as const, brain: "codex" as const, needs: ["image_generation" as const] };
     const self = recommend(new Store(sb.root), cfg, { ...q, brainModel: "gpt-6-astra" }, allUp, catalog);
     assert.equal(self.decision.action, "self");
     const other = recommend(new Store(sb.root), cfg, { ...q, brainModel: "gpt-6-sol" }, allUp, catalog);
@@ -301,10 +346,13 @@ describe("catálogo das contas no roteador", async () => {
     assert.equal(r.decision.model, "gpt-6-astra");
   });
 
-  it("include/exclude da config restringem os modelos considerados", () => {
+  it("include/exclude da config restringem os modelos sem rebaixar o piso deep", () => {
     sb = makeSandbox({ routing: { exclude: ["codex:gpt-6-astra"] } });
-    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "asset", tags: [], risk: "low", brain: "claude", needs: ["image_generation"] }, allUp, catalog);
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "asset", tags: [], risk: "high", brain: "claude", needs: ["image_generation"] }, allUp, catalog);
     assert.ok(!r.candidates.some((c) => c.model === "gpt-6-astra"));
-    assert.equal(r.decision.model, "gpt-6-sol");
+    assert.equal(r.decision.action, "judgment");
+    assert.equal(r.decision.model, null);
+    assert.equal(r.selection?.model, null);
+    assert.equal(r.selection?.tier, "deep");
   });
 });

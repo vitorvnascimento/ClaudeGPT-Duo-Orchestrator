@@ -7,6 +7,8 @@ const IS_WINDOWS = process.platform === "win32";
 const HEAD_BYTES = 64 * 1024;
 const TAIL_BYTES = 256 * 1024;
 const STDERR_TAIL_BYTES = 64 * 1024;
+/** Espera máxima por um "close" que não vem: depois do SIGKILL (processo preso no kernel) ou com o grupo já vazio (pipes herdados de fora do grupo). */
+const KILL_SETTLE_MS = 2000;
 
 /** Divide um stream em linhas completas, tolerando fragmentação e UTF-8 partido entre chunks. */
 export class LineSplitter {
@@ -18,7 +20,13 @@ export class LineSplitter {
   constructor(
     private readonly onLine: (line: string) => void,
     private readonly maxLineBytes = 8 * 1024 * 1024,
+    private readonly onOversize?: () => void,
   ) {}
+
+  private dropOversize(): void {
+    this.oversizeLines++;
+    this.onOversize?.();
+  }
 
   push(chunk: Buffer | string): void {
     const text = typeof chunk === "string" ? chunk : this.decoder.write(chunk);
@@ -33,13 +41,13 @@ export class LineSplitter {
       }
       const line = (this.pending + piece).replace(/\r$/, "");
       this.pending = "";
-      if (Buffer.byteLength(line) > this.maxLineBytes) this.oversizeLines++;
+      if (Buffer.byteLength(line) > this.maxLineBytes) this.dropOversize();
       else if (line.trim()) this.onLine(line);
     }
     if (!this.discarding) {
       this.pending += text.slice(start);
       if (Buffer.byteLength(this.pending.replace(/\r$/, "")) > this.maxLineBytes) {
-        this.oversizeLines++;
+        this.dropOversize();
         this.discarding = true;
         this.pending = "";
       }
@@ -48,9 +56,10 @@ export class LineSplitter {
 
   /** Emite a última linha sem quebra final (stream possivelmente incompleto). */
   end(): void {
-    const rest = this.discarding ? "" : this.pending + this.decoder.end();
+    const rest = (this.discarding ? "" : this.pending + this.decoder.end()).replace(/\r$/, "");
     this.pending = "";
-    if (rest.trim()) this.onLine(rest.replace(/\r$/, ""));
+    if (Buffer.byteLength(rest) > this.maxLineBytes) this.dropOversize();
+    else if (rest.trim()) this.onLine(rest);
   }
 }
 
@@ -87,6 +96,8 @@ export type RunOptions = {
   maxOutputBytes: number;
   maxLineBytes?: number;
   onLine?: (line: string) => void;
+  /** Uma linha acima de maxLineBytes foi descartada sem passar por onLine. */
+  onOversizeLine?: () => void;
   onSpawn?: (pid: number) => void;
   signal?: AbortSignal;
   /** Primeiro sinal no encerramento. Claude Code encerra o turno de forma limpa com SIGINT. */
@@ -109,13 +120,14 @@ export type RunResult = {
   durationMs: number;
 };
 
-const live = new Map<ChildProcess, { killTimer?: NodeJS.Timeout; watchTimer?: NodeJS.Timeout }>();
+const live = new Map<ChildProcess, { killTimer?: NodeJS.Timeout; watchTimer?: NodeJS.Timeout; onEmpty?: () => void }>();
 
 function forgetTree(child: ChildProcess): void {
   const state = live.get(child);
   clearTimeout(state?.killTimer);
   clearInterval(state?.watchTimer);
   live.delete(child);
+  state?.onEmpty?.();
 }
 
 function groupIsAlive(child: ChildProcess): boolean {
@@ -209,7 +221,18 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
       resolve(emptyResult(started, { spawnError: (e as Error).message }));
       return;
     }
-    live.set(child, {});
+    // Grupo visto vazio: com o "close" já recebido, devolve; sem ele, o trabalho acabou (o timeout não vale mais),
+    // mas os pipes podem estar herdados: dá um tempo para drenarem e os solta.
+    live.set(child, {
+      onEmpty: () => {
+        if (closed) settle(closed.code, closed.sig);
+        else {
+          clearTimeout(timer);
+          clearTimeout(releaseTimer);
+          releaseTimer = setTimeout(releasePipes, KILL_SETTLE_MS);
+        }
+      },
+    });
 
     const head: Buffer[] = [];
     let headSize = 0;
@@ -222,6 +245,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
     let spawnError: string | undefined;
     let stopping = false;
     let callbackFailed = false;
+    let callbackCausedStop = false;
     let callbackError: unknown;
     const callCallback = <Value>(callback: ((value: Value) => void) | undefined, value: Value): void => {
       if (callbackFailed || !callback) return;
@@ -229,11 +253,74 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
         callback(value);
       } catch (error) {
         callbackFailed = true;
-        callbackError = error;
-        stop();
+        if (!stopping) {
+          callbackCausedStop = true;
+          callbackError = error;
+          stop();
+        }
       }
     };
-    const splitter = new LineSplitter((line) => callCallback(opts.onLine, line), opts.maxLineBytes);
+    const splitter = new LineSplitter(
+      (line) => callCallback(opts.onLine, line),
+      opts.maxLineBytes,
+      () => callCallback(opts.onOversizeLine, undefined),
+    );
+
+    let closed: { code: number | null; sig: NodeJS.Signals | null } | null = null;
+    let settled = false;
+    // Espera pelos pipes herdados; cancelada ao devolver, para não segurar o event loop depois de um "close" normal.
+    let releaseTimer: NodeJS.Timeout | undefined;
+    let splitterEnded = false;
+    const endSplitter = (): void => {
+      if (splitterEnded || outputLimitExceeded) return;
+      splitterEnded = true;
+      splitter.end();
+    };
+    const settle = (code: number | null, sig: NodeJS.Signals | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(releaseTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (!closed) {
+        // Devolvendo sem "close" (líder preso ou pipes herdados): nada deste filho pode segurar o event loop.
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.unref();
+      }
+      if (callbackCausedStop) {
+        reject(callbackError);
+        return;
+      }
+      resolve({
+        exitCode: code,
+        signal: sig,
+        timedOut,
+        cancelled,
+        outputLimitExceeded,
+        ...(spawnError ? { spawnError } : {}),
+        stdoutHead: Buffer.concat(head).toString("utf8"),
+        stdoutTail: tail.toString(),
+        stderrTail: errTail.toString(),
+        stdoutBytes,
+        oversizeLines: splitter.oversizeLines,
+        durationMs: Date.now() - started,
+      });
+    };
+    // Um processo fora do grupo (ex.: daemon com setsid) pode herdar stdout/stderr e adiar o "close" para sempre.
+    // A ponte solta os pipes; se nem assim o "close" vier (líder preso no kernel), devolve o resultado do mesmo jeito.
+    const releasePipes = (): void => {
+      if (closed || settled) return;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(() => {
+        if (closed) return;
+        endSplitter();
+        settle(child.exitCode, child.signalCode);
+      }, KILL_SETTLE_MS);
+    };
 
     const stop = (): void => {
       if (stopping) return;
@@ -245,7 +332,13 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
       if (!live.has(child)) return;
       state.killTimer = setTimeout(() => {
         signalTree(child, "SIGKILL");
-        forgetTree(child);
+        if (IS_WINDOWS) forgetTree(child);
+        else if (live.has(child)) {
+          state.killTimer = setTimeout(() => {
+            forgetTree(child);
+            releasePipes();
+          }, KILL_SETTLE_MS);
+        }
       }, opts.killGraceMs ?? 5000).unref();
     };
 
@@ -310,29 +403,26 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 
     child.on("exit", onLeaderEnd);
     child.on("close", (code, sig) => {
+      closed = { code, sig };
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
-      if (IS_WINDOWS) forgetTree(child);
-      else onLeaderEnd();
-      if (!outputLimitExceeded) splitter.end();
-      if (callbackFailed) {
-        reject(callbackError);
+      endSplitter();
+      if (IS_WINDOWS) {
+        forgetTree(child);
+        settle(code, sig);
         return;
       }
-      resolve({
-        exitCode: code,
-        signal: sig,
-        timedOut,
-        cancelled,
-        outputLimitExceeded,
-        ...(spawnError ? { spawnError } : {}),
-        stdoutHead: Buffer.concat(head).toString("utf8"),
-        stdoutTail: tail.toString(),
-        stderrTail: errTail.toString(),
-        stdoutBytes,
-        oversizeLines: splitter.oversizeLines,
-        durationMs: Date.now() - started,
-      });
+      const state = live.get(child);
+      if (!state) {
+        settle(code, sig);
+        return;
+      }
+      onLeaderEnd();
+      if (live.has(child)) {
+        stop();
+        state.watchTimer?.ref();
+        state.killTimer?.ref();
+      }
     });
   });
 }

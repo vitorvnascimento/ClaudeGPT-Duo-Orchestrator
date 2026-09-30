@@ -163,6 +163,89 @@ it("runProcess: a primeira causa vence durante a grace", { skip: IS_WINDOWS }, a
   `);
 });
 
+it("runProcess: erro de callback espera descendente resistente com pipes redirecionados", { skip: IS_WINDOWS }, async () => {
+  await isolated(`
+    let pgid;
+    const original = new Error('callback falhou');
+    await assert.rejects(runProcess({
+      ...options,
+      args: ['-e', ${JSON.stringify(`
+        const { spawn } = require('node:child_process');
+        const descendant = spawn(process.execPath, ['-e',
+          "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"
+        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+        descendant.stdout.once('data', () => console.log('ready'));
+        setInterval(() => {}, 1000);
+      `)}],
+      onSpawn: (pid) => { pgid = pid; recordPid(pid); },
+      onLine: () => { throw original; },
+    }), (error) => error === original);
+    assert.throws(() => process.kill(-pgid, 0), { code: 'ESRCH' }, 'grupo vazio antes da rejeição');
+  `);
+});
+
+it("runProcess: callback que lança durante grace preserva timeout/cancelamento/limite", { skip: IS_WINDOWS }, async () => {
+  await isolated(`
+    for (const cause of ['timeout', 'cancel', 'abort-throw', 'output']) {
+      const controller = new AbortController();
+      let calls = 0;
+      const result = await runProcess({
+        ...options, timeoutMs: 250, killGraceMs: 100,
+        maxOutputBytes: cause === 'output' ? 16 : 1024,
+        signal: controller.signal,
+        args: ['-e',
+          "process.on('SIGTERM', () => { process.stdout.write('during grace\\\\nsuppressed\\\\n'); }); " +
+          "process.stdout.write('ready\\\\n'); " +
+          (cause === 'output' ? "setTimeout(() => process.stdout.write('x'.repeat(32)), 20); " : '') +
+          "setInterval(() => {}, 1000);"
+        ],
+        onLine: (line) => {
+          calls++;
+          if (line === 'ready') {
+            if (cause === 'cancel' || cause === 'abort-throw') controller.abort();
+            if (cause === 'abort-throw') throw new Error('after abort');
+          } else throw new Error('during grace');
+        },
+      });
+      assert.equal(result.timedOut, cause === 'timeout');
+      assert.equal(result.cancelled, cause === 'cancel' || cause === 'abort-throw');
+      assert.equal(result.outputLimitExceeded, cause === 'output');
+      assert.equal(calls, cause === 'timeout' || cause === 'cancel' ? 2 : 1);
+    }
+  `);
+});
+
+for (const cause of ["saída normal", "timeout"] as const) {
+  it(`runProcess: ${cause} não espera para sempre por pipes herdados de fora do grupo`, { skip: IS_WINDOWS }, async () => {
+    await isolated(`
+      const started = Date.now();
+      const result = await runProcess({
+        ...options, timeoutMs: 300,
+        args: ['-e', ${JSON.stringify(`
+          const { spawn } = require('node:child_process');
+          const escaped = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'ignore'] });
+          console.log('escaped:' + escaped.pid);
+          ${cause === "timeout" ? "setInterval(() => {}, 1000);" : "setTimeout(() => process.exit(0), 50);"}
+        `)}],
+        onLine: (line) => { if (line.startsWith('escaped:')) recordPid(Number(line.slice(8))); },
+      });
+      assert.equal(result.timedOut, ${cause === "timeout"});
+      assert.ok(result.stdoutHead.includes('escaped:'));
+      assert.ok(Date.now() - started < 3500, 'a ponte ficou presa nos pipes herdados');
+    `);
+  });
+}
+
+it("runProcess: saída normal não deixa timer segurando o event loop da ponte", { skip: IS_WINDOWS }, async () => {
+  const started = Date.now();
+  await isolated(`
+    const result = await runProcess({ ...options, args: ['-e', 'process.exit(0)'] });
+    assert.equal(result.exitCode, 0);
+  `);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1500, `a ponte levou ${elapsed} ms para sair depois de uma execução normal`);
+});
+
 it("TailBuffer: preserva exatamente os últimos 65536 bytes de stderr", { skip: IS_WINDOWS }, async () => {
   await isolated(`
     const result = await runProcess({
@@ -173,6 +256,16 @@ it("TailBuffer: preserva exatamente os últimos 65536 bytes de stderr", { skip: 
     assert.equal(Buffer.byteLength(result.stderrTail), 65536);
     assert.equal(result.stderrTail, 'a'.repeat(25536) + 'b'.repeat(40000));
   `);
+});
+
+it("LineSplitter: UTF-8 incompleto no EOF respeita o teto de bytes", () => {
+  const lines: string[] = [];
+  let dropped = 0;
+  const splitter = new LineSplitter((line) => lines.push(line), 5, () => dropped++);
+  splitter.push(Buffer.from([97, 97, 97, 97, 0xe2, 0x82]));
+  splitter.end();
+  assert.deepEqual(lines, []);
+  assert.equal(dropped, 1);
 });
 
 it("LineSplitter: CRLF no limite independe da fragmentação", () => {
@@ -190,10 +283,12 @@ it("LineSplitter: CRLF no limite independe da fragmentação", () => {
   }
   for (const bytes of [Buffer.from("abcde\r\n"), Buffer.from("abcd\rx\n")]) {
     const lines: string[] = [];
-    const splitter = new LineSplitter((value) => lines.push(value), 4);
+    let dropped = 0;
+    const splitter = new LineSplitter((value) => lines.push(value), 4, () => dropped++);
     for (const byte of bytes) splitter.push(Buffer.from([byte]));
     splitter.end();
     assert.deepEqual(lines, []);
     assert.equal(splitter.oversizeLines, 1);
+    assert.equal(dropped, 1, "o descarte é avisado (o redator de stream precisa saber)");
   }
 });

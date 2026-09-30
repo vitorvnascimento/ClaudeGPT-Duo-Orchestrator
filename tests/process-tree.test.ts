@@ -83,10 +83,7 @@ describe("encerramento de grupos POSIX", { skip: IS_WINDOWS }, () => {
         const result = await pending;
         assert.equal(result.cancelled, mode !== "normal");
         assert.ok(pgid !== undefined);
-        if (mode === "vigilância") {
-          assert.ok(groupExists(pgid, realKill), "descendente sobrevive ao líder antes da sondagem");
-          realKill(-pgid, "SIGKILL");
-        }
+        assert.equal(groupExists(pgid, realKill), false, "Promise só termina com o grupo vazio");
         await waitForEmptyGroup(pgid, realKill);
         groupEmpty = true;
         if (mode !== "normal") {
@@ -110,6 +107,36 @@ describe("encerramento de grupos POSIX", { skip: IS_WINDOWS }, () => {
       }
     });
   }
+
+  it("close normal: encerra descendente com pipes redirecionados sem marcar flags", { timeout: 5000 }, async () => {
+    let pgid: number | undefined;
+    const pending = runProcess({
+      command: process.execPath,
+      args: ["-e", `
+        const { spawn } = require('node:child_process');
+        const descendant = spawn(process.execPath, ['-e',
+          "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"
+        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+        descendant.stdout.once('data', () => process.exit(0));
+      `],
+      cwd: process.cwd(), env: process.env, timeoutMs: 2000,
+      killGraceMs: KILL_GRACE_MS, maxOutputBytes: 1024,
+      onSpawn: (pid) => { pgid = pid; },
+    });
+    try {
+      const result = await pending;
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.signal, null);
+      assert.equal(result.timedOut, false);
+      assert.equal(result.cancelled, false);
+      assert.equal(result.outputLimitExceeded, false);
+      assert.ok(pgid !== undefined);
+      assert.equal(groupExists(pgid), false, "grupo deve estar vazio no retorno normal");
+    } finally {
+      if (pgid !== undefined && groupExists(pgid)) process.kill(-pgid, "SIGKILL");
+      if (pgid !== undefined) await waitForEmptyGroup(pgid);
+    }
+  });
 
   it("timeout: alcança descendente depois que o líder saiu sozinho", { timeout: 5000 }, async () => {
     let pgid: number | undefined;
@@ -171,6 +198,7 @@ describe("encerramento de grupos POSIX", { skip: IS_WINDOWS }, () => {
           assert.equal(result.cancelled, reason === "cancelamento");
           assert.equal(result.signal, "SIGTERM", "líder deve sair antes do SIGKILL");
           assert.ok(pgid !== undefined);
+          assert.equal(groupExists(pgid), false, "grupo deve estar vazio antes do retorno");
           await waitForEmptyGroup(pgid);
           groupEmpty = true;
         } finally {

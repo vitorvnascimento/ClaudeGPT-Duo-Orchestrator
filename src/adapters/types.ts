@@ -59,6 +59,8 @@ export type RateLimitObservation = {
 export type ParsedOutcome = {
   sessionId: string | null;
   reportedModel: string | null;
+  /** Todos os modelos com uso registrado pelo cliente (ex.: result.modelUsage do Claude), quando informado. */
+  usedModels?: string[];
   report: ExecutorReport | null;
   reportErrors: string[];
   errorKind: ErrorKind | null;

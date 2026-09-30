@@ -101,7 +101,7 @@ const assistant = { type: "assistant", session_id: session, message: { content: 
 const usage = { input_tokens: 1200, output_tokens: 340, cache_creation_input_tokens: 100, cache_read_input_tokens: 800 };
 const result = (structured) => ({
   type: "result", subtype: "success", is_error: false, session_id: session, result: "done", structured_output: structured,
-  total_cost_usd: 0.0421, usage, modelUsage: { "claude-opus-5-5": {} }, num_turns: 3, duration_ms: 4200, permission_denials: [],
+  total_cost_usd: 0.0421, usage, modelUsage: process.env.FAKE_CLAUDE_MODEL_USAGE ? JSON.parse(process.env.FAKE_CLAUDE_MODEL_USAGE) : { [process.env.FAKE_CLAUDE_REPORTED_MODEL ?? valueOf("--model") ?? "claude-opus-5-5"]: {} }, num_turns: 3, duration_ms: 4200, permission_denials: [],
 });
 
 switch (scenario) {

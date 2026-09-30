@@ -152,3 +152,43 @@ it("rodada 9 achado 2: execução no próprio modelo do cérebro falha mesmo qua
   assert.match(String(out.summary.outcome), /próprio modelo do cérebro/);
   assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
 });
+
+it("rodada 10 achado 1: uso final em outro modelo não passa só porque o init informou o modelo certo", async () => {
+  s = makeSandbox();
+  const write = JSON.stringify({ "src/app.ts": "export const app = 2;\n" });
+  const swapped = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-sonnet-5-5": { outputTokens: 900 } }), FAKE_WRITE: write,
+  });
+  assert.equal(swapped.summary.state, "failed", JSON.stringify(swapped.summary));
+  assert.match(String(swapped.summary.outcome), /uso registrado/);
+  const paid = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-opus-5-5": {}, "claude-fable-5-1[1m]": { costUSD: 1 } }), FAKE_WRITE: write,
+  });
+  assert.equal(paid.summary.state, "failed", JSON.stringify(paid.summary));
+  assert.match(String(paid.summary.outcome), /créditos extras/);
+  // Uso auxiliar legítimo do próprio cliente (Haiku) junto do modelo principal não reprova a entrega.
+  const aux = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-opus-5-5": {}, "claude-haiku-4-5-20251001": {} }), FAKE_WRITE: write,
+  });
+  assert.equal(aux.summary.state, "succeeded", JSON.stringify(aux.summary));
+});
+
+it("rodada 10 achado 2: esforço incompatível com o nível do modelo efetivo é recusado antes de invocar", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "claude", executor: "codex", risk: "medium", model: "gpt-6-astra", effort: "low", isolation: "worktree" }));
+  assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+  assert.equal(s.execCalls().length, 0, "nenhuma invocação desperdiçada");
+  assert.match(String(out.summary.outcome), /esforço|effort/);
+});
+
+it("rodada 10 achado 3: alias explícito de modelo pago autorizado não é tratado como troca", async () => {
+  s = makeSandbox({ billing: { acknowledgeUnverifiableExtraUsage: { claude: true } } });
+  const c = cache();
+  const fable = c.providers.claude.models.find((m) => m.id === "claude-fable-5-1[1m]")!;
+  fable.aliases = ["fable[1m]"];
+  save(c);
+  const out = await run(req({ brain: "codex", executor: "claude", model: "fable[1m]", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-fable-5-1[1m]", FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+});

@@ -184,8 +184,10 @@ export class ClaudeAdapter implements ExecutorAdapter {
         base.numTurns = typeof r.num_turns === "number" ? r.num_turns : null;
         base.durationMs = typeof r.duration_ms === "number" ? r.duration_ms : null;
         if (Array.isArray(r.permission_denials)) base.permissionDenials = Math.max(base.permissionDenials, r.permission_denials.length);
-        if (!base.reportedModel && r.modelUsage && typeof r.modelUsage === "object") {
-          base.reportedModel = Object.keys(r.modelUsage as object)[0] ?? null;
+        if (r.modelUsage && typeof r.modelUsage === "object") {
+          // Todo modelo que consumiu tokens conta: a confirmação confere cada um (cobrança, piso e independência).
+          base.usedModels = Object.keys(r.modelUsage as object).filter((k) => typeof k === "string" && k.length > 0);
+          if (!base.reportedModel) base.reportedModel = base.usedModels[0] ?? null;
         }
         const text = typeof r.result === "string" ? r.result : "";
         if (r.is_error === true || (typeof r.subtype === "string" && r.subtype !== "success")) {

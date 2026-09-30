@@ -476,8 +476,14 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       if (adaptive) {
         if (assessment.signals.includes("risk=high")) task.risk = "high";
         if (task.selection) task.selection.complexitySignals = assessment.signals;
-        const confirmed = confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
+        // O nível que será persistido (tier do modelo efetivo) vale já na confirmação: esforço incompatível com ele
+        // é recusado antes de invocar, não descoberto depois.
+        const probe = confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
           floor: policy.floor, effort: task.effort?.requested ?? null, automatic: policy.automatic,
+          needs: task.needs, minimumEffort });
+        const effectiveFloor = maxTier(policy.floor, probe.tier);
+        const confirmed = effectiveFloor === policy.floor ? probe : confirmFloor({ catalog, cfg, executor: task.executor, model: task.model.requested,
+          floor: effectiveFloor, effort: task.effort?.requested ?? null, automatic: policy.automatic,
           needs: task.needs, minimumEffort });
         if (task.selection) task.selection.tier = confirmed.tier;
         if (!confirmed.ok) {
@@ -760,10 +766,16 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const parser = adapter.parser();
   const nativeAbort = new AbortController();
   let nativeFailure: string | null = null;
+  // Identidade canônica pelo catálogo (aliases resolvem para o ID; [1m] faz parte do ID, então variante paga ≠ base).
+  const sameModel = (executor: Provider, a: string, b: string): boolean => {
+    const canon = (name: string) => ((ctx.catalog && findModel(ctx.catalog, executor, name)?.id) ?? name).toLowerCase();
+    const ca = canon(a), cb = canon(b);
+    return ca === cb || modelMatches(ca, cb);
+  };
   const confirmNative = (model: string | null, effort = task.effort?.requested ?? null): string | null => {
     const policy = chainPolicy(store.loadChain(run.runId, ctx.chainId)!);
     const checked = confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor: policy.floor,
-      effort, automatic: policy.automatic || !!(model && task.model.requested && !modelMatches(task.model.requested, model)),
+      effort, automatic: policy.automatic || !!(model && task.model.requested && !sameModel(task.executor, task.model.requested, model)),
       needs: task.needs, minimumEffort: policy.minimumEffort });
     if (checked.ok && effortRank(checked.effort) > effortRank(policy.minimumEffort)) {
       store.updateChain(run.runId, ctx.chainId, (fresh) => { fresh.minEffort = maxEffort(fresh.minEffort, checked.effort); });
@@ -773,7 +785,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       const info: ModelInfo = (ctx.catalog && findModel(ctx.catalog, task.executor, model))
         ?? { provider: task.executor, id: model, aliases: [], displayName: model, description: "", efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: [] };
       // Variante com cobrança extra (ex.: [1m]) só vale se foi exatamente a pedida ou está autorizada (ciência + include).
-      const exactRequest = !!task.model.requested && task.model.requested.toLowerCase() === info.id.toLowerCase();
+      const exactRequest = !!task.model.requested && sameModel(task.executor, task.model.requested, info.id);
       if (extraUsage(info) && !exactRequest && !automaticModelAllowed(info, cfg)) {
         return `modelo efetivo ${info.id} consome créditos extras e não está autorizado (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
       }
@@ -862,6 +874,26 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   }
   if (ctx.adaptive && !nativeFailure && (task.model.reported || (!outcome.errorKind && outcome.report?.status === "completed"))) {
     nativeFailure = confirmNative(task.model.reported, (!outcome.errorKind ? codexEvidence?.effort : null) ?? task.effort?.requested ?? null);
+  }
+  // Uso final informado pelo cliente (result.modelUsage). O modelo principal informado precisa constar nele: um
+  // init "limpo" não encobre trabalho feito por outro modelo. Os demais modelos com uso são auxiliares do próprio
+  // cliente (ex.: Haiku para tarefas internas): não definem o nível da entrega, mas não podem ter cobrança extra
+  // não autorizada nem ser o modelo do cérebro.
+  const used = outcome.usedModels ?? [];
+  if (ctx.adaptive && !nativeFailure && used.length) {
+    const main = task.model.reported;
+    if (main && !used.some((m) => sameModel(task.executor, main, m))) {
+      nativeFailure = `o cliente informou ${main}, mas o uso registrado foi em ${used.join(", ")}; modelo efetivo não confirmável; resultado não integrado`;
+    }
+    for (const m of used) {
+      if (nativeFailure || (main && sameModel(task.executor, main, m))) continue;
+      const info = (ctx.catalog && findModel(ctx.catalog, task.executor, m)) ?? null;
+      if ((info ? extraUsage(info) : /\[[^\]]+\]$/.test(m)) && !(info && automaticModelAllowed(info, cfg))) {
+        nativeFailure = `uso auxiliar em ${m} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
+      } else if (ctx.req.brainModel && task.executor === task.brain && sameModel(task.executor, ctx.req.brainModel, m)) {
+        nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${m}); resultado não integrado`;
+      }
+    }
   }
   task.executorReport = outcome.report;
   if (loggedBytes >= MAX_EVENT_LOG_BYTES) task.limitations.push("log de eventos truncado em 2 MiB (parsing continuou sobre o stream completo)");

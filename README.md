@@ -1,4 +1,4 @@
-# duo-orchestrator
+# ClaudeGPT - Duo Orchestrator by Fusic
 
 **Claude Code e Codex trabalhando juntos no seu VS Code, cada parte da tarefa feita pelo modelo que faz melhor, usando as CLIs oficiais e as suas próprias assinaturas.**
 
@@ -15,12 +15,12 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (setembro de 2026):** 125 testes offline, bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS; Windows e Linux ainda não foram testados.
+> **Estado (v0.2.0, setembro de 2026):** 227 testes offline, bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS; Windows e Linux ainda não foram testados.
 
 <details>
 <summary><strong>English summary</strong></summary>
 
-`duo-orchestrator` is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys, no gateway). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
+**ClaudeGPT - Duo Orchestrator by Fusic** (`duo-orchestrator`) is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys, no gateway). The agent you are talking to (the *brain*) delegates bounded subtasks to the best available model in your connected accounts, e.g. Opus 5.5 for code and GPT-6-Astra for images. The bridge runs the other CLI, then independently verifies scope, diffs, acceptance tests and images, and records which model actually ran (read from Codex's own session log). Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Docs are in Portuguese.
 
 </details>
 
@@ -62,15 +62,15 @@ Para atualizar depois: `git pull && npm ci`. Para rodar os testes offline (nenhu
 **Opção 2 — pacote pronto da release (sem compilar):**
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.1.0/duo-orchestrator-0.1.0.tgz
+npm install -g https://github.com/vitorvnascimento/duo-orchestrator/releases/download/v0.2.0/duo-orchestrator-0.2.0.tgz
 duo --version
 ```
 
-Se o repositório estiver privado para você, baixe o pacote com o GitHub CLI e instale o arquivo local:
+Ou baixe com o GitHub CLI e instale o arquivo local:
 
 ```bash
-gh release download v0.1.0 -R vitorvnascimento/duo-orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.1.0.tgz
+gh release download v0.2.0 -R vitorvnascimento/duo-orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.2.0.tgz
 ```
 
 Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
@@ -218,7 +218,7 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 | Item | Situação |
 | --- | --- |
 | Código, testes e documentação | Implementados |
-| 125 testes offline (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real) | **Passando**, sem processos órfãos |
+| 227 testes offline (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
 | `duo doctor` real | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes |
 | Bateria E2E real ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro |
 | Cérebro nativo usando a skill | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded` |

@@ -68,7 +68,7 @@ const DEGRADED_TTL_MS = 60 * 60 * 1000;
 /** Último catálogo bom é aceito por até 30 dias; depois disso, só routing.candidates. */
 const MAX_STALE_MS = 30 * 24 * 60 * 60 * 1000;
 const LEGACY = /\b(older|legacy|deprecated)\b/i;
-const CLIENT_INFO = { name: "duo-orchestrator", title: "duo-orchestrator", version: "0.1.0" };
+const CLIENT_INFO = { name: "duo-orchestrator", title: "ClaudeGPT - Duo Orchestrator by Fusic", version: "0.2.0" };
 
 /** Processo rodando dentro do sandbox do Codex (ex.: `duo recommend` chamado pelo cérebro Codex). */
 export function inCodexSandbox(env: NodeJS.ProcessEnv): boolean {

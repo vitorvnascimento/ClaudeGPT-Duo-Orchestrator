@@ -17,7 +17,7 @@ import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry
 import { doctor, formatDoctor } from "./doctor.js";
 import { applyInit, planInit, previewDiff } from "./init.js";
 
-const HELP = `duo — ponte local entre Codex e Claude Code (CLIs oficiais, assinatura individual)
+const HELP = `duo — ClaudeGPT - Duo Orchestrator by Fusic: ponte local entre Codex e Claude Code (CLIs oficiais, assinatura individual)
 
 Uso:
   duo doctor [--json]                         diagnóstico sem inferência

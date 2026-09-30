@@ -1,4 +1,4 @@
-# Política de segurança — duo-orchestrator
+# Política de segurança — ClaudeGPT - Duo Orchestrator by Fusic
 
 Projeto pessoal e local. Não expõe serviço de rede, não recebe credenciais e não publica nada.
 
@@ -32,6 +32,12 @@ Projeto pessoal e local. Não expõe serviço de rede, não recebe credenciais e
 
 Não há isolamento de **leitura** para o executor Codex: o sandbox do Codex restringe escrita e rede, não leitura. Não coloque o duo em repositórios com segredos em arquivos legíveis que não possam ser vistos pelo provedor.
 
+## Encerramento de processos
+
+No macOS e no Linux, o executor roda num grupo de processos próprio. Timeout, cancelamento e a saída da ponte encerram o grupo inteiro (primeiro sinal, SIGKILL após a carência), e a ponte só devolve o resultado quando o grupo está vazio, para que nenhum descendente continue alterando o projeto depois que o lock é liberado. Antes de cada sinal, a ponte confirma que o grupo ainda existe e o esquece ao observá-lo vazio. Se, ~2 s depois do SIGKILL, o grupo ainda não tiver sido visto vazio (ex.: processo preso em chamada de kernel), a ponte deixa de esperar e devolve o resultado, para não travar. Do mesmo modo, se o grupo já está vazio mas um processo que saiu dele (ex.: daemon com `setsid`) herdou stdout/stderr, a ponte solta os pipes ~2 s depois; esse processo não é encerrado pela ponte, por estar fora do grupo.
+
+Risco residual: entre o grupo ficar vazio e a próxima sondagem (~50 ms), o número do grupo poderia, em teoria, ser reutilizado por outro processo. O sistema não reutiliza o ID enquanto o grupo tem membros, então isso exigiria dar a volta completa no espaço de PIDs nessa janela. No Windows, o encerramento usa `taskkill /T /F`, sem essa espera (não testado).
+
 ## Repositórios não confiáveis
 
 - `claude -p` não mostra o diálogo de confiança do workspace. Por padrão o executor usa `--setting-sources user` e `--strict-mcp-config`, para que hooks, settings e `.mcp.json` do projeto não rodem. Hooks do **usuário** (`~/.claude/settings.json`) continuam rodando; `duo doctor` lista esses hooks.
@@ -45,10 +51,10 @@ O executor recebe o prompt montado pela ponte (objetivo, caminhos, restrições,
 
 ## Persistência
 
-- Tudo o que vai para `.duo/` passa por redação de padrões de segredo (chaves `sk-…`, `ghp_…`, JWT, `Bearer …`, pares `api_key=…`) e dos valores de variáveis sensíveis do ambiente.
-- O texto de raciocínio (`reasoning` do Codex e `thinking` do Claude) é omitido antes de gravar.
+- Tudo o que vai para `.duo/` passa por redação de padrões de segredo (chaves `sk-…`, `ghp_…`, Google `AIza…`, Stripe, npm, JWT, `Bearer …`, pares `api_key=…`, blocos de chave privada PEM, inclusive quando chegam divididos em várias linhas ou em várias strings de um JSON; um bloco aberto sem fim é redigido até o final, junto com o que vier depois dele) e dos valores de variáveis sensíveis do ambiente. A redação é por padrões: um segredo em formato desconhecido pode passar. Limites conhecidos da redação de PEM: um delimitador `-----BEGIN …-----` partido entre dois eventos não é reconhecido (os executores suportados emitem mensagens inteiras, não deltas); nomes de propriedade JSON são preservados dentro de um bloco aberto (só os valores são redigidos), embora um delimitador numa chave abra ou feche o bloco para os valores seguintes; e uma linha de evento acima de 8 MiB interrompe o log de eventos da task.
+- O texto de raciocínio (`reasoning` do Codex e `thinking` do Claude) é omitido antes de gravar. A identificação usa o evento original, então a redação de outros campos não esconde o raciocínio.
 - `.duo/` fica no `.gitignore` (proposto por `duo init`).
 
 ## Relato de problemas
 
-Projeto pessoal: registre o problema localmente ou abra uma issue privada, se o repositório vier a ser publicado. Vulnerabilidades nas CLIs oficiais devem ser relatadas aos fornecedores (Anthropic via HackerOne; OpenAI pelo programa de segurança da OpenAI).
+Vulnerabilidades no duo: use o [relato privado de vulnerabilidades do GitHub](https://github.com/vitorvnascimento/duo-orchestrator/security/advisories/new) em vez de uma issue pública. Outros problemas: abra uma issue. Vulnerabilidades nas CLIs oficiais devem ser relatadas aos fornecedores (Anthropic via HackerOne; OpenAI pelo programa de segurança da OpenAI).

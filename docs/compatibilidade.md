@@ -67,7 +67,7 @@ Se o pedido nomear um `model` que não está no catálogo, a ponte bloqueia **an
 
 | Teste | Tipo | Resultado |
 | --- | --- | --- |
-| 125 testes (`npm test`) | Offline, CLIs simuladas com saídas no formato documentado **e observado** (incluindo o app-server JSON-RPC, com falha, formato inesperado, travamento, mudança de schema e sandbox) | 125/125 |
+| 227 testes (`npm test`) | Offline, CLIs simuladas com saídas no formato documentado **e observado** (incluindo o app-server JSON-RPC, com falha, formato inesperado, travamento, mudança de schema e sandbox) | 227/227 |
 | `duo doctor` real | Sem inferência | Claude 2.1.114 e Codex 0.157.1: autenticados por assinatura, todos os recursos obrigatórios presentes; bloqueados só pela confirmação de uso extra, como esperado |
 | **Smoke test real Codex→Claude** | 1 invocação de `claude -p` (autorizada) num repositório descartável | **succeeded** em 17 s; só `src/math.mjs` alterado; `check.mjs` executado pela ponte (exit 0); modelo `claude-opus-4-7`; uso nativo `input 9 / output 976 / cache_creation 19.081 / cache_read 72.960`; estimativa do cliente US$ 0,18 (não é cobrança da assinatura); `thinking` não gravado |
 | **Smoke test real Claude→Codex** | 1 invocação de `codex exec` (autorizada) num repositório descartável | **succeeded** em 29 s; só `src/math.mjs` alterado; `check.mjs` executado pela ponte (exit 0); uso nativo `input 142.390 (cached 105.728) / output 445`; `reasoning` não gravado |

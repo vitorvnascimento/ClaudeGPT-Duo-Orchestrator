@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Bateria E2E REAL: invoca `claude` e `codex` de verdade e CONSOME COTA das assinaturas.
 // Nunca roda em `npm test`. Uso:
-//   node tests/e2e/real-e2e.mjs --base <dir-descartável> --confirm-quota [--only T1,T5]
+//   node tests/e2e/real-e2e.mjs --base <dir-descartável> --confirm-quota [--only T1,T5] [--allow-loopback-proxy]
+//   node tests/e2e/real-e2e.mjs --dry-run (só plano; não cria repos nem chama CLIs)
 // Cada cenário cria um repositório Git descartável em <base>/<id>, com critérios objetivos de aprovação.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,12 +15,14 @@ const CLI = join(ROOT, "dist", "src", "cli", "main.js");
 
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
-if (!argv.includes("--confirm-quota")) {
+const DRY_RUN = argv.includes("--dry-run");
+const ALLOW_LOOPBACK_PROXY = argv.includes("--allow-loopback-proxy");
+if (!DRY_RUN && !argv.includes("--confirm-quota")) {
   console.error("Esta bateria consome cota real do Claude e do Codex. Rode com --confirm-quota e --base <dir>.");
   process.exit(2);
 }
 const BASE = opt("--base");
-if (!BASE) {
+if (!DRY_RUN && !BASE) {
   console.error("informe --base <diretório descartável>");
   process.exit(2);
 }
@@ -79,7 +82,7 @@ function makeRepo(id, { files = {}, config = {}, init = false } = {}) {
   const current = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : {};
   const cfg = deepMerge(
     deepMerge(current, {
-      billing: { acknowledgeUnverifiableExtraUsage: { claude: true, codex: true } },
+      billing: { acknowledgeUnverifiableExtraUsage: { claude: true, codex: true }, ...(ALLOW_LOOPBACK_PROXY ? { allowLoopbackProxy: true } : {}) },
       acceptance: { allowedCommands: [["node", "check.mjs"]] },
       limits: { timeoutSec: 420 },
       executors: { claude: { model: CLAUDE_MODEL } },
@@ -617,6 +620,11 @@ async function timeoutResume(id, brain, executor, resumeMarker) {
 }
 
 // ---------------- execução ----------------
+if (ONLY?.some((id) => !Object.hasOwn(scenarios, id))) throw new Error("--only contém cenário desconhecido");
+if (DRY_RUN) {
+  console.log(JSON.stringify({ dryRun: true, allowLoopbackProxy: ALLOW_LOOPBACK_PROXY, scenarios: Object.keys(scenarios).filter((id) => !ONLY || ONLY.includes(id)) }, null, 2));
+  process.exit(0);
+}
 mkdirSync(BASE, { recursive: true });
 const results = [];
 for (const [id, fn] of Object.entries(scenarios)) {

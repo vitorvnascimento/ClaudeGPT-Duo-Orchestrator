@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { findModel, loadCatalog, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -439,7 +439,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!chosen && autoUnavailable && task.invocations === 0) {
           const other: Provider = task.executor === "claude" ? "codex" : "claude";
           const alt = selectFor(other);
-          if (alt && !(req.brain === other && req.brainModel && modelMatches(alt.model, req.brainModel))) {
+          if (alt && !(req.brain === other && req.brainModel && sameModelIdentity(catalog, other, alt.model, req.brainModel, "loose"))) {
             task.executor = other;
             // Sessão nativa pertence ao cliente anterior: o novo fornecedor começa uma sessão própria.
             // Base, worktree e snapshot continuam (o trabalho e o contexto do pedido são os mesmos).
@@ -506,7 +506,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && modelMatches(task.model.requested, catalog ? findModel(catalog, task.executor, req.brainModel)?.id ?? req.brainModel : req.brainModel)) {
+      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && sameModelIdentity(catalog, task.executor, task.model.requested, req.brainModel, "loose")) {
         blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
@@ -766,17 +766,16 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const parser = adapter.parser();
   const nativeAbort = new AbortController();
   let nativeFailure: string | null = null;
-  // Identidade canônica pelo catálogo (aliases resolvem para o ID; [1m] faz parte do ID, então variante paga ≠ base).
-  const sameModel = (executor: Provider, a: string, b: string): boolean => {
-    const canon = (name: string) => ((ctx.catalog && findModel(ctx.catalog, executor, name)?.id) ?? name).toLowerCase();
-    const ca = canon(a), cb = canon(b);
-    return ca === cb || modelMatches(ca, cb);
-  };
+  // Identidade única (catalog.ts): estrita para autorizar; alias de família não resolvido nunca vale como pedido exato.
+  const sameModel = (executor: Provider, a: string, b: string): boolean => sameModelIdentity(ctx.catalog, executor, a, b, "strict");
   const confirmNative = (model: string | null, effort = task.effort?.requested ?? null): string | null => {
     const policy = chainPolicy(store.loadChain(run.runId, ctx.chainId)!);
-    const checked = confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor: policy.floor,
-      effort, automatic: policy.automatic || !!(model && task.model.requested && !sameModel(task.executor, task.model.requested, model)),
-      needs: task.needs, minimumEffort: policy.minimumEffort });
+    const automatic = policy.automatic || !!(model && task.model.requested && !sameModel(task.executor, task.model.requested, model));
+    const confirm = (floor: Tier) => confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor,
+      effort, automatic, needs: task.needs, minimumEffort: policy.minimumEffort });
+    // Mesmo critério do pré-execução: o esforço vale contra o nível do modelo que de fato rodou (nunca abaixo do piso).
+    const probe = confirm(policy.floor);
+    const checked = probe.ok && tierRank(probe.tier) > tierRank(policy.floor) ? confirm(probe.tier) : probe;
     if (checked.ok && effortRank(checked.effort) > effortRank(policy.minimumEffort)) {
       store.updateChain(run.runId, ctx.chainId, (fresh) => { fresh.minEffort = maxEffort(fresh.minEffort, checked.effort); });
     }
@@ -792,8 +791,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       // O executor nunca pode ser o próprio modelo do cérebro (a revisão/implementação perderia a independência).
       const brainModel = ctx.req.brainModel;
       if (brainModel && task.executor === task.brain) {
-        const canon = (name: string) => ((ctx.catalog && findModel(ctx.catalog, task.executor, name)?.id) ?? name).toLowerCase();
-        if (canon(model) === canon(brainModel) || modelMatches(brainModel, model)) {
+        if (sameModelIdentity(ctx.catalog, task.executor, model, brainModel, "loose")) {
           return `o executor rodou no próprio modelo do cérebro (${info.id}); resultado não integrado — faça no cérebro ou delegue a outro modelo`;
         }
       }
@@ -890,7 +888,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       const info = (ctx.catalog && findModel(ctx.catalog, task.executor, m)) ?? null;
       if ((info ? extraUsage(info) : /\[[^\]]+\]$/.test(m)) && !(info && automaticModelAllowed(info, cfg))) {
         nativeFailure = `uso auxiliar em ${m} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
-      } else if (ctx.req.brainModel && task.executor === task.brain && sameModel(task.executor, ctx.req.brainModel, m)) {
+      } else if (ctx.req.brainModel && task.executor === task.brain && sameModelIdentity(ctx.catalog, task.executor, ctx.req.brainModel, m, "loose")) {
         nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${m}); resultado não integrado`;
       }
     }
@@ -916,7 +914,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     verification.acceptance = await runAcceptance(task.acceptanceCommands, cfg, execCwd, childEnv(env, { DUO_DEPTH: "1" }).env, ctx.signal);
   }
   for (const w of [...new Set(outcome.warnings)].slice(0, 5)) task.limitations.push(`aviso do ${task.executor}: ${w}`);
-  if (task.model.requested && task.model.reported && !modelMatches(task.model.requested, task.model.reported)) {
+  if (task.model.requested && task.model.reported && !sameModelIdentity(ctx.catalog, task.executor, task.model.requested, task.model.reported, "loose")) {
     task.limitations.push(`modelo solicitado ${task.model.requested}, mas o cliente informou ${task.model.reported}`);
   }
   if (outcome.rateLimit?.isUsingOverage === true) {
@@ -990,13 +988,9 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     ...(state === "blocked" && capacityUntil && !verification.staleBase ? { capacityUntil } : {}) };
 }
 
-/** Aliases (opus, sonnet) casam por família; IDs completos exigem igualdade de prefixo. */
+/** Compatibilidade: mesma regra de identidade do catálogo, sem catálogo (alias de família casa com a família). */
 export function modelMatches(requested: string, reported: string): boolean {
-  const r = requested.toLowerCase();
-  const got = reported.toLowerCase();
-  if (/^(opus|sonnet|haiku|fable)$/.test(r)) return got.includes(r);
-  // Sufixo de data (-20251001) é o mesmo modelo; variante entre colchetes ([1m]) tem cobrança própria e não é.
-  return got === r || /^-\d{8}$/.test(got.slice(r.length)) && got.startsWith(r);
+  return sameModelIdentity(null, "claude", requested, reported, "loose");
 }
 
 /** Confere a assinatura binária de uma imagem e, quando possível, as dimensões. */

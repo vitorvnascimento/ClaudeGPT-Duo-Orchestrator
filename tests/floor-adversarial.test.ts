@@ -145,7 +145,7 @@ it("rodada 9 achado 1: variante paga [1m] informada pelo cliente não passa como
 it("rodada 9 achado 2: execução no próprio modelo do cérebro falha mesmo quando a seleção escolheu outro", async () => {
   s = makeSandbox();
   const out = await run(req({ brain: "codex", brainModel: "gpt-6-astra", executor: "codex", risk: "medium", complexity: "standard", isolation: "worktree" }), {
-    FAKE_ROLLOUT_MODEL: "gpt-6-astra",
+    FAKE_ROLLOUT_MODEL: "gpt-6-astra", FAKE_ROLLOUT_EFFORT: "high",
     FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
   });
   assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
@@ -191,4 +191,59 @@ it("rodada 10 achado 3: alias explícito de modelo pago autorizado não é trata
     FAKE_CLAUDE_REPORTED_MODEL: "claude-fable-5-1[1m]", FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
   });
   assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+});
+
+it("rodada 11: identidade de modelo única — alias de família, sufixo de data e variante paga", async () => {
+  const { sameModelIdentity, findModel, modelKey } = await import("../src/adapters/catalog.js");
+  const c = cache();
+  // Sufixo de data é o mesmo modelo, nos dois sentidos, e encontra os metadados do catálogo.
+  assert.equal(modelKey("claude-opus-5-5-20260901"), "claude-opus-5-5");
+  assert.equal(findModel(c, "claude", "claude-opus-5-5-20260901")?.id, "claude-opus-5-5");
+  assert.equal(findModel(c, "claude", "claude-haiku-4-5")?.id, "claude-haiku-4-5-20251001");
+  assert.ok(sameModelIdentity(c, "claude", "claude-opus-5-5-20260901", "claude-opus-5-5"));
+  assert.ok(sameModelIdentity(null, "claude", "claude-opus-5-5", "claude-opus-5-5-20260901"));
+  // Variante paga nunca é o modelo base, em nenhum modo.
+  for (const mode of ["strict", "loose"] as const) {
+    assert.ok(!sameModelIdentity(c, "claude", "claude-sonnet-5-5", "claude-sonnet-5-5[1m]", mode));
+    assert.ok(!sameModelIdentity(null, "claude", "sonnet", "claude-sonnet-5-5[1m]", mode), `alias não autoriza variante paga (${mode})`);
+  }
+  // Alias de família não resolvido: nunca vale como identidade exata (estrito); só bloqueia (solto).
+  assert.ok(!sameModelIdentity(null, "claude", "sonnet", "claude-sonnet-5-5", "strict"));
+  assert.ok(sameModelIdentity(null, "claude", "sonnet", "claude-sonnet-5-5", "loose"));
+  // Alias resolvido pelo catálogo compara pelo ID resolvido: 'opus' → 5-5 não casa com Opus 4-6.
+  const withAlias = cache();
+  withAlias.providers.claude.models.find((m) => m.id === "claude-opus-5-5")!.aliases = ["opus"];
+  assert.ok(!sameModelIdentity(withAlias, "claude", "opus", "claude-opus-4-6", "loose"));
+  assert.ok(sameModelIdentity(withAlias, "claude", "opus", "claude-opus-5-5-20260901", "loose"));
+});
+
+it("rodada 11 achado 1: alias não resolvido não autoriza variante paga", async () => {
+  s = makeSandbox({ billing: { acknowledgeUnverifiableExtraUsage: { claude: true } } });
+  const out = await run(req({ brain: "codex", executor: "claude", risk: "medium", model: "sonnet", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-sonnet-5-5[1m]", FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  // Com catálogo, o alias é recusado antes de executar; sem ele, a variante paga é reprovada depois. Nunca succeeded.
+  assert.ok(["blocked", "failed"].includes(String(out.summary.state)), JSON.stringify(out.summary));
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+  // Sem catálogo: a confirmação nativa usa a identidade estrita, e o alias não vale como pedido exato da variante.
+  const { sameModelIdentity } = await import("../src/adapters/catalog.js");
+  assert.equal(sameModelIdentity(null, "claude", "sonnet", "claude-sonnet-5-5[1m]", "strict"), false);
+});
+
+it("rodada 11 achado 2: cérebro com sufixo de data ainda é reconhecido como o próprio cérebro", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "claude", brainModel: "claude-opus-5-5-20260901", executor: "claude", risk: "medium", model: "claude-sonnet-5-5", effort: "high", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+});
+
+it("rodada 11 achado 3: troca nativa para modelo deep com esforço medium é reprovada", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "claude", risk: "medium", model: "claude-sonnet-5-5", effort: "medium", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /esforço|effort/);
 });

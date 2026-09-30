@@ -496,9 +496,44 @@ export function cachedCatalog(store: Store): Catalog | null {
   return c && typeof c.discoveredAt === "string" && c.providers ? c : null;
 }
 
+/**
+ * Identidade de modelo, única para todo o duo. Sufixo de data (-20251001) não muda o modelo; variante entre
+ * colchetes ([1m]) muda (tem cobrança própria) e é preservada. Alias de família sem versão ("opus", "sonnet")
+ * não é uma identidade: só vale depois de resolvido pelo catálogo.
+ */
+export function modelKey(name: string): string {
+  const n = name.trim().toLowerCase();
+  const variant = /(\[[^\]]*\])$/.exec(n)?.[1] ?? "";
+  const base = n.slice(0, n.length - variant.length).replace(/-\d{8}$/, "");
+  return base + variant;
+}
+
+export const FAMILY_ALIAS = /^(opus|sonnet|haiku|fable)$/i;
+
 export function findModel(catalog: Catalog, provider: Provider, name: string): ModelInfo | null {
-  const n = name.toLowerCase();
-  return catalog.providers[provider]?.models.find((m) => m.id.toLowerCase() === n || m.aliases.some((a) => a.toLowerCase() === n)) ?? null;
+  const n = name.trim().toLowerCase();
+  const models = catalog.providers[provider]?.models ?? [];
+  const exact = models.find((m) => m.id.toLowerCase() === n || m.aliases.some((a) => a.toLowerCase() === n));
+  if (exact || FAMILY_ALIAS.test(n)) return exact ?? null;
+  // ID com ou sem sufixo de data: mesma identidade (a variante [..] precisa coincidir).
+  const key = modelKey(n);
+  return models.find((m) => modelKey(m.id) === key) ?? null;
+}
+
+/**
+ * Mesma identidade? Com catálogo, compara os IDs resolvidos. Sem catálogo (ou nome não resolvido), compara modelKey;
+ * um alias de família não resolvido só casa quando `family: "loose"` (usado apenas para bloquear, nunca para autorizar).
+ */
+export function sameModelIdentity(catalog: Catalog | null, provider: Provider, a: string, b: string, family: "strict" | "loose" = "strict"): boolean {
+  const resolve = (name: string) => (catalog && findModel(catalog, provider, name)?.id) ?? name;
+  const ra = resolve(a), rb = resolve(b);
+  if (modelKey(ra) === modelKey(rb)) return true;
+  if (family === "loose") {
+    // Alias de família não resolvido casa com qualquer modelo base dessa família (nunca com variante paga).
+    const inFamily = (alias: string, id: string) => FAMILY_ALIAS.test(alias) && !id.includes("[") && new RegExp(`(^|-)${alias.toLowerCase()}(-|$)`).test(modelKey(id));
+    if (inFamily(ra, rb) || inFamily(rb, ra)) return true;
+  }
+  return false;
 }
 
 /** Resumo de uma linha da origem do catálogo de uma conta. */

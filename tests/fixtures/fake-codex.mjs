@@ -58,9 +58,16 @@ if (args[0] === "app-server") {
     process.stderr.write("error: unrecognized subcommand 'app-server'\n");
     process.exit(2);
   }
-  const efforts = [{ reasoningEffort: "low", description: "l" }, { reasoningEffort: "high", description: "h" }];
+  const efforts = process.env.FAKE_ADAPTIVE_CATALOG ? ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })) : [{ reasoningEffort: "low", description: "l" }, { reasoningEffort: "high", description: "h" }];
   const model = (id, displayName, description, extra = {}) => ({ id, model: id, displayName, description, hidden: false, isDefault: false, defaultReasoningEffort: "medium", supportedReasoningEfforts: efforts, upgrade: null, upgradeInfo: null, inputModalities: ["text", "image"], ...extra });
-  const models = [
+  const models = process.env.FAKE_ADAPTIVE_CATALOG ? [
+    model("gpt-6-astra", "GPT-6-Astra", "Deep"),
+    model("gpt-6.1-sol", "GPT-6.1-Sol", "Workhorse", { isDefault: true }),
+    model("gpt-6-sol", "GPT-6-Sol", "Workhorse"),
+    model("gpt-6-luna", "GPT-6-Luna", "Light"),
+    model("gpt-5.6-sol", "GPT-5.6-Sol", "Older model"),
+    model("gpt-5.5", "GPT-5.5", "Older model"),
+  ] : [
     model("gpt-6-astra", "GPT-6-Astra", "Frontier intelligence for the most demanding work.", { isDefault: true }),
     model("gpt-6-sol", "GPT-6-Sol", "Workhorse model for coding and everyday work."),
     model("gpt-5.6-sol", "GPT-5.6-Sol", "Older coding model for complex work."),
@@ -121,7 +128,7 @@ const resuming = args[1] === "resume";
 const sandboxFromConfig = args.map((a, i) => (args[i - 1] === "--config" ? /^sandbox_mode="(.+)"$/.exec(a)?.[1] : undefined)).find(Boolean);
 const schemaPath = valueOf("--output-schema");
 log({
-  cmd: "exec", args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length,
+  cmd: "exec", model: valueOf("--model") ?? null, effort: args.find((a) => a.startsWith("model_reasoning_effort=")) ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length,
   resume: resuming ? args.at(-2) : null, schemaExists: schemaPath ? existsSync(schemaPath) : false, sandbox: valueOf("--sandbox") ?? sandboxFromConfig,
 });
 

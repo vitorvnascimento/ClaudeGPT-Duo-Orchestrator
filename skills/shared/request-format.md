@@ -40,10 +40,21 @@ Cérebro desta sessão: **{{BRAIN}}**. Executor: **{{EXECUTOR}}**.
 | `runId` | não | Reutilize o `runId` devolvido pela primeira delegação para somar ao mesmo run (o limite de invocações é por run). |
 | `taskKey` | não | Chave de idempotência: repetir um pedido idêntico já concluído devolve o resultado sem nova invocação. |
 | `isolation` | não | `in-place` (padrão) ou `worktree` (worktree Git descartável; integre com `duo apply`). Worktree isola mudanças Git, não é sandbox de segurança. |
-| `model` | não* | ID do catálogo (`duo models`). A ponte bloqueia antes de invocar se o modelo não existir na conta. *Obrigatório quando `executor` é o mesmo cliente do cérebro. |
+| `model` | não | ID do catálogo (`duo models`). Se omitido, a seleção adaptativa escolhe dentro do `executor` já informado. Explícito, força o modelo e é preservado em escaladas. |
+| `effort` | não | `low`, `medium`, `high`, `xhigh` ou `max`; explícito, é preservado em escaladas. |
+| `complexity` | não | `light`, `standard` ou `deep`; força o nível solicitado. Pisos de risco continuam valendo. |
+| `adaptive` | não | `false` restaura o comportamento pré-adaptativo; o padrão é seleção adaptativa. |
 | `brainModel` | não | Seu próprio modelo; evita delegar ao mesmo modelo que você já é. |
 | `needs` | não | Capacidades exigidas, ex.: `["image_generation"]` (exige `kind: "asset"`). |
 | `limits.timeoutSec` | não | Timeout desta delegação. |
+
+## Seleção adaptativa
+
+`duo recommend` devolve `tier`, `effort` e `selection`, além do executor/modelo. Use `duo recommend --request <pedido.json>` para fornecer objetivo, escopo e aceite reais; sem aceite no modo abreviado, o piso é `standard`. O cérebro deve informar o `executor` escolhido e pode omitir `model` para deixar a ponte selecionar dentro dele. Risco alto ou sensível exige `deep`; `light` só vale para baixo risco, poucos arquivos, sem diretório no escopo e com comandos de aceite.
+
+Só há downgrade com evidência suficiente e sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess`, sempre respeitando esses pisos. Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa e `deep` usa `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece e, sem ele, só aumenta com suporte. Falhas de infraestrutura não escalam. Em `worktree`, cada tentativa recebe um worktree novo e o anterior fica preservado; em `in-place`, só se repete sem alterações deixadas pelo executor.
+
+Uso extra exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e inclusão do modelo em `routing.include`. Para desligar a seleção adaptativa no pedido, use `adaptive: false`; pela CLI, use `duo delegate --no-adaptive`.
 
 ## Exemplo de arte (modelo com geração de imagem)
 

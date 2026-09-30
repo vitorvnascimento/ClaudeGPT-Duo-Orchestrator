@@ -1,4 +1,5 @@
 import type { CodexRolloutEvidence } from "../adapters/codex-rollout.js";
+import type { Tier } from "../adapters/tiers.js";
 import type { Policy, Provider } from "../config.js";
 
 export type TaskState = "planned" | "approved" | "running" | "blocked" | "succeeded" | "failed" | "cancelled";
@@ -21,6 +22,8 @@ export type DelegationRequest = {
   rationale: string;
   risk?: "low" | "medium" | "high";
   model?: string;
+  complexity?: Tier;
+  adaptive?: boolean;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Modelo do próprio cérebro, quando conhecido (evita delegar ao mesmo modelo). */
   brainModel?: string;
@@ -92,7 +95,20 @@ export type Verification = {
   images?: { path: string; format: string; bytes: number; width: number | null; height: number | null }[];
 };
 
+export type Selection = {
+  adaptive: boolean;
+  tier: Tier;
+  complexitySignals: string[];
+  model: string | null;
+  effort: string | null;
+  reason: string[];
+  attempt: number;
+  attemptOf: string | null;
+  escalatedFrom?: { model: string | null; effort: string | null; reason: string };
+};
+
 export type Task = {
+  selection?: Selection;
   taskId: string;
   runId: string;
   taskKey?: string;

@@ -80,7 +80,13 @@
     },
     "effort": {
       "type": "string",
-      "enum": ["low", "medium", "high", "xhigh", "max"]
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
     },
     "brainModel": {
       "type": "string",
@@ -209,6 +215,16 @@
           "maximum": 3600
         }
       }
+    },
+    "complexity": {
+      "enum": [
+        "light",
+        "standard",
+        "deep"
+      ]
+    },
+    "adaptive": {
+      "type": "boolean"
     }
   }
 }

@@ -6,16 +6,19 @@
 // Não há ranking fixo de fornecedores: sem evidência suficiente, a recomendação diz isso.
 import { extname } from "node:path";
 import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
+import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
+import { automaticModelAllowed, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import type { DuoConfig, Provider } from "../config.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
 import type { Store } from "../state/store.js";
-import type { Task, TaskKind } from "../state/types.js";
+import type { DelegationRequest, Selection, Task, TaskKind } from "../state/types.js";
 
 export type Risk = "low" | "medium" | "high";
-export type RouteQuery = { kind: TaskKind; tags: string[]; risk: Risk; brain: Provider | null; brainModel?: string | null; needs?: Capability[] };
+export type RouteQuery = { kind: TaskKind; tags: string[]; risk: Risk; brain: Provider | null; brainModel?: string | null; needs?: Capability[]; objective?: string; paths?: Pick<ScopeEntry, "rel" | "isDir">[]; acceptance?: DelegationRequest["acceptance"]; complexity?: Tier };
 
 export type Evidence = {
   bucket: string;
@@ -44,6 +47,8 @@ export type CandidateEval = {
 };
 
 export type Decision = {
+  tier?: Tier;
+  effort?: string | null;
   action: "delegate" | "self" | "judgment";
   executor: Provider | null;
   model: string | null;
@@ -51,12 +56,14 @@ export type Decision = {
   why: string[];
 };
 
-export type Recommendation = { query: RouteQuery; decision: Decision; explore: string | null; candidates: CandidateEval[]; notes: string[] };
+export type Recommendation = { selection?: Selection; query: RouteQuery; decision: Decision; explore: string | null; candidates: CandidateEval[]; notes: string[] };
 
 /** Extensões do escopo (até 5 mais frequentes), usadas para comparar tarefas parecidas. */
-export function deriveTags(projectRoot: string, entries: Pick<ScopeEntry, "rel" | "isDir">[]): string[] {
+export function deriveTags(projectRoot: string, entries: Pick<ScopeEntry, "rel" | "isDir">[], includeSensitive = false): string[] {
   const counts = new Map<string, number>();
+  const sensitive = new Set<string>();
   const add = (p: string) => {
+    if (includeSensitive && sensitiveScope(p)) sensitive.add(p);
     const ext = extname(p).slice(1).toLowerCase();
     if (ext) counts.set(ext, (counts.get(ext) ?? 0) + 1);
   };
@@ -64,7 +71,7 @@ export function deriveTags(projectRoot: string, entries: Pick<ScopeEntry, "rel" 
     if (e.isDir || e.rel === ".") for (const f of listFiles(projectRoot, [e.rel]).slice(0, 2000)) add(f);
     else add(e.rel);
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k);
+  return [...sensitive, ...[...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k)];
 }
 
 type Outcome = "success" | "failure" | "excluded";
@@ -73,6 +80,9 @@ type Outcome = "success" | "failure" | "excluded";
 export function outcomeOf(t: Task): Outcome {
   if (t.accepted?.accepted === false) return "failure";
   if (t.state === "succeeded") return "success";
+  if (t.state === "cancelled" || /^(timeout|limite\/cota|falha de autenticação|modelo indisponível|falha ao iniciar|violação de escopo|o lock|o estado base|saída do executor excedeu)/i.test(t.outcome ?? "")
+    || t.verification?.lockIntact === false || t.verification?.staleBase === true || (t.verification?.outOfScope?.length ?? 0) > 0 || (t.verification?.deniedTouched?.length ?? 0) > 0) return "excluded";
+  if (t.verification?.acceptance?.some((a) => !a.passed && (!a.ran || a.exitCode === null || a.outputTail?.endsWith("\n[timeout]")))) return "excluded";
   if (!t.executorReport) return "excluded";
   if (t.state === "failed") return "failure";
   if (t.state === "blocked" && (t.executorReport.status === "partial" || t.executorReport.status === "blocked")) return "failure";
@@ -207,14 +217,14 @@ function candidatesFrom(cfg: DuoConfig, catalog: Catalog | null, needs: Capabili
   return { cands: capable, filteredOut };
 }
 
-export function recommend(
+export function evaluateCandidates(
   store: Store,
   cfg: DuoConfig,
   q: RouteQuery,
   availability: AvailabilityFn,
   catalog: Catalog | null = null,
   defaults: Record<Provider, string | null> = { claude: null, codex: null },
-): Recommendation {
+): { evals: CandidateEval[]; filteredOut: string[] } {
   const tasks = store.listRuns().flatMap((r) => store.listTasks(r));
   const min = cfg.routing.minSamples;
   const needs = q.needs ?? [];
@@ -269,9 +279,41 @@ export function recommend(
     };
   });
 
+  return { evals, filteredOut };
+}
+
+function recommendResult(
+  store: Store, cfg: DuoConfig, q: RouteQuery, availability: AvailabilityFn,
+  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null },
+): Recommendation {
+  const min = cfg.routing.minSamples;
+  const needs = q.needs ?? [];
+  const { evals, filteredOut } = evaluateCandidates(store, cfg, q, availability, catalog, defaults);
+  const assessment = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles);
+  const adaptive = cfg.routing.adaptive.enabled;
+  const capableOnly = q.kind === "asset" || needs.includes("image_generation");
+  const selections = (["claude", "codex"] as const).flatMap((provider) => {
+    const selected = selectModel(catalog, cfg, provider, assessment.tier, { candidates: evals, floor: assessment.floor, needs });
+    return selected ? [{ executor: provider, ...selected }] : [];
+  });
+  const hasTarget = selections.some((m) => tierRank(m.tier) <= tierRank(assessment.tier) && evals.some((e) => e.available && e.executor === m.executor && e.model === m.model));
+  let eligible = evals;
+  if (adaptive && catalog) {
+    eligible = evals.filter((c) => {
+      const pc = catalog.providers[c.executor];
+      if (!pc.ok || pc.stale) return true; // Fonte indisponível mantém a reserva da 0.2.0.
+      const model = pc.models.find((m) => m.id === c.model);
+      return model && automaticModelAllowed(model, cfg) && (capableOnly || selections.some((m) => m.executor === c.executor && m.model === c.model && (!hasTarget || tierRank(m.tier) <= tierRank(assessment.tier) || c.evidence.sufficient)));
+    });
+  }
   // Disponível primeiro; depois score; empate técnico (< 0,05) desempata pelo menor tempo mediano medido.
   evals.sort((a, b) => {
     if (a.available !== b.available) return a.available ? -1 : 1;
+    if (adaptive && a.executor === b.executor && Math.abs(a.score - b.score) < 0.0001) {
+      const models = catalog?.providers[a.executor].models ?? [];
+      const ma = models.find((m) => m.id === a.model), mb = models.find((m) => m.id === b.model);
+      if (ma && mb) { const version = compareModelVersions(mb, ma); if (version) return version; }
+    }
     if (Math.abs(a.score - b.score) >= 0.05) return b.score - a.score;
     return (a.evidence.medianWallMs ?? Number.MAX_SAFE_INTEGER) - (b.evidence.medianWallMs ?? Number.MAX_SAFE_INTEGER) || b.score - a.score;
   });
@@ -284,9 +326,18 @@ export function recommend(
       : "Catálogo das contas indisponível: usando routing.candidates da config.",
   ];
   if (filteredOut.length) notes.push(`Excluídos por não terem a capacidade exigida: ${filteredOut.join(", ")}`);
-  const base = { query: q, candidates: evals, notes };
-  const available = evals.filter((e) => e.available);
+  const available = evals.filter((e) => e.available && eligible.includes(e));
   const best = available[0];
+  const pc = best ? catalog?.providers[best.executor] : null;
+  const info = pc?.ok && !pc.stale ? pc.models.find((m) => m.id === best?.model) : null;
+  const selected = selections.find((m) => m.executor === best?.executor && m.model === best?.model);
+  const selection: Selection | undefined = adaptive ? {
+    adaptive: true, tier: info ? tierOf(info, cfg).tier : assessment.tier, complexitySignals: assessment.signals,
+    model: info?.id ?? null, effort: info ? selectEffort(tierOf(info, cfg).tier, info) : null,
+    reason: capableOnly && info ? ["capacidade exigida: nível não filtra modelos"] : selected?.reason ?? ["catálogo/candidato indisponível: sem seleção automática de modelo ou esforço"],
+    attempt: 1, attemptOf: null,
+  } : undefined;
+  const base = { query: q, candidates: evals, notes, ...(selection ? { selection } : {}) };
   if (!best) {
     const why = needs.length ? [`nenhum modelo disponível com ${needs.join(", ")}`] : ["nenhum candidato disponível para delegar"];
     const canSelf = q.brain !== null && needs.every((n) => n === "code");
@@ -363,6 +414,27 @@ export function recommend(
   };
 }
 
+export function recommend(
+  store: Store, cfg: DuoConfig, q: RouteQuery, availability: AvailabilityFn,
+  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null },
+): Recommendation {
+  const r = recommendResult(store, cfg, q, availability, catalog, defaults);
+  if (!cfg.routing.adaptive.enabled) return r;
+  const assessment = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles);
+  const selection = r.selection!;
+  const best = r.candidates.find((c) => c.available && c.model === selection.model && c.model !== null);
+  const tier = selection.tier;
+  r.decision.tier = assessment.tier;
+  r.decision.effort = selection.effort;
+  r.decision.why.push(...selection.reason);
+  const brainInfo = q.brain && q.brainModel ? catalog?.providers[q.brain].models.find((m) => [m.id, ...m.aliases].includes(q.brainModel as string)) : null;
+  if (best && brainInfo && tierRank(tierOf(brainInfo, cfg).tier) > tierRank(tier)) {
+    r.decision = { ...r.decision, action: "delegate", executor: best.executor, model: best.model };
+    r.decision.why.unshift("economiza a cota do seu modelo; se for trivial (uma linha), faça direto");
+  }
+  return r;
+}
+
 function namesOf(e: CandidateEval, catalog: Catalog | null): string[] {
   const info = e.model ? catalog?.providers[e.executor]?.models.find((m) => m.id === e.model) : null;
   return [e.model ?? "", ...(info?.aliases ?? [])].filter(Boolean).map((x) => x.toLowerCase());
@@ -385,6 +457,7 @@ export function formatRecommendation(r: Recommendation, maxCandidates = 8): stri
   lines.push(
     `Tarefa: kind=${r.query.kind} needs=${(r.query.needs ?? []).join(",") || "-"} tags=${r.query.tags.join(",") || "-"} risco=${r.query.risk} cérebro=${r.query.brain ?? "?"}${r.query.brainModel ? `/${r.query.brainModel}` : ""}`,
   );
+  if (r.selection) lines.push(`Nível-alvo: ${d.tier}; modelo sugerido=${r.selection.model ?? "padrão"}; esforço=${d.effort ?? "padrão"}`, `Sinais: ${r.selection.complexitySignals.join(" · ")}`);
   for (const w of d.why) lines.push(`  • ${w}`);
   if (r.explore) lines.push(`  → exploração: ${r.explore}`);
   lines.push(`Candidatos (${r.candidates.length}):`);

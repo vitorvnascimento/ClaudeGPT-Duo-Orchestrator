@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, type Catalog } from "../adapters/catalog.js";
+import { findModel, loadCatalog, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -24,7 +24,10 @@ import { isWriteKind, type AcceptanceResult, type DelegationRequest, type Run, t
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
 import { buildExecutorPrompt } from "./prompt.js";
-import { deriveTags } from "./router.js";
+import { selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
+import { assessComplexity, TIERS, tierRank } from "./complexity.js";
+import { selectModel, type ModelSelection } from "./select.js";
+import { deriveTags, evaluateCandidates } from "./router.js";
 
 export const EXIT = { ok: 0, failed: 1, invalid: 2, blocked: 3, cancelled: 4 } as const;
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -38,12 +41,13 @@ export type DelegateOptions = {
   resumeTaskId?: string;
   /** Sobrescreve o timeout desta invocação (útil ao retomar após timeout). Limitado a 10–3600 s. */
   timeoutSecOverride?: number;
+  adaptive?: boolean;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   authPaths?: AuthPaths;
 };
 
-export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown> };
+export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean };
 
 function invalid(message: string, details: string[] = [], exitCode: number = EXIT.invalid): DelegateOutcome {
   return { exitCode, summary: { state: "rejected", error: message, ...(details.length ? { details } : {}) } };
@@ -109,7 +113,7 @@ function newRun(req: DelegationRequest, cfg: DuoConfig): Run {
   return { runId: newId("run"), brain: req.brain, policy: cfg.policy, createdAt: now, updatedAt: now, cancelled: false, invocations: 0, taskIds: [], decisions: [], nextStep: null };
 }
 
-function readRequest(cwd: string, requestPath: string): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
   const p = resolve(cwd, requestPath);
   let raw: string;
   try {
@@ -127,7 +131,7 @@ function readRequest(cwd: string, requestPath: string): { ok: true; req: Delegat
   const errors = validate(loadSchema("delegation-request"), parsed);
   if (errors.length) return { ok: false, out: invalid("pedido fora do schema", errors) };
   const req = parsed as DelegationRequest;
-  if (req.brain === req.executor && !req.model) {
+  if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
     return { ok: false, out: invalid(`delegar ao mesmo cliente (${req.brain}) exige "model" explícito (outro modelo da mesma conta); sem isso, faça você mesmo`) };
   }
   if (req.brainModel && req.model && req.brain === req.executor && req.brainModel.toLowerCase() === req.model.toLowerCase()) {
@@ -252,7 +256,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     resuming = task.base !== null;
   } else {
     if (!opts.requestPath) return invalid("informe --request <arquivo.json> ou --resume <taskId>");
-    const parsed = readRequest(opts.cwd, opts.requestPath);
+    const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false);
     if (!parsed.ok) return parsed.out;
     req = parsed.req;
     if (req.runId) {
@@ -290,37 +294,112 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   } catch {
     catalog = null; // sem catálogo, a disponibilidade do modelo é confirmada na execução
   }
-  const gate = runGates(req, task, run, cfg, projectRoot, env, authPaths, catalog);
-  if (!gate.ok) {
-    transition(task, "blocked", gate.reason);
+  const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
+  const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: !isWriteKind(req.kind) });
+  const entriesForSelection = scope.ok ? scope.entries : [];
+  const tags = scope.ok ? deriveTags(projectRoot, entriesForSelection, true) : [];
+  const assessment = assessComplexity(req, entriesForSelection, tags, cfg.routing.adaptive.lightMaxFiles);
+  let target: Tier = assessment.tier;
+  let escalateToMax = false;
+  let previous: Task | null = null;
+  const originalReq = req;
+  for (;;) {
+    let execReq = { ...originalReq };
+    if (adaptive && !resuming) {
+      if (assessment.signals.includes("risk=high")) task.risk = "high";
+      const candidates = evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs }, () => ({ available: true, reasons: [] }), catalog).evals;
+      const chosen: ModelSelection | null = escalateToMax && previous?.model.requested ? { model: previous.model.requested, tier: previous.selection?.tier ?? "deep", effort: null, reason: ["deep sem nível acima: mesmo modelo, esforço máximo suportado"] } : !originalReq.model ? selectModel(catalog, cfg, req.executor, target, { candidates, floor: assessment.floor, needs: req.needs, allowDowngrade: previous === null }) : null;
+      if (chosen) execReq.model = chosen.model;
+      if (escalateToMax && previous?.model.requested) execReq.model = previous.model.requested;
+      const info: ModelInfo | null = execReq.model && catalog ? findModel(catalog, req.executor, execReq.model) : null;
+      const actualTier: Tier = chosen?.tier ?? (info ? tierOf(info, cfg).tier : target);
+      const effort: DelegationRequest["effort"] | null = originalReq.effort ?? (info ? selectEffort(actualTier, info, { escalateToMax }) : null);
+      if (effort) execReq.effort = effort;
+      task.model.requested = execReq.model ?? cfg.executors[req.executor].model ?? null;
+      task.effort = { requested: execReq.effort ?? null };
+      task.selection = { adaptive: true, tier: actualTier, complexitySignals: assessment.signals, model: task.model.requested, effort: task.effort.requested,
+        reason: [...(originalReq.model ? ["model explícito preservado"] : chosen?.reason ?? ["catálogo/candidato indisponível: sem seleção automática de modelo ou esforço"]), ...(originalReq.effort ? ["effort explícito preservado"] : [])],
+        attempt: (previous?.selection?.attempt ?? 0) + 1, attemptOf: previous ? previous.selection?.attemptOf ?? previous.taskId : null,
+        ...(previous ? { escalatedFrom: { model: previous.model.requested, effort: previous.effort?.requested ?? null, reason: previous.outcome ?? "verificação reprovou" } } : {}) };
+      const pc = catalog?.providers[req.executor];
+      if (!originalReq.model && !chosen && pc?.ok && !pc.stale && pc.models.length && scope.ok) {
+        transition(task, "blocked", "nenhum modelo automático elegível no nível-alvo ou acima; confira include/exclude, capacidade e uso extra");
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
+      writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(execReq));
+    }
+    if (req.brain === req.executor && (!task.model.requested || !adaptive && !originalReq.model)) {
+      transition(task, "blocked", "delegar ao mesmo cliente exige model explícito ou seleção automática de outro modelo; faça você mesmo");
+      store.saveTask(task);
+      return { exitCode: EXIT.blocked, summary: summarize(task) };
+    }
+    if (adaptive && req.brain === req.executor && req.brainModel && task.model.requested && modelMatches(task.model.requested, req.brainModel)) {
+      transition(task, "blocked", "o modelo selecionado é o próprio cérebro; faça você mesmo");
+      store.saveTask(task);
+      return { exitCode: EXIT.blocked, summary: summarize(task) };
+    }
+    const gate = runGates(execReq, task, run, cfg, projectRoot, env, authPaths, catalog);
+    if (!gate.ok) {
+      transition(task, "blocked", gate.reason);
+      store.saveTask(task);
+      store.telemetry({ event: "task_blocked", runId: run.runId, taskId: task.taskId, executor: task.executor, reason: gate.reason });
+      return { exitCode: EXIT.blocked, summary: summarize(task) };
+    }
+    const { resolved, caps, entries } = gate.gates;
+    task.tags = deriveTags(projectRoot, entries, adaptive);
+    const execCatalog = catalog?.providers[req.executor];
+    if (execCatalog?.stale && (task.model.requested || task.needs.includes("image_generation"))) {
+      const note = `catálogo do ${req.executor} desatualizado (de ${execCatalog.staleSince}): modelo/capacidade não confirmados antes da execução`;
+      if (!task.limitations.includes(note)) task.limitations.push(note);
+    }
+    transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação, política e autenticação aprovadas");
     store.saveTask(task);
-    store.telemetry({ event: "task_blocked", runId: run.runId, taskId: task.taskId, executor: task.executor, reason: gate.reason });
-    return { exitCode: EXIT.blocked, summary: summarize(task) };
-  }
-  const { resolved, caps, entries } = gate.gates;
-  task.tags = deriveTags(projectRoot, entries);
-  const execCatalog = catalog?.providers[req.executor];
-  if (execCatalog?.stale && (task.model.requested || task.needs.includes("image_generation"))) {
-    const note = `catálogo do ${req.executor} desatualizado (de ${execCatalog.staleSince}): modelo/capacidade não confirmados antes da execução`;
-    if (!task.limitations.includes(note)) task.limitations.push(note);
-  }
-  transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação, política e autenticação aprovadas");
-  store.saveTask(task);
-
-  const lock = new ExecutorLock(projectRoot);
-  const acquired = lock.acquire(task.taskId, run.runId);
-  if (!acquired.ok) {
-    transition(task, "blocked", `outro executor está ativo neste projeto (${acquired.holder?.taskId ?? "?"}, pid ${acquired.holder?.pid ?? "?"}); o MVP permite um executor por vez`);
+    const lock = new ExecutorLock(projectRoot);
+    const acquired = lock.acquire(task.taskId, run.runId);
+    if (!acquired.ok) {
+      transition(task, "blocked", `outro executor está ativo neste projeto (${acquired.holder?.taskId ?? "?"}, pid ${acquired.holder?.pid ?? "?"}); o MVP permite um executor por vez`);
+      store.saveTask(task);
+      return { exitCode: EXIT.blocked, summary: summarize(task) };
+    }
+    let out: DelegateOutcome;
+    try {
+      const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
+      const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
+      out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, adaptive, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
+    } finally { lock.release(); }
+    if (!adaptive || !out.verificationFailed || (task.selection?.attempt ?? 1) >= cfg.routing.adaptive.maxAttempts || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
+    if (task.isolation === "in-place" && (task.verification?.filesChangedActual.length
+      || (task.base && diffStates(projectRoot, baseState(task), entries.map((e) => e.rel)).changed.some((p) => !p.startsWith(".duo/"))))) {
+      task.limitations.push("escalada não aplicada: a tentativa alterou arquivos in-place; decida no cérebro");
+      store.saveTask(task);
+      return { exitCode: out.exitCode, summary: summarize(task) };
+    }
+    const pc = catalog?.providers[req.executor];
+    if (!pc?.ok || pc.stale) {
+      task.limitations.push("escalada não aplicada: catálogo indisponível para confirmar o próximo modelo/esforço");
+      store.saveTask(task);
+      return { exitCode: out.exitCode, summary: summarize(task) };
+    }
+    const currentTier: Tier = task.selection?.tier ?? target;
+    const nextTier: Tier | undefined = TIERS[tierRank(currentTier) + 1];
+    target = nextTier ?? "deep";
+    escalateToMax = !nextTier;
+    // Fixações explícitas nunca são substituídas; só repetir se há um aumento real disponível.
+    if (originalReq.model || escalateToMax) {
+      const info: ModelInfo | null = task.model.requested && catalog ? findModel(catalog, task.executor, task.model.requested) : null;
+      const nextEffort: DelegationRequest["effort"] | null = originalReq.effort ?? (info ? selectEffort("deep", info, { escalateToMax: true }) : null);
+      if (!nextEffort || nextEffort === task.effort?.requested) return out;
+      escalateToMax = true;
+    }
+    previous = task;
+    task = newTask(originalReq, run, store, cfg);
+    run.taskIds.push(task.taskId);
+    store.saveRun(run);
+    mkdirSync(task.artifactsDir, { recursive: true });
+    writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(originalReq));
     store.saveTask(task);
-    return { exitCode: EXIT.blocked, summary: summarize(task) };
-  }
-
-  try {
-    const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
-    const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-    return await execute({ req, task, run, cfg, store, projectRoot, env, lock, resolved, caps, entries, resuming, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
-  } finally {
-    lock.release();
+    resuming = false;
   }
 }
 
@@ -337,6 +416,7 @@ type ExecCtx = {
   caps: Capabilities;
   entries: ScopeEntry[];
   resuming: boolean;
+  adaptive: boolean;
   timeoutSec: number;
   codexHome: string;
   signal?: AbortSignal;
@@ -398,7 +478,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   writeFileSync(join(task.artifactsDir, "prompt.txt"), redact(prompt));
 
   const writes = isWriteKind(task.kind);
-  const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId });
+  const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId, DUO_ATTEMPT: String(task.selection?.attempt ?? 1) });
   const adapter = ADAPTERS[task.executor];
   let plan: ReturnType<ExecutorAdapter["plan"]>;
   try {
@@ -529,7 +609,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   }
   if (task.acceptanceCommands.length === 0) task.limitations.push("sem comandos de aceite: verificação limitada a escopo, diff e relatório estruturado");
 
-  const [state, reason] = decide(task, result, outcome, verification, violations, cancelledExternally);
+  const [state, reason, verificationFailed] = decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
   task.pids.child = null;
   task.metrics = {
     wallMs: result.durationMs,
@@ -572,7 +652,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     requestedModel: task.model.requested,
     reportedModel: task.model.reported,
   });
-  return { exitCode: exitFor(state), summary: summarize(task) };
+  return { exitCode: exitFor(state), summary: summarize(task), ...(verificationFailed ? { verificationFailed: true } : {}) };
 }
 
 /** Aliases (opus, sonnet) casam por família; IDs completos exigem igualdade de prefixo. */
@@ -672,7 +752,8 @@ function decide(
   v: Verification,
   violations: string[],
   cancelledExternally: boolean,
-): [TaskState, string] {
+  adaptive: boolean,
+): [TaskState, string, boolean?] {
   const partial = v.partialWork ? " Há trabalho parcial no escopo (ver diff); nada foi revertido." : "";
   if (r.cancelled || cancelledExternally) return ["cancelled", `cancelado pelo usuário.${partial}`];
   if (r.timedOut) return ["blocked", `timeout do executor; processo encerrado.${partial} Retome com duo delegate --resume ${task.taskId}.`];
@@ -693,6 +774,12 @@ function decide(
   if (o.errorKind) return ["failed", `${o.errorKind}: ${o.errorMessage ?? ""}${o.reportErrors.length ? ` [${o.reportErrors.slice(0, 5).join("; ")}]` : ""}${partial}`];
   const rep = o.report;
   if (!rep) return ["failed", "sem relatório estruturado"];
+  if (adaptive && v.staleBase) return ["failed", "o estado base mudou durante a execução (HEAD ou arquivos do escopo); resultado não integrado"];
+  if ((rep.status === "blocked" || rep.status === "partial") && adaptive
+    && /incapaz|incapacidade|capacidade|n[aã]o consigo|unable|cannot|complexidade|complexity/i.test(rep.blockedReason ?? rep.summary)
+    && !/escopo|scope|decis[aã]o|decision|auth|quota|cota|timeout|permission|permiss[aã]o/i.test(rep.blockedReason ?? rep.summary)) {
+    return ["failed", `executor reportou ${rep.status} por incapacidade: ${rep.blockedReason ?? rep.summary}`.slice(0, 600), true];
+  }
   if (rep.status === "blocked" || rep.status === "partial") return ["blocked", `executor reportou ${rep.status}: ${rep.blockedReason ?? rep.summary}`.slice(0, 600)];
   if (rep.status === "failed") return ["failed", `executor reportou falha: ${rep.summary}`.slice(0, 600)];
   if (v.staleBase) return ["failed", "o estado base mudou durante a execução (HEAD ou arquivos do escopo); resultado não integrado"];
@@ -700,8 +787,9 @@ function decide(
     return ["failed", "nenhuma imagem válida (PNG/JPEG/WebP/GIF) foi gravada no escopo autorizado, apesar do relatório \"completed\""];
   }
   const failedAcceptance = v.acceptance.filter((a: AcceptanceResult) => !a.passed);
+  if (adaptive && v.claimsMismatch.length) return ["failed", `overclaim: ${v.claimsMismatch.join("; ")}`, true];
   if (failedAcceptance.length) {
-    return ["failed", `critério de aceite falhou apesar do relatório "completed": ${failedAcceptance.map((a) => `${a.name} (exit ${a.exitCode ?? a.skippedReason ?? "?"})`).join(", ")}`];
+    return ["failed", `critério de aceite falhou apesar do relatório "completed": ${failedAcceptance.map((a) => `${a.name} (exit ${a.exitCode ?? a.skippedReason ?? "?"})`).join(", ")}`, failedAcceptance.every((a) => a.ran && a.exitCode !== null && !a.outputTail.endsWith("\n[timeout]"))];
   }
   return ["succeeded", task.worktree ? `concluído e verificado no worktree; integre com duo apply --task-id ${task.taskId}` : "concluído e verificado"];
 }
@@ -733,6 +821,7 @@ export function summarize(task: Task): Record<string, unknown> {
     worktree: task.worktree,
     model: task.model,
     ...(task.effort ? { effort: task.effort } : {}),
+    ...(task.selection ? { selection: task.selection } : {}),
     ...(task.evidence ? { evidence: summarizeEvidence(task.evidence) } : {}),
     invocations: task.invocations,
     metrics: task.metrics

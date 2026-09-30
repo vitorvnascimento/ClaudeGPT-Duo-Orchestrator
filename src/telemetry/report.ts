@@ -119,7 +119,7 @@ export function buildReport(store: Store, runId?: string): Record<string, unknow
       if (t.state === "cancelled") a.cancelled++;
       if (t.accepted?.accepted === true) a.accepted++;
       if (t.accepted?.accepted === false) a.rejected++;
-      if (t.retryOf || t.invocations > 1) a.retries++;
+      if (t.retryOf || t.invocations > 1 || (t.selection?.attempt ?? 1) > 1) a.retries++;
       const acc = t.verification?.acceptance ?? [];
       a.acceptanceRan += acc.filter((x) => x.ran).length;
       a.acceptancePassed += acc.filter((x) => x.passed).length;
@@ -171,6 +171,7 @@ function runSummary(run: Run, tasks: Task[]): Record<string, unknown> {
       filesChanged: t.verification?.filesChangedActual.length ?? 0,
       acceptance: (t.verification?.acceptance ?? []).map((a) => `${a.name}:${a.passed ? "ok" : a.ran ? "falhou" : "não executado"}`),
       model: t.model,
+      ...(t.selection ? { selection: t.selection } : {}),
       wallMs: t.metrics?.wallMs ?? null,
       accepted: t.accepted?.accepted ?? null,
     })),
@@ -199,6 +200,9 @@ export function formatReportText(r: Record<string, unknown>): string {
   for (const [p, q] of Object.entries(quota)) {
     const extra = q.source === "native" ? ` — janela ${String(q.rateLimitType ?? "?")} — uso extra: ${q.isUsingOverage === true ? "EM USO" : q.isUsingOverage === false ? "não usado" : "?"} (overageStatus=${String(q.overageStatus ?? "?")}) — observado ${String(q.observedAt)}` : "";
     lines.push(`  ${p}: ${String(q.status)}${q.usedPercent != null ? ` — ${String(q.usedPercent)}% usado` : ""}${q.resetsAt ? ` — reset ${String(q.resetsAt)}` : ""}${q.recordedAt ? ` (registrado ${String(q.recordedAt)})` : ""}${extra}`);
+  }
+  for (const run of r.runs as { tasks: { taskId: string; selection?: Task["selection"] }[] }[]) {
+    for (const task of run.tasks) if (task.selection) lines.push(`\n${task.taskId} seleção: ${JSON.stringify(task.selection)}`);
   }
   lines.push("\nObservações:");
   for (const n of r.notes as string[]) lines.push(`  - ${n}`);

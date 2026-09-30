@@ -2,14 +2,19 @@
 
 ## 0.3.0 — em desenvolvimento
 
-Fase 1 de 3: base de descoberta, níveis e esforço. Sem nova seleção automática ou fallback por cota.
+Fase 2 de 3: seleção adaptativa baseada em evidência. Fallback por conta ou cota continua fora do escopo.
 
 - Catálogo chaveado pelas versões instaladas de Claude/Codex, TTL de 6 h (1 h degradado) e invalidação explícita para o roteador futuro.
 - Consulta anônima das versões publicadas no npm, cache de 6 h e avisos em `models`/`doctor`, sem instalação ou credenciais; opt-out por ambiente/config.
 - Modelos configurados pelo usuário adicionados sem duplicar IDs/aliases, com origem própria e esforços desconhecidos.
 - Funções puras de nível por família/regex, comparação de versões, uso extra e escolha de esforço suportado.
-- `effort` opcional no pedido e na auditoria da task; flags condicionadas ao help, recusa antes da execução e argv antigo preservado sem effort.
+- `effort` opcional no pedido e na auditoria da task; flags condicionadas ao help, recusa antes da execução e argv antigo preservado sem effort quando o modo adaptativo está desligado.
 - Novos defaults/validações de `routing.adaptive`, `routing.extraModels` e `discovery`; configs e tasks antigas continuam compatíveis.
+- `duo recommend` agora retorna `tier`, `effort` e `selection`; `--request` leva objetivo, escopo e aceite reais, e ao omitir `model` a seleção ocorre dentro do `executor` solicitado. Sem aceite no modo abreviado, o piso é `standard`.
+- Pisos e escalada adaptativa: risco alto ou sensível exige `deep`; `light` exige baixo risco, escopo limitado sem diretório e comandos de aceite; falha de verificação escala `light → standard → deep` e `maxAttempts` conta a primeira tentativa.
+- Retentativas preservam worktrees anteriores e só repetem `in-place` sem alterações; falhas de infraestrutura não escalam. `deep` pode usar `xhigh`; `model` explícito não troca, `effort` explícito permanece e, sem ele, a escalada só aumenta esforço quando houver suporte.
+- `model`, `effort`, `complexity: light|standard|deep`, `adaptive: false` e `duo delegate --no-adaptive` permitem forçar o comportamento. `adaptive: false` mantém a execução pré-adaptativa.
+- Modelos com uso extra exigem ciência do provider e inclusão explícita em `routing.include`; não há fallback de contas ou cotas nesta fase.
 - Testes offline com fetch injetado e CLIs simuladas. Versões do pacote e `CLIENT_INFO` continuam 0.2.0.
 
 ## 0.2.0 — 2026-09-29

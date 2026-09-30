@@ -185,8 +185,35 @@ describe("doctor e report", () => {
 });
 
 describe("duo recommend", () => {
-  it("usa o histórico real do projeto, marca indisponibilidade e registra a consulta", () => {
-    sb = makeSandbox();
+  it("recommend --request inclui tier/effort/selection; status/report mostram e no-adaptive desliga", () => {
+    sb = makeSandbox(); const s = sb;
+    const request = baseRequest("claude", { adaptive: true, risk: "low", acceptance: { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } });
+    const path = s.request(request);
+    const env = { FAKE_ADAPTIVE_CATALOG: "1" };
+    const rec = cli(s, ["recommend", "--request", path, "--json"], env);
+    assert.equal(rec.status, 0, rec.stderr);
+    const r = JSON.parse(rec.stdout);
+    assert.equal(r.decision.tier, "light"); assert.ok("effort" in r.decision);
+    assert.equal(r.selection.tier, "light"); assert.ok(r.selection.model);
+    assert.ok(r.selection.reason.length); assert.ok(r.selection.complexitySignals.length);
+    const text = cli(s, ["recommend", "--request", path], env);
+    assert.match(text.stdout, /Nível-alvo: light/); assert.match(text.stdout, /Sinais:/); assert.match(text.stdout, /esforço=/);
+    const run = cli(s, ["delegate", "--request", path], env);
+    assert.equal(run.status, 0, run.stdout);
+    const t = JSON.parse(run.stdout);
+    for (const command of ["status", "report"]) {
+      const json = cli(s, [command, "--json"], env);
+      assert.deepEqual(JSON.parse(json.stdout).runs[0].tasks[0].selection, t.selection);
+      assert.match(cli(s, [command], env).stdout, /seleção:/);
+    }
+    const disabled = cli(s, ["delegate", "--request", path, "--no-adaptive"], env);
+    assert.equal(disabled.status, 0, disabled.stdout);
+    assert.equal(JSON.parse(disabled.stdout).selection, undefined);
+    const args = s.execCalls()[1]!.args as string[];
+    assert.ok(!args.includes("--model")); assert.ok(!args.some((arg) => arg.startsWith("model_reasoning_effort=")));
+  });
+  it("usa o histórico real do projeto, marca indisponibilidade e registra a consulta (adaptive desligado)", () => {
+    sb = makeSandbox({ routing: { adaptive: { enabled: false } } });
     const s = sb;
     const edit = JSON.stringify({ "src/app.ts": "export const app = 2;\n" });
     for (let i = 0; i < 3; i++) {

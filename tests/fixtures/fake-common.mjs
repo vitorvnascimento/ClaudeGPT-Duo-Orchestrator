@@ -3,7 +3,8 @@ import { appendFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmS
 import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-export const scenario = process.env.FAKE_SCENARIO ?? "success";
+export const attempt = Number(process.env.DUO_ATTEMPT ?? "1");
+export const scenario = JSON.parse(process.env.FAKE_SCENARIO_BY_ATTEMPT ?? "{}")[attempt] ?? process.env.FAKE_SCENARIO ?? "success";
 
 export function log(entry) {
   if (!process.env.FAKE_LOG) return;
@@ -24,7 +25,7 @@ export function sensitiveEnvSeen() {
 
 /** Aplica as escritas simuladas (FAKE_WRITE = {"caminho": "conteúdo"}) no diretório atual. */
 export function applyWrites() {
-  const writes = JSON.parse(process.env.FAKE_WRITE ?? "{}");
+  const writes = JSON.parse(process.env.FAKE_WRITE_BY_ATTEMPT ?? "{}")[attempt] ?? JSON.parse(process.env.FAKE_WRITE ?? "{}");
   for (const [rel, content] of Object.entries(writes)) {
     const abs = join(process.cwd(), rel);
     mkdirSync(dirname(abs), { recursive: true });
@@ -43,7 +44,7 @@ export function report(files) {
     limitations: [],
     blockedReason: null,
   };
-  return { ...base, ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
+  return { ...base, ...JSON.parse(process.env.FAKE_REPORT ?? "{}"), ...JSON.parse(process.env.FAKE_REPORT_BY_ATTEMPT ?? "{}")[attempt] };
 }
 
 export function sleep(ms) {

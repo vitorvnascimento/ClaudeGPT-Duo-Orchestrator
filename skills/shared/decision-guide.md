@@ -5,9 +5,11 @@ Objetivo: **concluir mais tarefas corretamente com os recursos disponíveis**. Q
 ## Ordem de decisão para cada subtarefa
 
 1. **Ferramenta determinística resolve?** Busca, git, compilador, testes, linter, parser. Use-a.
-2. **Evidência:** `duo recommend --kind … --paths … --risk … --brain {{BRAIN}}`.
+2. **Evidência:** `duo recommend [--request <pedido.json>] [--kind …] [--paths …] --risk … --brain {{BRAIN}}`.
    - `DELEGAR` ou `FAZER VOCÊ MESMO` com confiança alta ou média → siga.
    - `JULGAMENTO` → use os critérios abaixo.
+   - A resposta traz `tier`, `effort` e `selection` para auditoria. Informe o `executor`; omita `model`/`effort` para manter a seleção automática. `tier` e `selection` não são campos do pedido.
+   - Use `--request` para enviar objetivo, escopo e aceite reais; sem aceite no modo abreviado, o piso é `standard`.
 3. **Registre** a decisão da entrega (`duo accept` / `--reject`). É isso que torna a próxima recomendação melhor.
 
 ## Critérios quando a evidência é insuficiente
@@ -27,9 +29,17 @@ Objetivo: **concluir mais tarefas corretamente com os recursos disponíveis**. Q
 
 - `duo models` lista o que as contas conectadas oferecem; o `recommend` considera **todos** esses modelos.
 - A capacidade exigida é filtro obrigatório (ex.: arte → só modelos com `image_generation`).
-- Use o `model` indicado pelo `recommend`. Se ele for do seu próprio cliente mas diferente do seu modelo, delegue ao seu cliente com esse `model`.
+- Use o executor indicado pelo `recommend`. Omitir `model` ativa a seleção adaptativa dentro desse executor; informe `model` apenas quando precisar forçá-lo. `effort` explícito também é preservado em escaladas.
+- `complexity` (`light`, `standard`, `deep`) força o nível. Risco alto ou sensível exige `deep`; `light` exige risco baixo, arquivos limitados, sem diretório e comandos de aceite.
 - Para restringir ou excluir modelos (ex.: legados), use `routing.include`/`routing.exclude` no `.duo/config.json`.
 - Não suponha que um modelo "sempre" é melhor em algo: isso é estereótipo, não medição. Preferências pessoais só entram como `routing.priors`, com bônus limitado e identificado.
+
+## Escalada e limites
+
+- Só faça downgrade com evidência suficiente e sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess`, respeitando os pisos.
+- Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa. `deep` pode usar `xhigh`; `model` explícito não troca, `effort` explícito permanece e, sem ele, só aumenta com suporte. Falha de infraestrutura não escala.
+- Em `worktree`, cada tentativa usa worktree novo e mantém o anterior. Em `in-place`, só repita se não houve alteração.
+- `adaptive: false` ou `duo delegate --no-adaptive` restaura o comportamento pré-adaptativo. Uso extra exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e `routing.include`; fallback por conta/cota fica para a fase 3.
 
 ## Contexto mínimo suficiente
 

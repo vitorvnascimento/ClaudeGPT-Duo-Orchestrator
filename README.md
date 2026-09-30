@@ -137,8 +137,8 @@ Quando o cérebro pedir permissão para rodar `duo delegate`, aprove esse comand
 
 ## Uso no dia a dia
 
-- **Deixe a escolha com a evidência:** sem nomear modelos, o cérebro consulta `duo recommend`, que escolhe pelo histórico verificado do seu projeto e pelas capacidades (arte só vai para modelos que geram imagem). Num projeto novo, a primeira escolha é por julgamento e melhora com o uso.
-- **Ou nomeie os modelos:** *"use Opus 5.5 no código e GPT-6-Astra na arte"*. O cérebro segue a sua escolha, desde que o modelo exista na sua conta (`duo models`).
+- **Deixe a escolha com a evidência:** sem nomear modelos, o cérebro consulta `duo recommend`, que escolhe pelo histórico verificado do seu projeto e pelas capacidades (arte só vai para modelos que geram imagem). Ao omitir `model` no pedido, a seleção adaptativa escolhe dentro do `executor` já pedido e registra `tier`, `effort` e `selection`. Num projeto novo, a primeira escolha é por julgamento e melhora com o uso.
+- **Ou force a escolha:** *"use Opus 5.5 no código e GPT-6-Astra na arte"*. `model` e `effort` explícitos são preservados; `complexity` (`light`, `standard` ou `deep`) indica o nível inicial, sujeito aos pisos; `adaptive: false` ou `duo delegate --no-adaptive` restaura o comportamento pré-adaptativo. O modelo precisa existir na conta (`duo models`).
 - **Revisão cruzada:** *"implemente X e peça ao Codex para revisar"*. A revisão roda em modo somente leitura.
 - **Trocar o cérebro no meio do trabalho:** `duo handoff --to codex --next "..."` gera um documento em `.duo/handoffs/` para abrir na outra IA.
 - **Outro computador:** instale o duo (Opção 1 ou 2), faça login nas duas CLIs e pronto. Se o projeto já tem as skills versionadas e o `duo` está no PATH, não precisa rodar `init` de novo.
@@ -165,10 +165,10 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | --- | --- |
 | `duo doctor [--json]` | Diagnóstico sem inferência: versões, flags suportadas (lidas do `--help`), método de autenticação pelo status oficial, conflitos de cobrança, hooks/MCP, outros coordenadores. |
 | `duo init [--brain claude\|codex] [--apply] [--overwrite]` | Config e skills do projeto com preview/diff e backup. |
-| `duo delegate --request <arquivo>` | Executa um pedido do cérebro (formato em `schemas/delegation-request.schema.json`). Imprime um JSON final. |
+| `duo delegate --request <arquivo> [--no-adaptive]` | Executa um pedido do cérebro (formato em `schemas/delegation-request.schema.json`). Imprime um JSON final; `--no-adaptive` desliga a seleção adaptativa desta execução. |
 | `duo delegate --resume <taskId> [--timeout-sec N]` | Retoma uma task `blocked` (timeout, interrupção, cota, login…), reutilizando a sessão nativa; `--timeout-sec` dá mais tempo à retomada. |
 | `duo models [--refresh] [--json]` | Modelos disponíveis nas contas conectadas (Claude e Codex), com nível, esforços, uso extra, origem, recomendado/legado do fornecedor, sucessor e aposentadoria, ferramentas (ex.: geração de imagem) e a fonte usada. Sem inferência; cache de 6 h por versão das CLIs (1 h se alguma fonte estiver degradada). |
-| `duo recommend --kind … [--needs image_generation] [--paths …] [--risk …] [--brain …] [--brain-model …]` | Melhor modelo disponível para a subtarefa (filtro por capacidade + evidência medida + disponibilidade). Diz se é para delegar (a qual cliente e modelo) ou fazer você mesmo. Sem preferência de marca. |
+| `duo recommend [--request <pedido.json>] [--kind …] [--needs image_generation] [--paths …] [--risk …] [--brain …] [--brain-model …]` | Recomendação determinística por evidência, capacidade e disponibilidade. A saída inclui `tier`, `effort` e `selection`, além do executor/modelo, ou indica fazer você mesmo. `--request` fornece objetivo, escopo e aceite reais. |
 | `duo status [--run-id]` | Runs e tasks. Detecta interrupções (ponte morta) e marca como `blocked`. |
 | `duo report [--run-id] [--json]` | Relatório determinístico com a origem de cada número. |
 | `duo cancel --run-id <id>` | Encerra ponte e executor (árvore de processos) e marca `cancelled`. |
@@ -189,7 +189,7 @@ A ponte não se limita a "Claude ou Codex": ela trabalha com **modelos**.
 - **Qualquer modelo, qualquer cérebro:** a delegação pode ir para o **mesmo cliente com outro modelo** (ex.: cérebro GPT-6-Sol → arte com GPT-6-Astra; cérebro Opus 5.5 → tarefa simples com Sonnet 5). Só é recusado delegar ao mesmo modelo que o cérebro já é.
 - **A ponte valida antes e depois:** bloqueia um `model` que não exista na conta (listando os disponíveis) e, em arte, confere a assinatura binária da imagem gravada no escopo (PNG/JPEG/WebP/GIF). Um "completed" sem imagem válida vira `failed`.
 
-### Base da v0.3.0 (fase 1)
+### Base da v0.3.0 (fases 1 e 2)
 
 O catálogo registra `cliVersions` e expira após 6 h (1 h degradado). Atualizar qualquer CLI invalida o cache na próxima consulta; `duo models --refresh` força a descoberta. A lista depende da versão instalada: o servidor Codex também filtra por `client_version`.
 
@@ -197,7 +197,7 @@ O catálogo registra `cliVersions` e expira após 6 h (1 h degradado). Atualizar
 
 Modelos das chaves raiz `model` de `~/.codex/config.toml` e `~/.claude/settings.json`, ou de `routing.extraModels` (`["codex:gpt-6.1-sol"]`), aparecem como configurados pelo usuário se a CLI não os listar. IDs e aliases não são duplicados. Esses arquivos são somente lidos; a presença na configuração não confirma disponibilidade na conta.
 
-O pedido pode declarar `"effort": "high"` (`low|medium|high|xhigh|max`). Claude recebe `--effort high`; Codex recebe `--config model_reasoning_effort="high"`. A ponte bloqueia antes de executar se a CLI não anunciar a flag. Sem effort, o argv é o mesmo da 0.2.0. O esforço pedido fica registrado na task; tasks antigas continuam válidas.
+O pedido pode declarar `"effort": "high"` (`low|medium|high|xhigh|max`). Claude recebe `--effort high`; Codex recebe `--config model_reasoning_effort="high"`. A ponte bloqueia antes de executar se a CLI não anunciar a flag. Sem `effort` explícito e com a seleção adaptativa desligada, o argv é o mesmo da 0.2.0; com ela, a ponte pode usar o esforço retornado por `selection`. O esforço pedido fica registrado na task; tasks antigas continuam válidas.
 
 `duo models` e `duo doctor` consultam anonimamente as versões publicadas das CLIs no npm (cache `.duo/cli-latest.json`, 6 h, timeout 5 s), e sugerem atualização quando necessário. Nunca instalam nada. Sem rede não há aviso novo. Desative com `DUO_NO_UPDATE_CHECK=1` ou `discovery.checkCliUpdates=false`; a consulta também é desligada em executores (`DUO_DEPTH`), CI e sandbox Codex. `doctor` mostra versão instalada/publicada e suporte a `--effort`/`--config`.
 
@@ -208,6 +208,7 @@ Os novos defaults, mesclados em configs antigas, são:
   "discovery": { "checkCliUpdates": true },
   "routing": {
     "extraModels": [],
+    "include": null,
     "adaptive": {
       "enabled": true,
       "tiers": [],
@@ -220,7 +221,15 @@ Os novos defaults, mesclados em configs antigas, são:
 }
 ```
 
-Nesta fase esses parâmetros preparam o roteamento adaptativo; não ativam seleção automática nem fallback por cota. `selectEffort` prefere low/medium/high por nível (xhigh na escalada), ou o esforço suportado imediatamente acima; retorna null sem opção adequada. `extraUsage` marca contexto `[1m]`, créditos ou preços na descrição. A exclusão automática desses modelos, com exceção por `billing.acknowledgeUnverifiableExtraUsage` + `routing.include`, será aplicada na fase 2. O `duo recommend` existente mantém seu comportamento.
+`selectEffort` prefere low/medium/high por nível (xhigh na escalada), ou o esforço suportado imediatamente acima; retorna null sem opção adequada. `extraUsage` marca contexto `[1m]`, créditos ou preços na descrição.
+
+### Fase 2 — seleção adaptativa
+
+`duo recommend` passa `tier`, `effort` e `selection` para a decisão. Use `--request <pedido.json>` para fornecer objetivo, escopo e comandos de aceite reais; com `--kind` sem aceite, o piso é `standard`. Quando o pedido informa `executor` e omite `model`, a ponte escolhe automaticamente dentro daquele executor; nunca troca o executor solicitado. `model`, `effort`, `complexity` (`light|standard|deep`) e `adaptive: false` forçam o comportamento indicado. A CLI também aceita `duo delegate --no-adaptive`.
+
+Os pisos são aplicados antes da escolha: risco alto ou sensível exige `deep`; `light` só vale para risco baixo, poucos arquivos, sem diretório no escopo e com comandos de aceite. Um downgrade só ocorre com evidência suficiente e sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess`, respeitando os pisos. Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa, e `deep` pode usar `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece, e sem ele a escalada só aumenta o esforço quando houver suporte.
+
+Cada tentativa em `worktree` recebe um worktree novo e mantém o anterior para inspeção. Em `in-place`, só há nova tentativa se o executor não deixou alterações. Falhas de infraestrutura não escalam. Uso extra só entra com `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo incluído em `routing.include`. A fase 2 não adiciona fallback por conta ou cota; isso fica fora da fase 3.
 
 Exemplo validado com as CLIs reais (E2E A1): pedido de arte ao `codex` com `model: "gpt-6-astra"` gerou `assets/mascot.png` (PNG 1254×1254), verificado pela ponte.
 

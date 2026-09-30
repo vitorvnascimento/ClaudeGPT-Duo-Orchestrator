@@ -113,6 +113,7 @@ export function makeSandbox(configPatch: Record<string, unknown> = {}): Sandbox 
 export function baseRequest(brain: "claude" | "codex", overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
+    adaptive: false, // Contrato pré-adaptativo; testes da fase 2 optam por true.
     brain,
     executor: brain === "claude" ? "codex" : "claude",
     kind: "implement",

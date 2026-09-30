@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ConfigError, loadConfig, type Provider } from "../config.js";
 import { repoRoot } from "../git.js";
 import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
@@ -10,7 +10,8 @@ import { formatCatalog, loadCatalog, type Capability } from "../adapters/catalog
 import { deriveTags, formatRecommendation, liveAvailability, recommend, type Risk } from "../orchestration/router.js";
 import { validateScope } from "../permissions/scope.js";
 import { codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
-import type { TaskKind } from "../state/types.js";
+import { loadSchema, validate } from "../schema.js";
+import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
 import { Store } from "../state/store.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
@@ -27,7 +28,7 @@ Uso:
   duo doctor [--json]                         diagnóstico sem inferência
   duo init [--brain claude|codex] [--apply] [--overwrite]
                                               gera config e skills do projeto (preview por padrão)
-  duo delegate --request <arquivo.json>       executa um pedido do cérebro
+  duo delegate --request <arquivo.json> [--no-adaptive] executa um pedido do cérebro
   duo delegate --resume <taskId> [--timeout-sec N]
                                               retoma uma task bloqueada/interrompida (opcionalmente com mais tempo)
   duo models [--refresh] [--json]             modelos disponíveis nas contas conectadas (sem inferência)
@@ -50,15 +51,15 @@ Códigos de saída de delegate: 0 succeeded, 1 failed, 2 pedido inválido, 3 blo
 
 type Args = { _: string[]; flags: Record<string, string | true> };
 
-const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet"]);
+const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet", "no-adaptive"]);
 
 /** Opções aceitas por comando: uma opção desconhecida é erro (evita flags ignoradas em silêncio). */
 const COMMAND_FLAGS: Record<string, string[]> = {
   doctor: [],
   init: ["brain", "apply", "overwrite"],
-  delegate: ["request", "resume", "timeout-sec"],
+  delegate: ["request", "resume", "timeout-sec", "no-adaptive"],
   models: ["refresh"],
-  recommend: ["kind", "needs", "paths", "risk", "brain", "brain-model"],
+  recommend: ["kind", "needs", "paths", "risk", "brain", "brain-model", "request"],
   status: ["run-id"],
   report: ["run-id"],
   cancel: ["run-id"],
@@ -216,6 +217,7 @@ async function main(argv: string[]): Promise<number> {
         ...(resumeTaskId ? { resumeTaskId } : {}),
         ...(timeoutRaw !== undefined ? { timeoutSecOverride: Number(timeoutRaw) } : {}),
         signal: controller.signal,
+        ...(args.flags["no-adaptive"] ? { adaptive: false } : {}),
       });
       print(out.summary);
       return out.exitCode;
@@ -238,21 +240,31 @@ async function main(argv: string[]): Promise<number> {
     case "recommend": {
       const root = projectRootOf(cwd);
       const cfg = loadConfig(root);
-      const kind = str(args, "kind");
+      const requestPath = str(args, "request");
+      let request: DelegationRequest | undefined;
+      if (requestPath) {
+        const parsed: unknown = JSON.parse(readFileSync(resolve(cwd, requestPath), "utf8"));
+        const errors = validate(loadSchema("delegation-request"), parsed);
+        if (errors.length) throw new Error(`pedido fora do schema: ${errors.join("; ")}`);
+        request = parsed as DelegationRequest;
+      }
+      const kind = str(args, "kind") ?? request?.kind;
       if (!kind || !["implement", "review", "test", "investigate", "asset"].includes(kind)) throw new Error("--kind deve ser implement, review, test, investigate ou asset");
-      const needs = (str(args, "needs") ?? "").split(",").map((x) => x.trim()).filter(Boolean) as Capability[];
+      const needs = (str(args, "needs") ?? request?.needs?.join(",") ?? "").split(",").map((x) => x.trim()).filter(Boolean) as Capability[];
       if (needs.some((n) => !["code", "image_generation"].includes(n))) throw new Error("--needs aceita: code, image_generation");
-      const brainModel = str(args, "brain-model") ?? null;
-      const risk = (str(args, "risk") ?? "medium") as Risk;
+      const brainModel = str(args, "brain-model") ?? request?.brainModel ?? null;
+      const risk = (str(args, "risk") ?? request?.risk ?? "medium") as Risk;
       if (!["low", "medium", "high"].includes(risk)) throw new Error("--risk deve ser low, medium ou high");
-      const brainArg = str(args, "brain");
+      const brainArg = str(args, "brain") ?? request?.brain;
       const brain = brainArg === undefined ? null : provider(brainArg, "--brain");
-      const paths = (str(args, "paths") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+      const paths = (str(args, "paths") ?? request?.scope.allowedPaths.join(",") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
       let tags: string[] = [];
+      let scopeEntries: { rel: string; isDir: boolean }[] = [];
       if (paths.length) {
         const scope = validateScope(root, paths, cfg.scope.deny, { allowWholeProject: true });
         if (!scope.ok) throw new Error(`--paths inválido: ${scope.errors.join("; ")}`);
-        tags = deriveTags(root, scope.entries);
+        tags = deriveTags(root, scope.entries, cfg.routing.adaptive.enabled && request?.adaptive !== false);
+        scopeEntries = scope.entries;
       }
       const store = new Store(root);
       let catalog = null;
@@ -262,7 +274,7 @@ async function main(argv: string[]): Promise<number> {
         catalog = null;
       }
       const defaults = { claude: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env) };
-      const rec = recommend(store, cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs }, liveAvailability(store, cfg), catalog, defaults);
+      const rec = recommend(store, request?.adaptive === false ? { ...cfg, routing: { ...cfg.routing, adaptive: { ...cfg.routing.adaptive, enabled: false } } } : cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs, paths: scopeEntries, ...(request ? { objective: request.objective, acceptance: request.acceptance, complexity: request.complexity } : {}) }, liveAvailability(store, cfg), catalog, defaults);
       store.telemetry({ event: "recommend", query: rec.query, decision: rec.decision });
       print(args.flags.json ? rec : formatRecommendation(rec));
       return 0;
@@ -279,14 +291,14 @@ async function main(argv: string[]): Promise<number> {
         cancelled: r.cancelled,
         invocations: r.invocations,
         nextStep: r.nextStep,
-        tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt })),
+        tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt, ...(t.selection ? { selection: t.selection } : {}) })),
       }));
       if (args.flags.json) print({ interrupted, runs: data });
       else {
         if (!data.length) print("nenhum run registrado neste projeto");
         for (const r of data) {
           print(`${r.runId} cérebro=${r.brain} política=${r.policy} invocações=${r.invocations}${r.cancelled ? " CANCELADO" : ""}`);
-          for (const t of r.tasks) print(`  ${t.taskId} ${t.executor}/${t.kind} ${t.state}${t.outcome ? ` — ${t.outcome.slice(0, 160)}` : ""}`);
+          for (const t of r.tasks) print(`  ${t.taskId} ${t.executor}/${t.kind} ${t.state}${t.outcome ? ` — ${t.outcome.slice(0, 160)}` : ""}${t.selection ? `\n    seleção: ${JSON.stringify(t.selection)}` : ""}`);
         }
         for (const i of interrupted) print(`interrupção detectada: ${i.taskId}${i.orphanChild ? ` (executor órfão pid ${i.orphanChild})` : ""}`);
       }

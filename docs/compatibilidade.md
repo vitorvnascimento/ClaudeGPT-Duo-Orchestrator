@@ -81,6 +81,20 @@ Catálogo informado em 29/09: Claude Opus 5.5 (recomendado), Fable 5.1 `[1m]`, S
 
 A consulta de versões é desligada com `DUO_NO_UPDATE_CHECK=1`, `DUO_DEPTH`, `CI`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED=1` ou `discovery.checkCliUpdates=false`. A descoberta dos modelos continua local. Nenhum npm é executado por esse diagnóstico. Versões de pacote e `CLIENT_INFO` permanecem 0.2.0 até a release.
 
+## Base da v0.3.0 — fase 2
+
+| Recurso | Contrato |
+| --- | --- |
+| `duo recommend` | Retorna `tier`, `effort` e `selection` junto da decisão de executor/modelo. `--request <pedido.json>` fornece objetivo, escopo e aceite reais; `--kind` sem aceite mantém piso `standard`. Sem `model` no pedido, escolhe dentro do `executor` informado. |
+| Pisos | Risco alto ou sensível exige `deep`; `light` exige risco baixo, arquivos limitados, nenhum diretório no escopo e comandos de aceite. |
+| Downgrade | Só com evidência suficiente, sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess` e respeito aos pisos. |
+| Escalada | Falha de verificação escala `light → standard → deep`; `maxAttempts` conta a primeira tentativa; `deep` usa `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece e, sem ele, só aumenta com suporte. Falha de infraestrutura não escala. |
+| Isolamento | Cada nova tentativa `worktree` usa worktree novo e preserva o anterior. `in-place` só tenta novamente sem alterações deixadas pelo executor. |
+| Forçar comportamento | `model`, `effort`, `complexity` (`light`, `standard` ou `deep`), `adaptive: false` e `duo delegate --no-adaptive`; `model`/`effort` explícitos permanecem na escalada. |
+| Uso extra | Exige `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo em `routing.include`. Não há fallback por conta ou cota nesta fase. |
+
+`adaptive: false` restaura a execução pré-adaptativa. A seleção não muda o executor solicitado nem cria uma conta ou cota alternativa; fallback de contas e cotas fica para a fase 3.
+
 ## Validação
 
 | Teste | Tipo | Resultado |

@@ -38,6 +38,204 @@ function task(s: Sandbox, taskId: unknown): Task {
 
 const APP_EDIT = JSON.stringify({ "src/app.ts": "export const app = 1;\nexport const nova = 2;\n" });
 
+const adaptiveAcceptance = { criteria: ["nova exportada"], commands: [{ name: "nova", argv: ["node", "-e", 'process.exit(require("fs").readFileSync("src/app.ts", "utf8").includes("nova") ? 0 : 1)'] }] };
+const adaptiveRequest = (brain: "claude" | "codex", overrides: Record<string, unknown> = {}) => baseRequest(brain, { adaptive: true, risk: "low", acceptance: adaptiveAcceptance, ...overrides });
+const adaptiveEnv = { FAKE_ADAPTIVE_CATALOG: "1" };
+
+describe("seleção e escalada adaptativas", () => {
+  it("escopo sensível eleva risco registrado; disabled mantém tags antigas", async () => {
+    const s = setup();
+    const req = adaptiveRequest("claude", { scope: { allowedPaths: ["db/schema.sql"] }, acceptance: { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } });
+    const out = await run(s, req, adaptiveEnv);
+    const t = task(s, out.summary.taskId);
+    assert.equal(t.risk, "high"); assert.equal(t.selection?.tier, "deep");
+    assert.equal(t.model.requested, "gpt-6-astra");
+    const disabled = await run(s, { ...req, adaptive: false }, adaptiveEnv);
+    const old = task(s, disabled.summary.taskId);
+    assert.equal(old.risk, "low"); assert.deepEqual(old.tags, ["sql"]); assert.equal(old.selection, undefined);
+  });
+  it("comando de aceite indisponível é infraestrutura, sem escalada", async () => {
+    const s = setup({ acceptance: { allowedCommands: [["duo-missing-test-command"]] } });
+    const out = await run(s, adaptiveRequest("claude", { acceptance: { criteria: ["verificado"], commands: [{ name: "missing", argv: ["duo-missing-test-command"] }] } }), adaptiveEnv);
+    assert.equal(out.summary.state, "failed"); assert.equal(s.execCalls().length, 1);
+  });
+  it("aceite que grava arquivo in-place também impede escalada", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { acceptance: { criteria: ["verificado"], commands: [{ name: "writes", argv: ["node", "-e", 'require("fs").writeFileSync("src/app.ts", "changed by acceptance"); process.exit(1)'] }] } }), adaptiveEnv);
+    assert.equal(out.summary.state, "failed"); assert.equal(s.execCalls().length, 1);
+    assert.equal(s.read("src/app.ts"), "changed by acceptance");
+    assert.match(JSON.stringify(out.summary.limitations), /escalada não aplicada.*in-place/);
+  });
+  it("adaptive=false e config desligada preservam argv e task do contrato 0.2.0", async () => {
+    const s = setup({ routing: { adaptive: { enabled: false } } });
+    const req = baseRequest("claude"); delete req.adaptive;
+    const first = await run(s, req, adaptiveEnv);
+    const a = task(s, first.summary.taskId);
+    s.config({ routing: { adaptive: { enabled: true } } });
+    const second = await delegate({ cwd: s.root, requestPath: s.request(req), adaptive: false, env: { ...s.env, ...adaptiveEnv }, authPaths: s.authPaths });
+    const b = task(s, second.summary.taskId);
+    assert.equal(a.state, "succeeded"); assert.equal(b.state, "succeeded");
+    assert.equal(a.selection, undefined); assert.equal(b.selection, undefined);
+    const normalize = (t: Task) => {
+      const copy = structuredClone(t);
+      for (const key of ["taskId", "runId", "createdAt", "updatedAt", "artifactsDir", "history", "metrics", "evidence"] as const) delete (copy as Partial<Task>)[key];
+      return copy;
+    };
+    assert.deepEqual(normalize(a), normalize(b));
+    const argv = (i: number, t: Task) => (s.execCalls()[i]!.args as string[]).map((arg) => arg.replace(t.artifactsDir, "<task>"));
+    assert.deepEqual(argv(0, a), argv(1, b));
+    assert.ok(!(s.execCalls()[0]!.args as string[]).includes("--model"));
+    assert.ok(!(s.execCalls()[0]!.args as string[]).some((a) => a.startsWith("model_reasoning_effort=")));
+    const third = await run(s, { ...req, adaptive: false }, adaptiveEnv);
+    assert.equal(task(s, third.summary.taskId).selection, undefined);
+    assert.deepEqual(argv(0, a), argv(2, task(s, third.summary.taskId)));
+  });
+  it("model fixado escala somente esforço; fixar ambos impede troca", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { isolation: "worktree", model: "gpt-6.1-sol" }), { ...adaptiveEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.deepEqual(s.execCalls().map((c) => c.model), ["gpt-6.1-sol", "gpt-6.1-sol"]);
+    assert.deepEqual(s.execCalls().map((c) => c.effort), ['model_reasoning_effort="medium"', 'model_reasoning_effort="xhigh"']);
+    const fixed = await run(s, adaptiveRequest("claude", { isolation: "worktree", model: "gpt-6.1-sol", effort: "medium" }), adaptiveEnv);
+    assert.equal(fixed.summary.state, "failed"); assert.equal(s.execCalls().length, 3);
+  });
+  it("retomada mantém seleção/esforço sem reiniciar a cadeia", async () => {
+    const s = setup();
+    const first = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "Precisa de decisão do cérebro" }) });
+    assert.equal(first.summary.state, "blocked");
+    const resumed = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), env: { ...s.env, ...adaptiveEnv, FAKE_WRITE: APP_EDIT }, authPaths: s.authPaths });
+    assert.equal(resumed.summary.state, "succeeded", JSON.stringify(resumed.summary));
+    assert.deepEqual(resumed.summary.selection, first.summary.selection);
+    assert.deepEqual(s.execCalls().map((c) => c.model), ["gpt-6-luna", "gpt-6-luna"]);
+  });
+  it("no-adaptive na retomada desliga também a classificação/escalada por incapacidade", async () => {
+    const s = setup();
+    const first = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "Precisa de decisão do cérebro" }) });
+    const resumed = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), adaptive: false, env: { ...s.env, ...adaptiveEnv, FAKE_REPORT: JSON.stringify({ status: "partial", blockedReason: "Não consigo resolver a complexidade" }) }, authPaths: s.authPaths });
+    assert.equal(resumed.summary.state, "blocked"); assert.equal(resumed.summary.taskId, first.summary.taskId);
+    assert.equal(s.execCalls().length, 2);
+    assert.deepEqual(resumed.summary.selection, first.summary.selection);
+  });
+  for (const brain of ["claude", "codex"] as const) it(`${brain}: light → standard em worktree preserva as duas tentativas e argv`, async () => {
+    const s = setup();
+    const writes = { 1: { "src/app.ts": "export const app = 2;\n" }, 2: JSON.parse(APP_EDIT) };
+    const out = await run(s, adaptiveRequest(brain, { isolation: "worktree" }), { ...adaptiveEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify(writes) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const final = task(s, out.summary.taskId), store = new Store(s.root);
+    const tasks = store.listTasks(store.loadRun(final.runId)!);
+    assert.equal(tasks.length, 2);
+    const first = tasks.find((t) => t.selection?.attempt === 1)!;
+    assert.equal(first.state, "failed");
+    assert.equal(final.selection?.attemptOf, first.taskId);
+    assert.equal(final.selection?.attempt, 2);
+    assert.equal(first.selection?.tier, "light"); assert.equal(final.selection?.tier, "standard");
+    assert.notEqual(first.worktree, final.worktree);
+    assert.ok(existsSync(first.worktree!)); assert.ok(existsSync(final.worktree!));
+    assert.equal(readFileSync(join(first.worktree!, "src/app.ts"), "utf8"), writes[1]["src/app.ts"]);
+    assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+    const calls = s.execCalls(); assert.equal(calls.length, 2);
+    const models = brain === "claude" ? ["gpt-6-luna", "gpt-6.1-sol"] : ["claude-haiku-4-5-20251001", "claude-sonnet-5-5"];
+    assert.deepEqual(calls.map((c) => c.model), models);
+    assert.deepEqual(calls.map((c) => c.effort), brain === "claude" ? ['model_reasoning_effort="low"', 'model_reasoning_effort="medium"'] : [null, "medium"]);
+    assert.deepEqual(calls.map((c) => c.attempt), ["1", "2"]);
+    assert.equal((buildReport(store).runs as { tasks: { selection: unknown }[] }[])[0]!.tasks.length, 2);
+    assert.deepEqual(out.summary.selection, final.selection);
+    assert.ok(!existsSync(join(store.base, "lock.json")));
+  });
+  it("in-place alterado não escala; nota explica decisão do cérebro", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(out.summary.state, "failed"); assert.equal(s.execCalls().length, 1);
+    assert.match(JSON.stringify(out.summary.limitations), /escalada não aplicada: a tentativa alterou arquivos in-place; decida no cérebro/);
+    assert.equal(s.read("src/app.ts"), "export const app = 2;\n");
+  });
+  it("in-place sem alterações escala", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary)); assert.equal(s.execCalls().length, 2);
+    assert.equal(task(s, out.summary.taskId).selection?.attempt, 2);
+  });
+  it("deep sem nível acima mantém modelo e eleva esforço a xhigh", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { risk: "high", isolation: "worktree" }), { ...adaptiveEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.deepEqual(s.execCalls().map((c) => c.model), ["gpt-6-astra", "gpt-6-astra"]);
+    assert.deepEqual(s.execCalls().map((c) => c.effort), ['model_reasoning_effort="high"', 'model_reasoning_effort="xhigh"']);
+  });
+  for (const status of ["partial", "blocked"] as const) it(`${status} por incapacidade escala; escopo/decisão não`, async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { isolation: "worktree" }), { ...adaptiveEnv, FAKE_REPORT_BY_ATTEMPT: JSON.stringify({ 1: { status, blockedReason: "Não consigo resolver a complexidade" } }), FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary)); assert.equal(s.execCalls().length, 2);
+    const blocked = await run(s, adaptiveRequest("claude", { isolation: "worktree" }), { ...adaptiveEnv, FAKE_REPORT: JSON.stringify({ status, blockedReason: "Não consigo continuar: precisa de decisão de escopo" }) });
+    assert.equal(blocked.summary.state, "blocked"); assert.equal(s.execCalls().length, 3);
+  });
+  it("overclaim escala sem mudanças in-place", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { acceptance: { criteria: ["verificado"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } }), { ...adaptiveEnv, FAKE_REPORT_BY_ATTEMPT: JSON.stringify({ 1: { filesChanged: ["src/app.ts"] } }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary)); assert.equal(s.execCalls().length, 2);
+  });
+  for (const scenario of ["rate-limit", "auth-error", "model-unavailable", "remove-lock", "invalid-report"])
+    it(`${scenario} não escala`, async () => {
+      const s = setup();
+      const out = await run(s, adaptiveRequest("codex"), { ...adaptiveEnv, FAKE_SCENARIO: scenario });
+      assert.notEqual(out.summary.state, "succeeded"); assert.equal(s.execCalls().length, 1);
+    });
+  it("timeout encerra árvore sem escalada", async () => {
+    const s = setup(); const pidfile = join(s.tmp, "adaptive-pids.json");
+    const out = await run(s, adaptiveRequest("claude", { limits: { timeoutSec: 10 } }), { ...adaptiveEnv, FAKE_SCENARIO: "timeout", FAKE_PIDFILE: pidfile });
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
+    const pids = JSON.parse(readFileSync(pidfile, "utf8")) as { self: number; grandchild: number };
+    assert.equal(isPidAlive(pids.self), false); assert.equal(isPidAlive(pids.grandchild), false);
+  });
+  it("auth bloqueia antes de executar; violação de escopo nunca escala", async () => {
+    const s = setup();
+    const auth = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_AUTH: "none" });
+    assert.equal(auth.summary.state, "blocked"); assert.equal(s.execCalls().length, 0);
+    const scope = await run(s, adaptiveRequest("claude"), { ...adaptiveEnv, FAKE_WRITE: JSON.stringify({ "README.md": "fora do escopo" }) });
+    assert.equal(scope.summary.state, "failed"); assert.equal(s.execCalls().length, 1);
+  });
+  for (const maxAttempts of [1, 2, 3]) it(`maxAttempts=${maxAttempts} conta a primeira`, async () => {
+    const s = setup({ routing: { adaptive: { maxAttempts } }, limits: { maxDelegationsPerRun: 5 } });
+    const out = await run(s, adaptiveRequest("claude", { isolation: "worktree" }), adaptiveEnv);
+    assert.equal(out.summary.state, "failed"); assert.equal(s.execCalls().length, maxAttempts);
+    assert.equal(task(s, out.summary.taskId).selection?.attempt, maxAttempts);
+  });
+  it("model e effort explícitos prevalecem; complexity respeita piso", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { model: "gpt-6-astra", effort: "max", complexity: "light" }), { ...adaptiveEnv, FAKE_WRITE: APP_EDIT });
+    assert.equal(out.summary.state, "succeeded"); assert.equal(s.execCalls()[0]!.model, "gpt-6-astra");
+    assert.equal(s.execCalls()[0]!.effort, 'model_reasoning_effort="max"');
+    const fixed = await run(s, adaptiveRequest("claude", { isolation: "worktree", model: "gpt-6-astra", effort: "low" }), adaptiveEnv);
+    // O escopo sujo também é gate obrigatório, sem nova invocação.
+    assert.equal(fixed.summary.state, "blocked");
+  });
+  it("effort explícito permanece ao trocar de nível", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { effort: "high", isolation: "worktree" }), { ...adaptiveEnv, FAKE_WRITE_BY_ATTEMPT: JSON.stringify({ 2: JSON.parse(APP_EDIT) }) });
+    assert.equal(out.summary.state, "succeeded");
+    assert.deepEqual(s.execCalls().map((c) => c.effort), ['model_reasoning_effort="high"', 'model_reasoning_effort="high"']);
+  });
+  it("catálogo indisponível mantém padrão sem esforço automático e explica", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude"), { FAKE_NO_CATALOG: "1", FAKE_WRITE: APP_EDIT });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(task(s, out.summary.taskId).model.requested, null);
+    assert.equal(task(s, out.summary.taskId).effort?.requested, null);
+    assert.match(JSON.stringify(out.summary.selection), /catálogo\/candidato indisponível/);
+  });
+  it("seleção sem candidatos permitidos bloqueia; não cai no padrão", async () => {
+    const s = setup({ routing: { include: ["claude:claude-fable-5-1[1m]"] }, billing: { acknowledgeUnverifiableExtraUsage: { claude: false } } });
+    const out = await run(s, adaptiveRequest("codex", { risk: "high" }), adaptiveEnv);
+    assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 0);
+  });
+  it("mesmo fornecedor permite seleção de outro modelo e protege o cérebro", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("claude", { executor: "claude", brainModel: "claude-opus-5-5" }), { ...adaptiveEnv, FAKE_WRITE: APP_EDIT });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(s.execCalls()[0]!.model, "claude-haiku-4-5-20251001");
+  });
+});
+
 describe("esforço explícito nos executores", () => {
   it("sem effort, argv idênticos ao contrato 0.2.0 dos dois adaptadores", () => {
     const s = setup();

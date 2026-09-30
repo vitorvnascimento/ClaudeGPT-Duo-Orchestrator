@@ -67,7 +67,10 @@ if (valueOf("--input-format") === "stream-json") {
           request_id: msg.request_id,
           response: {
             account: { email: "user@example.com" },
-            models: [
+            models: process.env.FAKE_ADAPTIVE_CATALOG ? [
+              { value: "default", resolvedModel: "claude-opus-5-5" },
+              ...["claude-opus-5-5", "claude-fable-5-1[1m]", "claude-sonnet-5-5", "claude-haiku-4-5-20251001"].map((id) => ({ value: id, resolvedModel: id, displayName: id, description: id.includes("[1m]") ? "usage credits" : "", supportedEffortLevels: id.includes("haiku") ? [] : ["low", "medium", "high", "xhigh"] })),
+            ] : [
               { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Opus 5.5 · Best for everyday, complex tasks", supportedEffortLevels: ["low", "high"] },
               { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Most capable for ambitious work", supportedEffortLevels: ["low", "high"] },
               { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5", description: "Most efficient for everyday tasks" },
@@ -83,7 +86,7 @@ if (valueOf("--input-format") === "stream-json") {
 }
 
 const prompt = readStdin();
-log({ cmd: "print", args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length, resume: valueOf("--resume") ?? null });
+log({ cmd: "print", model: valueOf("--model") ?? null, effort: valueOf("--effort") ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length, resume: valueOf("--resume") ?? null });
 
 const session = "sess-claude-123";
 const init = {
@@ -145,6 +148,10 @@ switch (scenario) {
     emit(init);
     emit({ type: "result", subtype: "error_during_execution", is_error: true, session_id: session, result: "Tool execution crashed", usage });
     process.exit(0);
+  case "auth-error":
+    emit(init);
+    emit({ type: "system", subtype: "api_retry", error: "authentication_failed", session_id: session });
+    process.exit(1);
   case "rate-limit":
     emit(init);
     emit({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 1, error: "rate_limit", session_id: session });

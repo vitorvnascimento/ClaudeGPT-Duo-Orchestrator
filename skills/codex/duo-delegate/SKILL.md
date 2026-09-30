@@ -16,7 +16,7 @@ O projeto precisa ser um repositório Git com `.duo/config.json`. Se não tiver,
 ## 0. Conheça os modelos disponíveis
 
 ```bash
-{{DUO_CLI}} models            # catálogo das duas contas (cache de 24 h; --refresh atualiza); não consome inferência
+{{DUO_CLI}} models            # catálogo das duas contas (cache de 6 h; --refresh atualiza); não consome inferência
 ```
 
 Mostra, por conta: IDs, descrições do fornecedor, recomendado e legado, e ferramentas (ex.: geração de imagem no Codex). Use os IDs exatamente como aparecem.
@@ -35,15 +35,17 @@ Pergunte ao usuário só o que é indispensável e não dá para descobrir no re
 1. **Ferramenta determinística basta?** (git, busca, compilador, testes, linter) Então use-a. Não gaste IA com isso.
 2. **Consulte a evidência:**
    ```bash
-   {{DUO_CLI}} recommend --kind <kind> [--needs image_generation] --paths <arquivos,separados> --risk <low|medium|high> --brain codex --brain-model <seu-modelo>
+   {{DUO_CLI}} recommend [--request .duo/requests/<nome>.json] [--kind <kind>] [--needs image_generation] [--paths <arquivos,separados>] --risk <low|medium|high> --brain codex --brain-model <seu-modelo>
    ```
 3. **Siga a recomendação,** a menos que haja um motivo concreto registrado no `rationale`:
-   - `DELEGAR a <cliente> com model=X` → delegue com `"executor": "<cliente>"` e `"model": "X"`. Pode ser o **mesmo cliente que você** com outro modelo (ex.: você é GPT-6-Sol e a arte pede GPT-6-Astra): isso é permitido e esperado.
+   - `DELEGAR a <cliente> com model=X` → use `"executor": "<cliente>"`; omita `model`/`effort` para seleção automática ou informe `"model": "X"` para fixar a sugestão. Pode ser o **mesmo cliente que você** com outro modelo (ex.: você é GPT-6-Sol e a arte pede GPT-6-Astra): isso é permitido e esperado.
    - `FAZER VOCÊ MESMO` → o melhor modelo é você: execute sem delegar.
    - `DECIDIR POR JULGAMENTO` → a evidência ainda é insuficiente. Decida pelos critérios de `references/decision-guide.md`. Em tarefas de **baixo risco**, prefira a exploração sugerida (gera evidência); em **alto risco**, implemente com quem você confia mais e peça **revisão cruzada** ao outro.
 4. Tarefa com partes diferentes (ex.: código + ilustração): rode o `recommend` **para cada parte** e use o modelo indicado em cada uma, mesmo que sejam fornecedores diferentes.
 5. Se o usuário nomear modelos ("Opus 5.5 para o código, GPT-6-Astra para a arte"), siga a escolha dele (`reason: user_requested`), desde que o modelo exista no catálogo.
 6. Nunca escolha por marca, hábito ou por ser "você". Se escolher contra a recomendação, justifique no `rationale` com fatos (ex.: "exige o contexto de 3 decisões tomadas nesta conversa").
+
+`recommend` retorna `tier`, `effort` e `selection`. Use `--request` para fornecer objetivo, escopo e aceite reais; sem aceite no modo abreviado, o piso é `standard`. Informe o `executor` recomendado e omita `model` para a seleção automática acontecer dentro dele; use `model`, `effort` ou `complexity: light|standard|deep` para forçar. Risco alto ou sensível exige `deep`; `light` só vale para baixo risco, poucos arquivos, sem diretório no escopo e com comandos de aceite.
 
 ## 3. Monte o pedido com o contexto mínimo suficiente
 
@@ -51,15 +53,17 @@ Crie `.duo/requests/<nome>.json` seguindo `references/request-format.md` (`"brai
 - `objective` preciso e verificável; `scope.allowedPaths` só com o que precisa mudar (ou ser lido, em revisões).
 - `context.interfaces` (assinaturas e contratos) e `context.decisions` (o que já foi decidido e não deve ser rediscutido). **Não** cole o histórico da conversa nem arquivos inteiros que o executor pode ler.
 - `acceptance.commands` com o comando objetivo (os prefixos precisam estar em `acceptance.allowedCommands`).
-- `model` com o ID do catálogo, `brainModel` com o seu próprio modelo, e `needs`/`kind: "asset"` para arte (o executor salva a imagem no caminho autorizado e a ponte confere que é uma imagem válida).
+- `model` com o ID do catálogo quando quiser forçar um modelo; sem ele, a ponte seleciona dentro do `executor`. `brainModel` é o seu próprio modelo. `effort` explícito é preservado em escaladas; `complexity` indica o nível inicial, sujeito aos pisos; use `needs`/`kind: "asset"` para arte (o executor salva a imagem no caminho autorizado e a ponte confere que é uma imagem válida).
 - `risk`, `reason` e um `rationale` curto; `isolation: "worktree"` quando for arriscado mexer no working tree.
 - Várias subtarefas independentes: delegue **uma de cada vez** (um executor ativo por projeto) e reutilize o `runId` devolvido pela primeira.
 
 ## 4. Execute
 
 ```bash
-{{DUO_CLI}} delegate --request .duo/requests/<nome>.json
+{{DUO_CLI}} delegate --request .duo/requests/<nome>.json [--no-adaptive]
 ```
+
+`--no-adaptive` (ou `"adaptive": false` no pedido) restaura o comportamento pré-adaptativo. Com seleção adaptativa, downgrade só ocorre com evidência suficiente e sucesso igual ou superior a `routing.adaptive.downgradeMinSuccess`; falha de verificação escala `light → standard → deep`, `maxAttempts` conta a primeira tentativa e `deep` usa `xhigh` quando suportado. `model` explícito não troca; `effort` explícito permanece e, sem ele, só aumenta com suporte. Falhas de infraestrutura não escalam. Cada tentativa `worktree` recebe um worktree novo e preserva o anterior; `in-place` só tenta novamente sem alterações.
 
 **Sandbox:** este comando inicia o Claude Code, que precisa de rede e do login do usuário. Dentro do sandbox do Codex ele falha. Solicite aprovação para executar **este comando** fora do sandbox; nunca desative o sandbox globalmente nem use flags de bypass. `duo recommend`, `status`, `report` e `accept` funcionam dentro do sandbox.
 A execução pode levar minutos; aguarde o JSON final. Não edite os arquivos do escopo enquanto o executor roda.
@@ -80,4 +84,5 @@ A execução pode levar minutos; aguarde o JSON final. Não edite os arquivos do
 
 - Um run tem um único cérebro; não troque no meio de uma edição.
 - Não altere `.duo/config.json` para aumentar limites, liberar comandos, mudar preferências de roteamento ou confirmar ciência de cobrança sem pedido explícito do usuário.
+- Uso extra só é elegível com `billing.acknowledgeUnverifiableExtraUsage.<provider>: true` e o modelo em `routing.include`; não há fallback por conta ou cota nesta fase.
 - Reporte métricas e cotas só como a ponte informar (`native`, `manual` ou `não disponível`); nunca invente saldo.

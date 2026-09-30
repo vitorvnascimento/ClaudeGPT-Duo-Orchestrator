@@ -7,6 +7,7 @@ import { outcomeOf, recommend, type AvailabilityFn } from "../src/orchestration/
 import { Store } from "../src/state/store.js";
 import type { Run, Task } from "../src/state/types.js";
 import { makeSandbox, type Sandbox } from "./helpers.js";
+import { adaptiveCatalog } from "./adaptive-catalog.js";
 
 let sb: Sandbox | null = null;
 afterEach(() => {
@@ -38,6 +39,44 @@ function seed(store: Store, items: Seed[]): void {
 }
 
 const allUp: AvailabilityFn = () => ({ available: true, reasons: [] });
+
+describe("recomendação adaptativa", () => {
+  it("prefere nível-alvo disponível em outra conta antes de subir", () => {
+    sb = makeSandbox({ routing: { include: ["claude:claude-opus-5-5", "codex:gpt-6.1-sol"] } });
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "implement", tags: [], risk: "medium", brain: null }, allUp, adaptiveCatalog);
+    assert.equal(r.selection?.model, "gpt-6.1-sol"); assert.equal(r.selection?.tier, "standard");
+  });
+  it("sem paths/aceite o piso é standard; risco/tag sensível exige deep", () => {
+    sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
+    const q = { kind: "implement" as const, tags: ["ts"], risk: "low" as const, brain: null };
+    const standard = recommend(store, cfg, q, allUp, adaptiveCatalog);
+    assert.equal(standard.decision.tier, "standard"); assert.equal(standard.selection?.tier, "standard");
+    for (const query of [{ ...q, risk: "high" as const }, { ...q, tags: ["auth"] }, { ...q, paths: [{ rel: "db/schema.sql", isDir: false }] }]) {
+      assert.equal(recommend(store, cfg, query, allUp, adaptiveCatalog).decision.tier, "deep");
+    }
+  });
+  it("melhor evidência entre fornecedores no nível; cérebro deep recomenda delegar light", () => {
+    sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
+    const q = { kind: "implement" as const, tags: ["ts"], risk: "low" as const, brain: "claude" as const, brainModel: "claude-opus-5-5", objective: "Adicionar constante", paths: [{ rel: "src/app.ts", isDir: false }], acceptance: { criteria: ["ok"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } };
+    seed(store, Array.from({ length: 4 }, () => ({ executor: "codex" as const, model: "gpt-6-luna", ok: true })));
+    const r = recommend(store, cfg, q, allUp, adaptiveCatalog);
+    assert.equal(r.decision.action, "delegate"); assert.equal(r.decision.model, "gpt-6-luna"); assert.equal(r.decision.effort, "low");
+    seed(store, Array.from({ length: 9 }, () => ({ executor: "claude" as const, model: "claude-haiku-4-5-20251001", ok: true })));
+    const selfProvider = recommend(store, cfg, q, allUp, adaptiveCatalog);
+    assert.equal(selfProvider.decision.action, "delegate"); assert.equal(selfProvider.decision.model, "claude-haiku-4-5-20251001");
+    assert.ok(selfProvider.decision.why.some((w) => w.includes("economiza a cota do seu modelo")));
+  });
+  it("redução só dentro dos pisos; extra não ganha por evidência sem ack+include", () => {
+    sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
+    seed(store, Array.from({ length: 12 }, () => ({ executor: "codex" as const, model: "gpt-6-luna", ok: true })));
+    const q = { kind: "implement" as const, tags: ["ts"], risk: "low" as const, brain: null, objective: "Adicionar constante", complexity: "standard" as const, paths: [{ rel: "src/app.ts", isDir: false }], acceptance: { criteria: ["ok"], commands: [{ name: "ok", argv: ["node", "-e", "process.exit(0)"] }] } };
+    assert.equal(recommend(store, cfg, q, allUp, adaptiveCatalog).selection?.tier, "light");
+    assert.notEqual(recommend(store, cfg, { ...q, acceptance: { criteria: ["ok"] } }, allUp, adaptiveCatalog).selection?.tier, "light");
+    seed(store, Array.from({ length: 15 }, () => ({ executor: "claude" as const, model: "claude-fable-5-1[1m]", ok: true })));
+    const high = recommend(store, cfg, { ...q, risk: "high" }, allUp, adaptiveCatalog);
+    assert.notEqual(high.selection?.model, "claude-fable-5-1[1m]");
+  });
+});
 
 describe("roteador por evidência", () => {
   it("sem histórico: decide por julgamento e sugere exploração em baixo risco", () => {
@@ -245,7 +284,7 @@ describe("catálogo das contas no roteador", async () => {
     sb = makeSandbox();
     const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "codex" }, allUp, catalog);
     assert.equal(r.decision.action, "judgment");
-    assert.ok(r.decision.why.some((w) => w.includes("claude/claude-opus-5-5") && w.includes("codex/gpt-6-astra")));
+    assert.ok(r.decision.why.some((w) => w.includes("claude/claude-sonnet-5") && w.includes("codex/gpt-6-sol")));
   });
 
   it("evidência por modelo decide entre modelos do mesmo fornecedor; tarefas sem model contam para o padrão", () => {

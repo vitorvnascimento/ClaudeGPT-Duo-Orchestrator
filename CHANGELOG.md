@@ -4,6 +4,10 @@
 
 Primeira versão pública, com o nome oficial **ClaudeGPT - Duo Orchestrator by Fusic**. Foco em robustez da execução de processos e na redação de segredos, a partir de uma bateria de revisão cruzada entre Claude e Codex.
 
+### Adicionado
+
+- **Aviso de nova versão:** o `duo` consulta a última release pública (no máximo uma vez por dia, em segundo plano, sem credenciais) e avisa no terminal quando há versão mais nova. `duo update` consulta na hora e `duo update --apply` instala. Desligar: `DUO_NO_UPDATE_CHECK=1`.
+
 ### Corrigido
 
 - **Processos órfãos e ponte presa:** um descendente do executor que ignorava SIGTERM segurava a ponte até morrer sozinho e podia ficar órfão. Timeout, cancelamento e a saída da ponte agora alcançam o grupo inteiro, mesmo depois que o processo principal saiu, e um PGID já reutilizado por outro processo nunca é sinalizado. A ponte só devolve o resultado quando o grupo está vazio (com teto de ~2 s após o SIGKILL, para um processo preso no kernel não travá-la). Um processo que sai do grupo (ex.: daemon com `setsid`) e herda stdout/stderr também não prende mais a ponte: com o grupo vazio, ela solta os pipes depois de ~2 s, sem marcar timeout. Quando devolve sem o "close" do executor, nenhum timer ou handle dele segura mais a saída da ponte, e uma execução normal não espera mais esses ~2 s para sair.

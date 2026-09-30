@@ -16,6 +16,8 @@ import { Store } from "../state/store.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
 import { doctor, formatDoctor } from "./doctor.js";
 import { applyInit, planInit, previewDiff } from "./init.js";
+import { spawnSync } from "node:child_process";
+import { acquireUpdateCheck, checkForUpdatesInBackground, compareVersions, currentVersion, installerEnv, refreshUpdateCache, releaseUpdateCheck, updateCheckDisabled, UPDATE_REPO } from "../update.js";
 
 const HELP = `duo — ClaudeGPT - Duo Orchestrator by Fusic: ponte local entre Codex e Claude Code (CLIs oficiais, assinatura individual)
 
@@ -38,12 +40,15 @@ Uso:
   duo handoff --to claude|codex [--run-id <id>] [--next <texto>]
   duo quota show
   duo quota set --provider claude|codex [--used-percent N] [--resets-at ISO8601] [--note <texto>]
+  duo update [--apply]                        procura nova versão (release pública, sem credenciais); --apply instala
+
+Aviso automático de nova versão: no máximo 1 consulta por dia, em segundo plano. Desligar: DUO_NO_UPDATE_CHECK=1.
 
 Códigos de saída de delegate: 0 succeeded, 1 failed, 2 pedido inválido, 3 blocked, 4 cancelled.`;
 
 type Args = { _: string[]; flags: Record<string, string | true> };
 
-const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh"]);
+const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet"]);
 
 /** Opções aceitas por comando: uma opção desconhecida é erro (evita flags ignoradas em silêncio). */
 const COMMAND_FLAGS: Record<string, string[]> = {
@@ -59,6 +64,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   accept: ["task-id", "reject", "note"],
   handoff: ["to", "run-id", "next"],
   quota: ["provider", "used-percent", "resets-at", "note"],
+  update: ["apply", "check", "quiet"],
 };
 const GLOBAL_FLAGS = ["json", "help", "version"];
 
@@ -125,7 +131,45 @@ async function main(argv: string[]): Promise<number> {
     throw new Error(`opção desconhecida para duo ${cmd}: ${unknown.map((f) => `--${f}`).join(", ")} (aceitas: ${accepted})`);
   }
 
+  if (cmd !== "update") checkForUpdatesInBackground();
+
   switch (cmd) {
+    case "update": {
+      const quiet = Boolean(args.flags.quiet);
+      if (quiet && process.env.DUO_UPDATE_WORKER !== "1" && updateCheckDisabled()) return 0;
+      // O trabalhador em segundo plano já recebe a reserva de quem o disparou; a consulta explícita espera por ela.
+      // Sem a reserva, consulta mesmo assim, mas não grava o cache (outro processo está gravando).
+      const held = process.env.DUO_UPDATE_WORKER === "1" || (await acquireUpdateCheck());
+      let cache;
+      try {
+        cache = await refreshUpdateCache(process.env, undefined, Date.now(), held);
+      } finally {
+        if (held) releaseUpdateCheck();
+      }
+      if (quiet) return 0;
+      const current = currentVersion();
+      const latest = cache.latest;
+      if (args.flags.json) {
+        print({ current, latest: latest?.version ?? null, updateAvailable: Boolean(latest && compareVersions(latest.version, current) > 0), checked: cache.ok });
+        return 0;
+      }
+      if (!cache.ok && !latest) throw new Error(`não foi possível consultar as releases de ${UPDATE_REPO} (sem rede?)`);
+      if (!latest || compareVersions(latest.version, current) <= 0) {
+        print(`duo ${current} está atualizado${cache.ok ? "" : " (consulta falhou; usando o último resultado conhecido)"}.`);
+        return 0;
+      }
+      // --ignore-scripts: o pacote não tem scripts de instalação; nada de terceiros roda na instalação.
+      const install = ["install", "-g", "--ignore-scripts", latest.tarballUrl];
+      if (!args.flags.apply || process.platform === "win32") {
+        print(`Nova versão ${latest.version} (instalada: ${current}). Novidades: ${latest.pageUrl}\nPara instalar: duo update --apply\n  (equivale a: npm ${install.join(" ")})`);
+        return 0;
+      }
+      print(`Instalando duo ${latest.version} a partir de ${latest.tarballUrl} ...`);
+      const r = spawnSync("npm", install, { stdio: "inherit", shell: false, env: installerEnv() });
+      if (r.status !== 0) throw new Error(`npm install falhou (código ${r.status ?? r.error?.message}); tente: npm ${install.join(" ")}`);
+      print(`duo atualizado para ${latest.version}.`);
+      return 0;
+    }
     case "doctor": {
       const r = doctor(cwd);
       print(args.flags.json ? r : formatDoctor(r));

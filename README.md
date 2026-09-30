@@ -15,7 +15,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (v0.2.0, setembro de 2026):** 227 testes offline, bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS; Windows e Linux ainda não foram testados.
+> **Estado (v0.2.0, setembro de 2026):** 239 testes offline, bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS; Windows e Linux ainda não foram testados.
 
 <details>
 <summary><strong>English summary</strong></summary>
@@ -74,6 +74,20 @@ npm install -g ./duo-orchestrator-0.2.0.tgz
 ```
 
 Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
+
+### Atualizações
+
+O `duo` avisa quando sai uma versão nova: no máximo uma vez por dia, em segundo plano, ele consulta a última release pública deste repositório no GitHub e, se houver versão mais nova, mostra no terminal (stderr, sem atrapalhar saídas `--json`):
+
+```text
+duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/duo-orchestrator/releases/tag/v0.3.0
+     Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
+```
+
+- `duo update` consulta na hora; `duo update --apply` instala a nova versão (`npm install -g` do `.tgz` oficial da release).
+- A consulta é anônima: não envia token, login, e-mail nem variáveis de ambiente, e só aceita uma release estável deste repositório com o `.tgz` esperado. Nada é instalado sem você pedir.
+- Não consulta dentro dos executores, em CI, no sandbox do Codex nem com `DUO_NO_UPDATE_CHECK=1`.
+- Só o mantenedor publica releases; o repositório é público para leitura e uso.
 
 > `npm install -g github:vitorvnascimento/duo-orchestrator` **não** é recomendado: nesse modo o npm 10 não prepara corretamente pacotes que precisam compilar. Use uma das opções acima.
 
@@ -162,6 +176,7 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | `duo accept --task-id <id> [--reject] --note "..."` | Registra a decisão do cérebro (tarefas aceitas entram na métrica). |
 | `duo handoff --to <cliente>` | Documento de handoff para trocar o cérebro. |
 | `duo quota show` / `duo quota set …` | Cota informada manualmente, com data e expiração. |
+| `duo update [--apply]` | Procura nova versão (release pública, sem credenciais) e, com `--apply`, instala. |
 
 Códigos de saída de `delegate`: `0` succeeded, `1` failed, `2` pedido inválido, `3` blocked, `4` cancelled.
 
@@ -218,7 +233,7 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 | Item | Situação |
 | --- | --- |
 | Código, testes e documentação | Implementados |
-| 227 testes offline (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
+| 239 testes offline (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
 | `duo doctor` real | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes |
 | Bateria E2E real ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro |
 | Cérebro nativo usando a skill | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded` |

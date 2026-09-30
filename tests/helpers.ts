@@ -71,7 +71,7 @@ export function makeSandbox(configPatch: Record<string, unknown> = {}): Sandbox 
 
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("DUO_") && !k.startsWith("FAKE_")) env[k] = v;
-  Object.assign(env, { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), FAKE_LOG: logPath });
+  Object.assign(env, { DUO_NO_UPDATE_CHECK: "1", HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), FAKE_LOG: logPath });
 
   const readLog = () =>
     existsSync(logPath)

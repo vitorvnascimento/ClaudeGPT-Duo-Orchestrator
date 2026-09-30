@@ -2,7 +2,7 @@
   "name": "duo-orchestrator",
   "version": "0.2.0",
   "private": true,
-  "description": "ClaudeGPT - Duo Orchestrator by Fusic: ponte local para Claude Code e Codex trabalharem juntos pelas CLIs oficiais e suas assinaturas: o melhor modelo para cada parte da tarefa, com verificação independente.",
+  "description": "ClaudeGPT - Duo Orchestrator by Fusic: a local bridge for Claude Code and Codex through official CLIs and your own subscriptions, with the best model for each task and independent verification. · Ponte local para Claude Code e Codex pelas CLIs oficiais e suas assinaturas, com o melhor modelo para cada tarefa e verificação independente.",
   "keywords": [
     "claude-code",
     "codex",

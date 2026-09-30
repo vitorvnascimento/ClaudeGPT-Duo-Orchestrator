@@ -223,3 +223,34 @@ it("rodada 7 achado 1: tentativa da Chain ausente do run continua visível para 
   assert.ok(store.loadRun(runId)!.taskIds.includes(orphan.taskId), "retomada reconcilia run.taskIds");
   assert.equal(s.execCalls().length, 1, "nada executa depois do cancelamento");
 });
+
+it("rodada 8 achados 2 e 3: troca de fornecedor na retomada não herda sessão nativa e o cooldown fica no fornecedor real", async () => {
+  // 1ª execução: só um modelo Codex permitido; cota esgota e não há alternativa → blocked, com sessão Codex registrada.
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 3 }, include: ["codex:gpt-6.1-sol"] } });
+  const store = new Store(s.root);
+  const env = (scenario: string) => ({ ...s.env, FAKE_SCENARIO: scenario, FAKE_ADAPTIVE_CATALOG: "1" });
+  const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { adaptive: true, executor: "codex", complexity: "standard", isolation: "worktree" })), env: env("rate-limit"), authPaths: s.authPaths });
+  assert.equal(first.summary.state, "blocked", JSON.stringify(first.summary));
+  const codexTask = store.findTask(String(first.summary.taskId))!;
+  assert.equal(codexTask.executor, "codex");
+  const codexSession = codexTask.native.sessionId;
+  assert.ok(codexSession, "a tentativa Codex registrou sessão nativa");
+  // Claude passa a ser permitido; a retomada troca de fornecedor e o Claude responde sem capacidade.
+  s.config({ routing: { include: null } });
+  const resumed = await delegate({ cwd: s.root, resumeTaskId: codexTask.taskId, env: env("capacity"), authPaths: s.authPaths });
+  const claudeCalls = s.execCalls().filter((c) => c.cmd === "print");
+  assert.equal(claudeCalls.length, 1, JSON.stringify(resumed.summary));
+  assert.notEqual(claudeCalls[0]!.resume, codexSession, "sessão do Codex nunca vai para o Claude");
+  assert.equal(claudeCalls[0]!.resume, null);
+  const chain = store.listChains(String(first.summary.runId))[0]!;
+  const cooled = chain.attempts.filter((a) => a.capacityUntil);
+  assert.equal(cooled.length, 1);
+  assert.equal(cooled[0]!.executor, "claude", JSON.stringify(chain.attempts));
+  assert.equal(cooled[0]!.model, claudeCalls[0]!.model);
+  // Sem o cache global, a próxima retomada ainda respeita o cooldown do modelo Claude.
+  writeJsonAtomic(join(store.base, "capacity-state.json"), { entries: [] });
+  const before = s.execCalls().length;
+  await delegate({ cwd: s.root, resumeTaskId: String(resumed.summary.taskId), env: env("success"), authPaths: s.authPaths });
+  const repeated = s.execCalls().slice(before).filter((c) => c.cmd === "print" && c.model === cooled[0]!.model);
+  assert.equal(repeated.length, 0, `não repete ${cooled[0]!.model} durante o cooldown`);
+});

@@ -441,6 +441,9 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
           const alt = selectFor(other);
           if (alt && !(req.brain === other && req.brainModel && modelMatches(alt.model, req.brainModel))) {
             task.executor = other;
+            // Sessão nativa pertence ao cliente anterior: o novo fornecedor começa uma sessão própria.
+            // Base, worktree e snapshot continuam (o trabalho e o contexto do pedido são os mesmos).
+            task.native = { sessionId: null };
             execReq = { ...execReq, executor: other };
             chosen = alt;
           }
@@ -902,7 +905,10 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     return prior && (a.reason === "quota" || a.reason === "capacity") ? [`; executado por ${task.executor}/${task.model.requested} após ${a.reason === "quota" ? "cota esgotada" : "modelo sem capacidade no fornecedor"} em ${prior.executor}/${prior.model}`] : [];
   }).join("") : "";
   if (capacityUntil) store.updateChain(run.runId, ctx.chainId, (fresh) => {
-    fresh.attempts.find((a) => a.taskId === task.taskId)!.capacityUntil = capacityUntil;
+    const attempt = fresh.attempts.find((a) => a.taskId === task.taskId)!;
+    attempt.capacityUntil = capacityUntil;
+    attempt.executor = task.executor;
+    attempt.model = task.model.requested ?? task.model.reported ?? attempt.model;
   });
   const quotaNote = outcome.errorKind === "quota" ? ` ${task.executor}: ${quotaBlock(quotaStates(store)[task.executor], task.model.requested) ?? "cota esgotada"}.` : "";
   transition(task, state, reason + quotaNote + fallbackNote);

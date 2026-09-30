@@ -179,6 +179,9 @@ export class Store {
       if (attempt) {
         attempt.invocations = Math.max(attempt.invocations ?? 0, task.invocations);
         attempt.state = task.state;
+        // Tentativa que ainda não invocou pode trocar de fornecedor na retomada: o registro acompanha a task,
+        // para que cooldown de capacidade e cota continuem casando com o fornecedor real.
+        attempt.executor = task.executor;
         attempt.model = task.model.requested;
         attempt.effort = maxEffort(task.effort?.requested);
         attempt.tier = task.selection?.tier ?? attempt.tier;

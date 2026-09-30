@@ -123,6 +123,28 @@ describe("proxy local de loopback", () => {
     assert.ok(!JSON.stringify(secret).includes("SESSION_SECRET"));
   });
 
+  it("rodada 8 achado 1: só chaves sabidamente inofensivas autorizam o provider loopback", () => {
+    const s = sandbox();
+    const base = ['model_provider = "headroom"', "[model_providers.headroom]", 'base_url = "http://127.0.0.1:8787/v1"', "requires_openai_auth = true"];
+    // Configuração real do dono: name + base_url + supports_websockets + requires_openai_auth.
+    writeFileSync(s.codexConfig, [...base, 'name = "Headroom init proxy"', "supports_websockets = true"].join("\n"));
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, []);
+    const injections = [
+      ['env_http_headers = { Authorization = "DUO_TEST_HEADER" }'],
+      ['env_http_headers.Authorization = "OPENAI_API_KEY"'],
+      ["[model_providers.headroom.env_http_headers]", 'Authorization = "OPENAI_API_KEY"'],
+      ['query_params = { "api-key" = "segredo" }'],
+      ["[model_providers.headroom.query_params]", 'key = "segredo"'],
+      ['campo_futuro = "x"'],
+    ];
+    for (const extra of injections) {
+      writeFileSync(s.codexConfig, [...base, ...extra].join("\n"));
+      const r = codexConfigConflicts(s.paths, s.env, true);
+      assert.equal(r.conflicts.length, 1, extra.join(" | "));
+      assert.ok(!JSON.stringify(r).match(/DUO_TEST_HEADER|OPENAI_API_KEY|segredo/), "valor nunca aparece");
+    }
+  });
+
   it("recusa Codex sem requires_openai_auth ou com qualquer forma de credencial", () => {
     const s = sandbox();
     const base = ['model_provider = "headroom"', "[model_providers.headroom]", 'base_url = "http://127.0.0.1:8787/v1"'];

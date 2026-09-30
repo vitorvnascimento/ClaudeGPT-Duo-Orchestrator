@@ -387,6 +387,9 @@ function providerTable(table: string): { name: string; tail: string } | null {
   return { name: m[1]!, tail: m[2] ?? "" };
 }
 
+const SAFE_PROVIDER_KEYS = new Set(["name", "base_url", "requires_openai_auth", "wire_api", "supports_websockets",
+  "request_max_retries", "stream_max_retries", "stream_idle_timeout_ms"]);
+
 function providerIsLoopbackAuthorized(info: CodexProviderInspection | undefined, allowLoopbackProxy: boolean): string | null {
   if (!info || !allowLoopbackProxy || info.malformed || info.requiresOpenaiAuth !== true || info.credentialKeys.size > 0) return null;
   return loopbackProxyOrigin(info.baseUrl);
@@ -471,8 +474,9 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
       }
       if (provider) {
         const info = snapshot.providers.get(provider.name) ?? emptyCodexProvider();
-        if (header.array || (provider.tail !== "" && provider.tail !== "http_headers" && !provider.tail.startsWith("http_headers."))) info.malformed = true;
-        if (provider.tail === "http_headers" || provider.tail.startsWith("http_headers.")) info.credentialKeys.add("http_headers");
+        if (header.array) info.malformed = true;
+        // Qualquer subtabela do provider (http_headers, env_http_headers, query_params…) pode injetar credenciais.
+        if (provider.tail !== "") info.credentialKeys.add(provider.tail.split(".")[0]!);
         snapshot.providers.set(provider.name, info);
       } else if (/^model_providers\./.test(table)) {
         snapshot.invalidProviderTables.add(table);
@@ -497,15 +501,11 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
         continue;
       }
       const keyParts = key.split(".");
-      const credentialKey = keyParts.find((part) => part === "env_key" || part === "experimental_bearer_token" || part === "http_headers");
-      if (credentialKey) {
-        // Only retain the credential key name. Its value is deliberately never
-        // parsed into a string or included in a diagnostic.
-        info.credentialKeys.add(credentialKey);
-        continue;
-      }
-      if (provider.tail !== "") {
-        if (provider.tail !== "http_headers" && !provider.tail.startsWith("http_headers.")) info.malformed = true;
+      // Lista de permissão: um provider loopback só é aceito com chaves sabidamente inofensivas. Qualquer outra
+      // (env_key, experimental_bearer_token, http_headers, env_http_headers, query_params, campos futuros) conta
+      // como possível credencial. Guarda-se só o NOME da chave; o valor nunca é lido nem exibido.
+      if (provider.tail !== "" || keyParts.length > 1 || !SAFE_PROVIDER_KEYS.has(key)) {
+        info.credentialKeys.add(provider.tail !== "" ? provider.tail.split(".")[0]! : keyParts[0]!);
         continue;
       }
       if (info.seenKeys.has(key)) {

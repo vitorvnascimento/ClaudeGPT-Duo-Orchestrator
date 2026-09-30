@@ -112,6 +112,8 @@ export type Selection = {
   escalatedFrom?: { model: string | null; effort: string | null; reason: string };
 };
 export type ChainAttempt = {
+  /** Ausente em registros antigos; hidratado a partir da auditoria da task. */
+  invocations?: number;
   taskId: string;
   attempt: number;
   executor: Provider;
@@ -124,6 +126,7 @@ export type ChainAttempt = {
   capacityUntil?: string;
 };
 export type Chain = {
+  rev?: number;
   version: 1;
   chainId: string;
   runId: string;
@@ -138,8 +141,8 @@ export type Chain = {
   status: "running" | "succeeded" | "failed" | "blocked" | "cancelled";
   latestTaskId: string;
   updatedAt: string;
-  /** Reserva entre gates/tentativas; o lock de arquivo só cobre transações curtas. */
-  owner: { pid: number; nonce: string } | null;
+  /** Reserva de execução, comparada e substituída por CAS. */
+  owner: { pid: number; nonce: string; since?: string } | null;
 };
 
 export type Task = {
@@ -193,6 +196,7 @@ export type Task = {
 };
 
 export type Run = {
+  rev?: number;
   runId: string;
   brain: Provider;
   policy: Policy;

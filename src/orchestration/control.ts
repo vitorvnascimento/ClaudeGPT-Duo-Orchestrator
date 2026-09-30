@@ -22,8 +22,10 @@ export function refreshInterrupted(store: Store): { taskId: string; orphanChild:
       transition(task, "blocked", `interrompida: o processo da ponte não está mais ativo${orphan ? ` (executor órfão ainda ativo, pid ${orphan}; use duo cancel)` : ""}`);
       store.saveTask(task);
       const chain = store.chainForTask(task);
+      const owner = chain.owner;
+      const interrupted = !owner || !isPidAlive(owner.pid);
       store.updateChain(run.runId, chain.chainId, (fresh) => {
-        if (fresh.latestTaskId === task.taskId && (!fresh.owner || !isPidAlive(fresh.owner.pid))) {
+        if (interrupted && fresh.latestTaskId === task.taskId && fresh.owner?.nonce === owner?.nonce && fresh.owner?.pid === owner?.pid) {
           fresh.status = "blocked";
           fresh.owner = null;
         }

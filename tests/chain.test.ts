@@ -93,15 +93,17 @@ it("Chain: minTier/minEffort nunca diminuem em sequências de escalada, cota, ca
   }
 });
 
-it("Chain: lock abandonado expira, lock vivo não é roubado e exceção libera a reserva curta", () => {
+it("Chain: CAS ignora locks legados e exceção não publica revisão", () => {
   const { store, run, chain } = setup(), path = `${store.chainPath(run.runId, chain.chainId)}.lock`;
   writeFileSync(path, "");
   utimesSync(path, 0, 0);
+  const before = store.loadChain(run.runId, chain.chainId);
   assert.throws(() => store.updateChain(run.runId, chain.chainId, () => { throw new Error("simulado"); }), /simulado/);
-  assert.equal(existsSync(path), false);
+  assert.deepEqual(store.loadChain(run.runId, chain.chainId), before);
   writeFileSync(path, JSON.stringify({ pid: process.pid, nonce: "vivo" }));
   utimesSync(path, 0, 0);
-  assert.throws(() => store.updateChain(run.runId, chain.chainId, () => {}), /timeout no lock/);
+  store.updateChain(run.runId, chain.chainId, (fresh) => { fresh.minTier = "deep"; });
+  assert.equal(store.loadChain(run.runId, chain.chainId)!.minTier, "deep");
   assert.equal(JSON.parse(readFileSync(path, "utf8")).nonce, "vivo");
 });
 
@@ -221,7 +223,7 @@ it("Chain: reserva abandonada pode ser retomada, preservando sessão e trabalho 
 });
 
 for (const reason of ["quota", "escalation"] as const) it(`Chain: interrupção após reservar ${reason} preserva o modelo da próxima tentativa`, async (t) => {
-  s = makeSandbox({ routing: { adaptive: { maxAttempts: 3 } } });
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 2 } } });
   const update = Store.prototype.updateRun;
   const fault = t.mock.method(Store.prototype, "updateRun", function (this: Store, ...args: Parameters<typeof update>) {
     const result = update.apply(this, args);
@@ -240,5 +242,7 @@ for (const reason of ["quota", "escalation"] as const) it(`Chain: interrupção 
   assert.equal(chain.minTier, "deep");
   const resumed = await delegate({ cwd: s.root, resumeTaskId: chain.latestTaskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
   assert.equal(resumed.summary.state, "succeeded", JSON.stringify(resumed.summary));
+  assert.equal(resumed.summary.taskId, chain.latestTaskId, "retoma a reserva sem criar uma terceira task");
+  assert.equal(store.loadChain(chain.runId, chain.chainId)!.attempts.length, 2);
   assert.deepEqual(s.execCalls().map((c) => c.model), [reason === "quota" ? "gpt-6-astra" : "gpt-6.1-sol", expectedModel]);
 });

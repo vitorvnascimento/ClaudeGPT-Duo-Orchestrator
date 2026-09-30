@@ -9,8 +9,8 @@ export const maxEffort = (...efforts: (string | null | undefined)[]): Effort | n
 export const chainStatus = (state: Task["state"]): Chain["status"] => state === "planned" || state === "approved" ? "blocked" : state;
 
 /** Todas as decisões da cadeia usam este registro, nunca linhagem/snapshots de tasks. */
-export function chainPolicy(chain: Chain, options: { resumeTaskId?: string; maxAttempts?: number; now?: number } = {}) {
-  const running = chain.status === "running" && !!chain.owner && isPidAlive(chain.owner.pid);
+export function chainPolicy(chain: Chain, options: { resumeTaskId?: string; maxAttempts?: number; now?: number; ownerAlive?: boolean } = {}) {
+  const running = chain.status === "running" && !!chain.owner && (options.ownerAlive ?? isPidAlive(chain.owner.pid));
   let resumeError: string | null = null;
   if (options.resumeTaskId && options.resumeTaskId !== chain.latestTaskId) {
     resumeError = `tentativa substituída; a cadeia ${chain.chainId} está em ${chain.status}, última tentativa ${chain.latestTaskId}`;
@@ -25,7 +25,7 @@ export function chainPolicy(chain: Chain, options: { resumeTaskId?: string; maxA
     origin: chain.origin,
     latestTaskId: chain.latestTaskId,
     attempts: chain.attempts.length,
-    canRetry: chain.attempts.length < (options.maxAttempts ?? Infinity),
+    canRetry: chain.attempts.filter((a) => (a.invocations ?? 0) > 0).length < (options.maxAttempts ?? Infinity),
     succeeded: chain.status === "succeeded",
     running,
     resumeError,

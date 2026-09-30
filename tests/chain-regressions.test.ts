@@ -6,7 +6,9 @@ import { afterEach, it } from "node:test";
 import { delegate } from "../src/orchestration/delegate.js";
 import { isPidAlive } from "../src/adapters/process.js";
 import { saveQuota } from "../src/orchestration/quota.js";
-import { Store } from "../src/state/store.js";
+import { Store, writeJsonAtomic } from "../src/state/store.js";
+import { catalogPath } from "../src/adapters/catalog.js";
+import { adaptiveCatalog } from "./adaptive-catalog.js";
 import { baseRequest, makeSandbox, type Sandbox } from "./helpers.js";
 
 let s: Sandbox;
@@ -24,6 +26,64 @@ const req = (extra: Record<string, unknown> = {}) => baseRequest("claude", { ada
 const run = (request: Record<string, unknown>, fake: Record<string, string> = {}) => delegate({ cwd: s.root, requestPath: s.request(request), env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1", ...fake }, authPaths: s.authPaths });
 const resume = (taskId: string) => delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1" }, authPaths: s.authPaths });
 const failOnce = { criteria: ["passa na segunda verificação"], commands: [{ name: "counter", argv: ["node", "-e", 'const fs=require("fs"), p=".duo/accept-count"; const n=fs.existsSync(p)?Number(fs.readFileSync(p)):0;fs.writeFileSync(p,String(n+1));process.exit(n===0?1:0)'] }] };
+
+for (const gate of ["auth", "caps"] as const) it(`rodada 4 achado 2: gate ${gate} sem invocação reutiliza a reserva com maxAttempts=2`, async () => {
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 2 } } });
+  const fake: Record<string, string> = gate === "auth" ? { FAKE_AUTH: "none" } : { FAKE_HELP: "missing-schema" };
+  const first = await run(req({ brain: "codex", executor: "claude" }), fake);
+  assert.equal(first.summary.state, "blocked");
+  const taskId = String(first.summary.taskId);
+  for (let i = 0; i < 3; i++) {
+    const blocked = await delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, FAKE_ADAPTIVE_CATALOG: "1", ...fake }, authPaths: s.authPaths });
+    assert.equal(blocked.summary.state, "blocked");
+    assert.equal(blocked.summary.taskId, taskId);
+  }
+  assert.equal(s.execCalls().length, 0);
+  const recovered = await resume(taskId);
+  assert.equal(recovered.summary.state, "succeeded", JSON.stringify(recovered.summary));
+  assert.equal(recovered.summary.taskId, taskId);
+  const chain = new Store(s.root).listChains(String(first.summary.runId))[0]!;
+  assert.equal(chain.attempts.length, 1);
+  assert.equal(s.execCalls().length, 1);
+});
+
+it("rodada 4 achado 3: catálogo recuperado seleciona modelo ausente na mesma tentativa", async () => {
+  s = makeSandbox({ routing: { adaptive: { maxAttempts: 2 } } });
+  const first = await run(req({ complexity: "deep" }), { FAKE_NO_CATALOG: "1" });
+  assert.equal(first.summary.state, "blocked");
+  const store = new Store(s.root), taskId = String(first.summary.taskId);
+  assert.equal(store.findTask(taskId)!.model.requested, null);
+  assert.equal(s.execCalls().length, 0);
+  writeJsonAtomic(catalogPath(store), { ...adaptiveCatalog, discoveredAt: new Date().toISOString() });
+  const recovered = await resume(taskId);
+  assert.equal(recovered.summary.state, "succeeded", JSON.stringify(recovered.summary));
+  assert.equal(recovered.summary.taskId, taskId);
+  assert.equal(s.execCalls()[0]?.model, "gpt-6-astra");
+  const chain = store.listChains(String(first.summary.runId))[0]!;
+  assert.equal(chain.minTier, "deep");
+  assert.equal(chain.minEffort, "high");
+});
+
+it("rodada 4 achado 3: task 0.2.0 sem selection/effort/Chain retoma com modelo automático", async () => {
+  s = makeSandbox();
+  const first = await run(req({ adaptive: false }), { FAKE_AUTH: "none" });
+  const store = new Store(s.root), original = store.findTask(String(first.summary.taskId))!;
+  const old = { ...original, taskId: "task-legacy-resume", selection: undefined, effort: undefined };
+  const request = req(); delete request.adaptive;
+  // Um run.json de 0.2.0, sem diretório de revisões.
+  const legacyRun = { ...store.loadRun(old.runId)!, runId: "run-legacy-resume", taskIds: [old.taskId] };
+  old.runId = legacyRun.runId;
+  old.artifactsDir = store.taskDir(old.runId, old.taskId);
+  writeJsonAtomic(join(old.artifactsDir, "task.json"), old);
+  writeJsonAtomic(join(old.artifactsDir, "request.json"), request);
+  writeJsonAtomic(join(store.runDir(old.runId), "run.json"), legacyRun);
+  assert.equal(store.loadChain(old.runId, old.taskId), null);
+  const recovered = await resume(old.taskId);
+  assert.equal(recovered.summary.state, "succeeded", JSON.stringify(recovered.summary));
+  assert.equal(recovered.summary.taskId, old.taskId);
+  assert.equal(s.execCalls().length, 1);
+  assert.equal(s.execCalls()[0]?.model, "gpt-6.1-sol");
+});
 
 it("rodada 3 achado 2: fallback Astra/high para Opus/high rejeita init Sonnet/high", async () => {
   s = makeSandbox();

@@ -238,7 +238,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   let run: Run;
   let chain: Chain;
   let resuming = false;
-  const owner = { pid: process.pid, nonce: randomBytes(16).toString("hex") };
+  const owner = { pid: process.pid, nonce: randomBytes(16).toString("hex"), since: new Date().toISOString() };
   const reused = (current: Chain): DelegateOutcome => {
     const result = store.loadTask(current.runId, chainPolicy(current).latestTaskId);
     return result ? { exitCode: exitFor(result.state), summary: { ...summarize(result), reused: true, note: "resultado já existente para esta cadeia; nenhuma nova invocação" } }
@@ -264,17 +264,19 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const saved = readJson<DelegationRequest>(chain.originalRequestPath);
     if (!saved) return invalid("request.json da cadeia não encontrado");
     req = saved;
+    if (task.pids.child && isPidAlive(task.pids.child)) {
+      return invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`);
+    }
+    if (["planned", "approved", "running"].includes(task.state)) blockTask(task, "interrompida: o processo da ponte não está mais ativo");
+    if (task.state !== "blocked") return invalid(`só tarefas em blocked podem ser retomadas (estado atual: ${task.state})`);
+    const previousOwner = chain.owner;
     let refused: DelegateOutcome | null = null;
     chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
-      const policy = chainPolicy(fresh, { resumeTaskId: task.taskId });
+      refused = null;
+      const changedOwner = fresh.owner?.nonce !== previousOwner?.nonce || fresh.owner?.pid !== previousOwner?.pid;
+      const policy = chainPolicy(fresh, { resumeTaskId: task.taskId, ownerAlive: changedOwner || !!previousOwner });
       if (policy.resumeError) { refused = invalid(policy.resumeError); return; }
-      // Reutilização é feita fora do lock (loadTask também faz migração sob lock).
       if (policy.succeeded) return;
-      if (task.pids.child && isPidAlive(task.pids.child)) {
-        refused = invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`); return;
-      }
-      if (["planned", "approved", "running"].includes(task.state) && !policy.running) blockTask(task, "interrompida: o processo da ponte não está mais ativo");
-      if (task.state !== "blocked") { refused = invalid(`só tarefas em blocked podem ser retomadas (estado atual: ${task.state})`); return; }
       fresh.status = "running";
       fresh.owner = owner;
     });
@@ -289,35 +291,47 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const existing = req.runId ? store.loadRun(req.runId) : null;
     if (req.runId && !existing) return invalid(`run não encontrado: ${req.runId}`);
     run = existing ?? newRun(req, cfg);
-    let refused: DelegateOutcome | null = null;
-    let reuse: Chain | null = null;
-    // A reserva de taskKey e a inclusão da task são uma única transação do run.
-    run = store.updateRun(run.runId, (fresh) => {
-      let retryOf: string | undefined;
-      if (req.taskKey) {
+    task = newTask(req, run, store, cfg);
+    const floor = assessmentFor(req).floor;
+    const changed = new Error("run alterado durante a reserva de taskKey");
+    let pending: Chain | undefined;
+    // I/O fora do callback: se o run mudou, recarrega as Chains antes de decidir.
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const snapshot = store.loadRun(run.runId) ?? run;
+        const matches = req.taskKey ? store.listChains(run.runId).filter((c) => c.taskKey === req.taskKey && snapshot.taskIds.includes(c.chainId)) : [];
         const { runId: _r, taskKey: _k, ...hashable } = req;
         const hash = stableHash(hashable);
-        const matches = store.listChains(fresh.runId).filter((c) => c.taskKey === req.taskKey);
-        reuse = matches.find((c) => c.requestHash === hash && chainPolicy(c).succeeded) ?? null;
-        if (reuse) return;
+        const reuse = matches.find((c) => c.requestHash === hash && chainPolicy(c).succeeded);
+        if (reuse) return reused(reuse);
         for (const prior of matches) {
-          const policy = chainPolicy(prior);
-          if (prior.status === "running") { refused = invalid(`taskKey ${req.taskKey} já está em execução (${policy.latestTaskId})`); return; }
-          if (prior.status === "blocked") { refused = invalid(`taskKey ${req.taskKey} está bloqueada (${policy.latestTaskId}); use duo delegate --resume ${policy.latestTaskId}`); return; }
-          retryOf = policy.latestTaskId;
+          if (prior.status === "running") return invalid(`taskKey ${req.taskKey} já está em execução (${prior.latestTaskId})`);
+          if (prior.status === "blocked") return invalid(`taskKey ${req.taskKey} está bloqueada (${prior.latestTaskId}); use duo delegate --resume ${prior.latestTaskId}`);
+          task.retryOf = prior.latestTaskId;
+        }
+        mkdirSync(task.artifactsDir, { recursive: true });
+        writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
+        chain = store.chainForTask(task, { request: req, floor });
+        chain = store.updateChain(run.runId, chain.chainId, (current) => { current.status = "running"; current.owner = owner; });
+        pending = chain;
+        store.saveTask(task);
+        try {
+          run = store.updateRun(run.runId, (fresh) => {
+            if (req.taskKey && fresh.rev !== snapshot.rev) throw changed;
+            fresh.taskIds.push(task.taskId);
+          }, run);
+          pending = undefined;
+          break;
+        } catch (error) {
+          if (error !== changed || attempt >= 49) throw error;
         }
       }
-      task = newTask(req, fresh, store, cfg);
-      if (retryOf) task.retryOf = retryOf;
-      mkdirSync(task.artifactsDir, { recursive: true });
-      writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
-      chain = store.chainForTask(task, { request: req, floor: assessmentFor(req).floor });
-      chain = store.updateChain(fresh.runId, chain.chainId, (current) => { current.status = "running"; current.owner = owner; });
-      store.saveTask(task);
-      fresh.taskIds.push(task.taskId);
-    }, run);
-    if (refused) return refused;
-    if (reuse) return reused(reuse);
+    } finally {
+      if (pending) store.updateChain(run.runId, pending.chainId, (fresh) => {
+        if (fresh.owner?.nonce === owner.nonce) { fresh.status = "blocked"; fresh.owner = null; }
+      });
+    }
+
   }
   // Todas as saídas, inclusive gates/exceções, liberam a reserva persistida.
   task = task!;
@@ -329,20 +343,18 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       mkdirSync(next.artifactsDir, { recursive: true });
       writeJsonAtomic(join(next.artifactsDir, "request.json"), redactDeep(req));
       store.saveTask(next);
-      run = store.updateRun(run.runId, (freshRun) => {
-        chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
-          if (fresh.owner?.nonce !== owner.nonce) throw new Error("reserva da Chain perdida");
-          fresh.minTier = maxTier(fresh.minTier, tier);
-          fresh.minEffort = maxEffort(fresh.minEffort, effort);
-          fresh.attempts.push({ taskId: next.taskId, attempt: fresh.attempts.length + 1, executor: next.executor,
-            model: next.model.requested, effort: maxEffort(next.effort?.requested), tier, reason, state: next.state });
-          fresh.latestTaskId = next.taskId;
-          if (freshRun.cancelled) { fresh.status = "cancelled"; }
-        });
-        freshRun.taskIds.push(next.taskId);
+      chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
+        if (fresh.owner?.nonce !== owner.nonce) throw new Error("reserva da Chain perdida");
+        fresh.minTier = maxTier(fresh.minTier, tier);
+        fresh.minEffort = maxEffort(fresh.minEffort, effort);
+        fresh.attempts.push({ taskId: next.taskId, attempt: fresh.attempts.length + 1, executor: next.executor,
+          model: next.model.requested, effort: maxEffort(next.effort?.requested), tier, reason, state: next.state, invocations: next.invocations });
+        fresh.latestTaskId = next.taskId;
       });
+      run = store.updateRun(run.runId, (freshRun) => { freshRun.taskIds.push(next.taskId); });
+      if (run.cancelled) chain = store.updateChain(run.runId, chain.chainId, (fresh) => { fresh.status = "cancelled"; });
     };
-    if (opts.resumeTaskId && adaptive) {
+    if (opts.resumeTaskId && adaptive && task.invocations > 0) {
       const policy = chainPolicy(chain, { maxAttempts: cfg.routing.adaptive.maxAttempts });
       if (!policy.canRetry) {
         task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
@@ -390,11 +402,17 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       if (adaptive) chain = store.updateChain(run.runId, rootId, (fresh) => { fresh.minTier = maxTier(fresh.minTier, assessment.floor); });
       const policy = chainPolicy(chain, { maxAttempts: cfg.routing.adaptive.maxAttempts });
       let minimumEffort = policy.minimumEffort;
+      if (adaptive && task.invocations === 0 && !policy.canRetry) {
+        blockTask(task, `sem nova invocação: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
       const origin = policy.origin;
       const target = maxTier(assessment.tier, policy.floor);
       let execReq = { ...originalReq, executor: task.executor };
       // Retentativas já têm a escolha persistida; não dependem de variáveis da iteração anterior.
-      const restoring = !!task.selection && (!!opts.resumeTaskId || chain.attempts.at(-1)?.reason !== "initial");
+      const restoring = !!task.selection && (origin.model === "explicit" || !!task.model.requested)
+        && (!!opts.resumeTaskId || chain.attempts.at(-1)?.reason !== "initial");
       if (restoring) {
         if (task.model.requested) execReq.model = task.model.requested;
         if (task.effort?.requested) execReq.effort = task.effort.requested as Effort;
@@ -576,9 +594,10 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       resuming = false;
     }
   } finally {
+    const cancelled = store.loadRun(run.runId)?.cancelled;
     store.updateChain(run.runId, chain.chainId, (fresh) => {
       if (fresh.owner?.nonce !== owner.nonce) return;
-      fresh.status = store.loadRun(run.runId)?.cancelled ? "cancelled" : chainStatus(task.state === "running" ? "blocked" : task.state);
+      fresh.status = cancelled ? "cancelled" : chainStatus(task.state === "running" ? "blocked" : task.state);
       fresh.owner = null;
     });
   }

@@ -120,7 +120,8 @@ it("adversarial 5: retomada antes da base conserva orçamento de toda a cadeia",
   writeJsonAtomic(quotaStatePath(new Store(s.root)), {});
   const out = await resume(t.taskId, { FAKE_SCENARIO: "rate-limit" });
   assert.equal(out.summary.state, "blocked");
-  assert.equal(s.execCalls().length, 1, "o orçamento também conta tentativas bloqueadas antes de executar");
+  assert.equal(s.execCalls().length, 2, "gate não consome orçamento; a reserva pode fazer a segunda invocação");
+  assert.equal(out.summary.taskId, t.taskId);
   assert.equal(saved(out.summary.taskId).selection?.attempt, 2);
   assert.ok(saved(out.summary.taskId).limitations.some((l) => l.includes("maxAttempts=2")));
 });

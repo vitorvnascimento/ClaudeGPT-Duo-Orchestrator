@@ -111,6 +111,14 @@ export class ClaudeAdapter implements ExecutorAdapter {
     const unknownTypes = new Set<string>();
     let sessionId: string | null = null;
     let model: string | null = null;
+    // Fluxo principal: o init declara o modelo; respostas do assistente e eventos de fallback dizem quem de fato
+    // respondeu (a CLI troca de modelo no meio do turno com fallbackModel). "<synthetic>" é mensagem local.
+    const mainModels: string[] = [];
+    const serveMain = (value: unknown) => {
+      if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]*$/.test(value)) return;
+      model = value;
+      if (!mainModels.includes(value)) mainModels.push(value);
+    };
     let result: Record<string, unknown> | null = null;
     let lastRetryError: string | null = null;
     let permissionDenials = 0;
@@ -131,9 +139,12 @@ export class ClaudeAdapter implements ExecutorAdapter {
         if (typeof ev.session_id === "string") sessionId = ev.session_id;
         if (type === "system") {
           if (ev.subtype === "init" && typeof ev.model === "string") model = ev.model;
+          if (ev.subtype === "model_fallback" || ev.subtype === "model_refusal_fallback") serveMain(ev.fallback_model ?? ev.fallbackModel);
           if (ev.subtype === "api_retry" && typeof ev.error === "string") lastRetryError = ev.error;
           if (ev.subtype === "permission_denied") permissionDenials++;
           if (ev.subtype === "notification" && /error|fail/i.test(String(ev.key ?? "")) && warnings.length < 10) warnings.push(`${String(ev.key)}: ${String(ev.text ?? "")}`.slice(0, 300));
+        } else if (type === "assistant") {
+          if (!ev.parent_tool_use_id) serveMain((ev.message as { model?: unknown } | undefined)?.model);
         } else if (type === "result") {
           result = ev;
         } else if (type === "rate_limit_event") {
@@ -159,6 +170,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
         const base: ParsedOutcome = {
           sessionId,
           reportedModel: model,
+          mainModels: [...mainModels],
           report: null,
           reportErrors: [],
           errorKind: null,

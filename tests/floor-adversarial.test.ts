@@ -273,3 +273,35 @@ it("auditoria: uso registrado na variante [1m] de um pedido base continua reprov
   });
   assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
 });
+
+it("rodada 12: fallback da CLI no meio do turno para modelo abaixo do piso reprova a entrega", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_FALLBACK: "claude-sonnet-5-5",
+    FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-opus-5-5": {}, "claude-sonnet-5-5": {} }),
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /claude-sonnet-5-5/);
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+  assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+});
+
+it("rodada 12: fluxo principal em Opus com Haiku auxiliar no uso continua aprovado", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-opus-5-5": { outputTokens: 900 }, "claude-haiku-4-5-20251001": { outputTokens: 20 } }),
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+});
+
+it("rodada 12: resposta do assistente em um modelo sem uso registrado nele é contraditória e reprova", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-sonnet-5-5": {} }),
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /uso registrado/);
+});

@@ -629,4 +629,17 @@ describe("proxy local de loopback", () => {
     assert.ok(result.removed.includes("ANTHROPIC_BASE_URL"));
     assert.equal(result.env.PATH, "/bin");
   });
+  it("bateria real: openai_base_url loopback na raiz só com a opção; chatgpt_base_url nunca", () => {
+    const s = sandbox();
+    writeFileSync(s.codexConfig, ['openai_base_url = "http://127.0.0.1:8787/v1"'].join("\n"));
+    const off = codexConfigConflicts(s.paths, s.env);
+    assert.equal(off.conflicts.length, 1);
+    assert.match(off.conflicts[0]!, /billing\.allowLoopbackProxy/);
+    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, []);
+    writeFileSync(s.codexConfig, ['openai_base_url = "https://proxy.example.com/v1"'].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "host remoto continua bloqueado");
+    writeFileSync(s.codexConfig, ['chatgpt_base_url = "http://127.0.0.1:8787"'].join("\n"));
+    assert.equal(codexConfigConflicts(s.paths, s.env, true).conflicts.length, 1, "chatgpt_base_url sem exceção");
+  });
+
 });

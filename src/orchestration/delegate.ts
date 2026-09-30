@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, reportedMatchesRequested, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -802,6 +802,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     }
     return null;
   };
+  let lastObserved: string | null = null;
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
@@ -823,8 +824,10 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       },
       onLine: (line) => {
         parser.onLine(line);
+        // Confere cada modelo novo do fluxo principal (init e fallback no meio do turno) assim que aparece.
         const observed = parser.observedModel?.();
-        if (ctx.adaptive && observed && !nativeFailure) {
+        if (ctx.adaptive && observed && observed !== lastObserved && !nativeFailure) {
+          lastObserved = observed;
           nativeFailure = confirmNative(observed);
           if (nativeFailure) nativeAbort.abort();
         }
@@ -877,25 +880,38 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (ctx.adaptive && !nativeFailure && (task.model.reported || (!outcome.errorKind && outcome.report?.status === "completed"))) {
     nativeFailure = confirmNative(task.model.reported, (!outcome.errorKind ? codexEvidence?.effort : null) ?? task.effort?.requested ?? null);
   }
-  // Uso final informado pelo cliente (result.modelUsage). O modelo principal informado precisa constar nele: um
-  // init "limpo" não encobre trabalho feito por outro modelo. Os demais modelos com uso são auxiliares do próprio
-  // cliente (ex.: Haiku para tarefas internas): não definem o nível da entrega, mas não podem ter cobrança extra
-  // não autorizada nem ser o modelo do cérebro.
-  const used = outcome.usedModels ?? [];
-  if (ctx.adaptive && !nativeFailure && used.length) {
-    const main = task.model.reported;
-    // O uso registrado é o nome servido pela API: pode não trazer a variante [1m] que o init/pedido trazem.
-    const servedAs = (m: string) => !!main && (sameModel(task.executor, main, m) || reportedMatchesRequested(ctx.catalog, task.executor, main, m));
-    if (main && !used.some(servedAs)) {
-      nativeFailure = `o cliente informou ${main}, mas o uso registrado foi em ${used.join(", ")}; modelo efetivo não confirmável; resultado não integrado`;
+  // Fluxo principal: todo modelo que respondeu (inclusive após fallback no meio do turno) passa pela confirmação
+  // completa: piso, esforço, cobrança e independência do cérebro.
+  const mains = outcome.mainModels ?? [];
+  if (ctx.adaptive && !nativeFailure) {
+    for (const m of mains) {
+      const failure = confirmNative(m);
+      if (failure) { nativeFailure = mains.length > 1 ? `o fluxo principal passou por ${mains.join(" → ")}; ${failure}` : failure; break; }
     }
-    for (const m of used) {
-      if (nativeFailure || servedAs(m)) continue;
-      const info = (ctx.catalog && findModel(ctx.catalog, task.executor, m)) ?? null;
-      if ((info ? extraUsage(info) : /\[[^\]]+\]$/.test(m)) && !(info && automaticModelAllowed(info, cfg))) {
-        nativeFailure = `uso auxiliar em ${m} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
-      } else if (ctx.req.brainModel && task.executor === task.brain && sameModelIdentity(ctx.catalog, task.executor, ctx.req.brainModel, m, "loose")) {
-        nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${m}); resultado não integrado`;
+  }
+  // Uso final informado pelo cliente (result.modelUsage). A CLI pode registrar a variante [1m] ou o nome servido
+  // pela API sem ela, então duas perguntas separadas:
+  //  - presença: cada modelo do fluxo principal consta no uso (comparação pelo modelo base, sem a variante);
+  //  - cobrança: toda entrada com uso extra (ex.: [1m]) foi exatamente a pedida ou está autorizada.
+  // O que não serviu o fluxo principal é auxiliar do próprio cliente (ex.: Haiku em tarefas internas): não define o
+  // nível da entrega, mas não pode ser o modelo do cérebro.
+  const used = outcome.usedModels ?? [];
+  const principal = mains.length ? mains : task.model.reported ? [task.model.reported] : [];
+  const baseOf = (name: string) => modelKey((ctx.catalog && findModel(ctx.catalog, task.executor, name)?.id) ?? name).replace(/\[[^\]]*\]$/, "");
+  const servedAs = (u: string) => principal.some((p) => baseOf(p) === baseOf(u));
+  if (ctx.adaptive && !nativeFailure && used.length) {
+    const missing = principal.find((p) => !used.some((u) => baseOf(u) === baseOf(p)));
+    if (missing) {
+      nativeFailure = `o cliente informou ${missing}, mas o uso registrado foi em ${used.join(", ")}; modelo efetivo não confirmável; resultado não integrado`;
+    }
+    for (const u of used) {
+      if (nativeFailure) break;
+      const info = (ctx.catalog && findModel(ctx.catalog, task.executor, u)) ?? null;
+      const paid = info ? extraUsage(info) : /\[[^\]]+\]$/.test(u);
+      if (paid && !matchesRequest(u) && !(info && automaticModelAllowed(info, cfg))) {
+        nativeFailure = `uso em ${u} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
+      } else if (!servedAs(u) && ctx.req.brainModel && task.executor === task.brain && sameModelIdentity(ctx.catalog, task.executor, ctx.req.brainModel, u, "loose")) {
+        nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${u}); resultado não integrado`;
       }
     }
   }

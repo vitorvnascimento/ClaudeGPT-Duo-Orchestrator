@@ -625,6 +625,17 @@ function readCodexSnapshot(file: string | undefined, conflicts: string[]): Codex
   }
 }
 
+/**
+ * openai_base_url troca o endpoint do provider "openai" (o mesmo login ChatGPT/assinatura). Só um proxy loopback,
+ * com billing.allowLoopbackProxy, é aceito, com a mesma validação estrita de URL usada para os providers.
+ * chatgpt_base_url (login e backends do ChatGPT) continua sem exceção.
+ */
+function openaiBaseUrlVerdict(file: string, url: string, allowLoopbackProxy: boolean, conflicts: string[], warnings: string[]): void {
+  const origin = allowLoopbackProxy ? loopbackProxyOrigin(url) : null;
+  if (origin) warnings.push(`${file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
+  else conflicts.push(`${file}: openai_base_url seleciona endpoint não oficial${allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT}`);
+}
+
 function validateCodexSnapshotSyntax(snapshot: CodexConfigSnapshot, conflicts: string[]): void {
   if (snapshot.rootModelProviderInvalid) conflicts.push(`${snapshot.file}: model_provider não é uma string TOML reconhecível`);
   if (snapshot.rootOpenaiBaseUrlInvalid) conflicts.push(`${snapshot.file}: openai_base_url não é uma string TOML reconhecível`);
@@ -641,7 +652,7 @@ function validateStandaloneManagedCodexSnapshot(
 ): void {
   validateCodexSnapshotSyntax(snapshot, conflicts);
   if (snapshot.rootOpenaiBaseUrl !== undefined && !isOfficialBaseUrl(snapshot.rootOpenaiBaseUrl, "openai")) {
-    conflicts.push(`${snapshot.file}: openai_base_url seleciona endpoint não oficial`);
+    openaiBaseUrlVerdict(snapshot.file, snapshot.rootOpenaiBaseUrl, allowLoopbackProxy, conflicts, warnings);
   }
   if (snapshot.rootChatgptBaseUrl !== undefined && !isOfficialBaseUrl(snapshot.rootChatgptBaseUrl, "chatgpt")) {
     conflicts.push(`${snapshot.file}: chatgpt_base_url seleciona endpoint não oficial`);
@@ -798,7 +809,7 @@ export function codexConfigConflicts(
         ? system.file
         : undefined;
   if (openaiBaseUrl !== undefined && !isOfficialBaseUrl(openaiBaseUrl, "openai") && openaiBaseSource) {
-    conflicts.push(`${openaiBaseSource}: openai_base_url seleciona endpoint não oficial`);
+    openaiBaseUrlVerdict(openaiBaseSource, openaiBaseUrl, allowLoopbackProxy, conflicts, warnings);
   }
   const chatgptBaseUrl = effectiveRootUrl(system, global, project, "rootChatgptBaseUrl");
   const chatgptBaseSource = project?.rootChatgptBaseUrl !== undefined

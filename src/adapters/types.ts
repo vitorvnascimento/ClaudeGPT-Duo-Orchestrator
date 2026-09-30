@@ -61,6 +61,8 @@ export type ParsedOutcome = {
   reportedModel: string | null;
   /** Todos os modelos com uso registrado pelo cliente (ex.: result.modelUsage do Claude), quando informado. */
   usedModels?: string[];
+  /** Modelos que serviram o fluxo principal (respostas do assistente e alvos de fallback), em ordem, sem repetição. */
+  mainModels?: string[];
   report: ExecutorReport | null;
   reportErrors: string[];
   errorKind: ErrorKind | null;

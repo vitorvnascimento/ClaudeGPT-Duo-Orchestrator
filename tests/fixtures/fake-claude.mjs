@@ -97,7 +97,10 @@ const init = {
   type: "system", subtype: "init", session_id: session,
   model: process.env.FAKE_CLAUDE_REPORTED_MODEL ?? (scenario === "model-fallback" ? "claude-opus-4-7" : valueOf("--model") ?? "claude-opus-5-5"), tools: ["Read"], mcp_servers: [],
 };
-const assistant = { type: "assistant", session_id: session, message: { content: [{ type: "thinking", thinking: "segredo do raciocínio interno" }, { type: "text", text: "ok" }] } };
+// Como a CLI real: a resposta traz message.model com o nome servido pela API (a variante [1m] é removida antes da API).
+const served = (name) => name.replace(/\[1m\]$/i, "");
+const assistantFrom = (model) => ({ type: "assistant", session_id: session, message: { model, content: [{ type: "thinking", thinking: "segredo do raciocínio interno" }, { type: "text", text: "ok" }] } });
+const assistant = assistantFrom(process.env.FAKE_CLAUDE_ASSISTANT_MODEL ?? served(init.model));
 const usage = { input_tokens: 1200, output_tokens: 340, cache_creation_input_tokens: 100, cache_read_input_tokens: 800 };
 const result = (structured) => ({
   type: "result", subtype: "success", is_error: false, session_id: session, result: "done", structured_output: structured,
@@ -126,6 +129,11 @@ switch (scenario) {
       session_id: session,
     });
     emit(assistant);
+    // fallbackModel da CLI: troca o modelo do turno e as respostas seguintes vêm do modelo de fallback.
+    if (process.env.FAKE_CLAUDE_FALLBACK) {
+      emit({ type: "system", subtype: "model_fallback", trigger: "overloaded", original_model: init.model, fallback_model: process.env.FAKE_CLAUDE_FALLBACK, content: "fallback", session_id: session });
+      emit(assistantFrom(served(process.env.FAKE_CLAUDE_FALLBACK)));
+    }
     emit(result(report(files)));
     break;
   }

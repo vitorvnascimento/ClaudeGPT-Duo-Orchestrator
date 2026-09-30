@@ -208,7 +208,10 @@ const scenarios = {
       c("nenhum arquivo alterado", (r.json?.filesChanged ?? ["?"]).length === 0 && dirty(repo).length === 0, dirty(repo)),
       c("achou o bug de porcentagem", /100|percent|porcent/i.test(r.json?.summary ?? ""), (r.json?.summary ?? "").slice(0, 200)),
       c("ferramentas só de leitura", args[args.indexOf("--tools") + 1] === "Read,Grep,Glob"),
-      c(`modelo efetivo = ${CLAUDE_MODEL}`, (r.json?.model?.reported ?? "").toLowerCase().includes(CLAUDE_MODEL.toLowerCase()), r.json?.model),
+      // v0.3.0: sem model no pedido, o modelo vem da seleção adaptativa (revisão de risco médio: nível >= standard).
+      c("modelo efetivo = modelo selecionado (nível >= standard)", t?.selection?.adaptive === true && ["standard", "deep"].includes(t?.selection?.tier)
+        && !!t?.selection?.model && (r.json?.model?.reported ?? "").toLowerCase().startsWith(String(t.selection.model).toLowerCase().replace(/\[1m\]$/, "")),
+        { selection: t?.selection && { tier: t.selection.tier, model: t.selection.model }, model: r.json?.model }),
     ];
   },
 
@@ -384,9 +387,11 @@ const scenarios = {
     return [
       c("sessão do Claude (cérebro) terminou sem erro", r.status === 0 && brain?.is_error === false, (brain?.result ?? r.stderr ?? "").slice(0, 200)),
       c("cérebro consultou a evidência (duo recommend)", rec.length > 0, rec.map((e) => e.decision?.action)),
-      c("recomendação: fazer você mesmo", rec.some((e) => e.decision?.action === "self")),
-      c("não delegou (nenhuma task real)", realTasks.length === 0, realTasks.map((t) => `${t.brain}->${t.executor}:${t.state}`)),
-      c("tarefa concluída pelo próprio cérebro (check passa)", check(repo) === 0),
+      // v0.3.0: tarefa simples não usa o modelo robusto do cérebro; a recomendação é fazer você mesmo ou delegar a
+      // um Claude de nível menor. A evidência (Codex com overclaim) continua excluindo o Codex.
+      c("recomendação: Claude (você mesmo ou modelo Claude mais leve), nunca Codex", rec.length > 0 && rec.every((e) => e.decision?.action === "self" || (e.decision?.action === "delegate" && e.decision?.executor === "claude"))),
+      c("nenhuma delegação ao Codex; delegação ao Claude (se houve) verificada em modelo diferente do cérebro", realTasks.every((t) => t.executor === "claude" && t.state === "succeeded" && t.model?.requested !== CLAUDE_MODEL), realTasks.map((t) => `${t.brain}->${t.executor}/${t.model?.requested}:${t.state}`)),
+      c("tarefa concluída (check passa)", check(repo) === 0),
       c("resposta explica a decisão", /eu mesmo|evid|histór|recomend/i.test(brain?.result ?? ""), (brain?.result ?? "").slice(0, 200)),
     ];
   },
@@ -417,7 +422,7 @@ const scenarios = {
       c("sessão do Codex (cérebro) completou o turno", events.some((e) => e.type === "turn.completed"), r.stderr.slice(-300)),
       c("cérebro consultou a evidência (duo recommend)", rec.length > 0, rec.map((e) => `${e.decision?.action}:${e.decision?.executor}`)),
       c("recomendação: delegar ao Claude", rec.some((e) => e.decision?.action === "delegate" && e.decision?.executor === "claude")),
-      c(`delegou ao Claude (${CLAUDE_MODEL}) e a ponte verificou`, delegated && delegated.model?.requested === CLAUDE_MODEL, allTasks(repo).filter((t) => !t.taskId.startsWith("task-seed-")).map((t) => `${t.executor}:${t.model?.requested}:${t.state}`)),
+      c("delegou ao Claude (modelo da seleção adaptativa) e a ponte verificou", delegated && delegated.model?.requested === (delegated.selection?.model ?? delegated.model?.requested) && delegated.model?.reported, allTasks(repo).filter((t) => !t.taskId.startsWith("task-seed-")).map((t) => `${t.executor}:${t.model?.requested}:${t.state}`)),
       c("mudança feita pelo executor", delegated?.verification?.filesChangedActual?.includes("src/math.mjs")),
       c("check passa", check(repo) === 0),
       c("resposta explica a decisão", /delegar|delegu|claude/i.test(final), final.slice(0, 200)),
@@ -499,15 +504,16 @@ const scenarios = {
     const final = [...events].reverse().find((e) => e.type === "item.completed" && e.item?.type === "agent_message")?.item?.text ?? "";
     const rec = recommendEvents(repo);
     const real = allTasks(repo).filter((t) => !t.taskId.startsWith("task-seed-"));
-    const code = real.find((t) => t.kind === "implement" && t.executor === "claude" && t.model?.requested === CLAUDE_MODEL && t.state === "succeeded");
+    // v0.3.0: a evidência escolhe o Claude; a complexidade escolhe o modelo (tarefa pequena com aceite pode ir ao nível light).
+    const code = real.find((t) => t.kind === "implement" && t.executor === "claude" && t.selection?.adaptive && t.model?.requested === t.selection?.model && t.state === "succeeded");
     return [
       c("sessão do Codex completou o turno", events.some((e) => e.type === "turn.completed"), r.stderr.slice(-300)),
       c("recommend consultado para as duas partes", rec.some((e) => e.query?.needs?.includes("image_generation")) && rec.some((e) => e.query?.kind === "implement"), rec.map((e) => `${e.query?.kind}:${e.decision?.action}:${e.decision?.executor}/${e.decision?.model}`)),
-      c(`código delegado ao claude/${CLAUDE_MODEL} (evidência) e verificado`, code, real.map((t) => `${t.executor}/${t.model?.requested}:${t.kind}:${t.state}`)),
+      c("código delegado ao Claude (evidência) com modelo da seleção adaptativa e verificado", code, real.map((t) => `${t.executor}/${t.model?.requested}:${t.kind}:${t.state}`)),
       c("assets/hero.png é imagem válida (feita por modelo com image_generation)", imagesIn(repo, "assets").includes("hero.png"), imagesIn(repo, "assets")),
       c("nenhuma parte foi para um modelo sem a capacidade", !real.some((t) => t.kind === "asset" && t.executor === "claude")),
       c("check do código passa", check(repo) === 0),
-      c("resposta cita os modelos", /opus|claude/i.test(final) && /astra|gpt|codex/i.test(final), final.slice(0, 240)),
+      c("resposta cita os modelos", /opus|sonnet|haiku|claude/i.test(final) && /astra|gpt|codex/i.test(final), final.slice(0, 240)),
     ];
   },
 
@@ -606,15 +612,17 @@ async function timeoutResume(id, brain, executor, resumeMarker) {
   await sleep(500);
   const leftovers = processesFor(repo);
   const r2 = t1 ? duo(repo, ["delegate", "--resume", t1.taskId, "--timeout-sec", "420"]) : null;
-  const t2 = allTasks(repo)[0];
+  // v0.3.0: a retomada de uma tentativa que já invocou cria a próxima tentativa da mesma cadeia.
+  const t2 = allTasks(repo).find((t) => t.taskId === r2?.json?.taskId) ?? allTasks(repo)[0];
   const args2 = invocation(t2)?.args ?? [];
+  const chainInvocations = allTasks(repo).reduce((n, t) => n + (t.invocations ?? 0), 0);
   return [
     c("1ª invocação bloqueada por timeout", r1.json?.state === "blocked" && /timeout/.test(r1.json?.outcome ?? ""), `${r1.json?.state}: ${r1.json?.outcome}`),
     c("sessão nativa registrada antes do timeout", Boolean(t1?.native?.sessionId), t1?.native?.sessionId),
     c("sem processo do executor sobrando após o timeout", leftovers.length === 0, leftovers),
     c("retomada succeeded", r2?.json?.state === "succeeded", `${r2?.json?.state}: ${r2?.json?.outcome}`),
     c("retomada usou a sessão nativa", args2.includes(resumeMarker) && args2.includes(t1?.native?.sessionId), args2.filter((a) => a.length < 60).join(" ")),
-    c("2 invocações contadas", t2?.invocations === 2, t2?.invocations),
+    c("2 invocações contadas na cadeia", chainInvocations === 2, chainInvocations),
     c("check passa", check(repo) === 0),
   ];
 }

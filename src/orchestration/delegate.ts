@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { findModel, loadCatalog, reportedMatchesRequested, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -768,9 +768,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let nativeFailure: string | null = null;
   // Identidade única (catalog.ts): estrita para autorizar; alias de família não resolvido nunca vale como pedido exato.
   const sameModel = (executor: Provider, a: string, b: string): boolean => sameModelIdentity(ctx.catalog, executor, a, b, "strict");
-  const confirmNative = (model: string | null, effort = task.effort?.requested ?? null): string | null => {
+  // Relatório do cliente contra o pedido: pode omitir a variante [1m] do pedido, nunca acrescentá-la.
+  const matchesRequest = (reported: string): boolean => !!task.model.requested && reportedMatchesRequested(ctx.catalog, task.executor, task.model.requested, reported);
+  const confirmNative = (reported: string | null, effort = task.effort?.requested ?? null): string | null => {
+    // Relatório que corresponde ao pedido (inclusive sem a variante [1m]) é confirmado pela identidade do pedido.
+    const model = reported && matchesRequest(reported) ? task.model.requested : reported;
     const policy = chainPolicy(store.loadChain(run.runId, ctx.chainId)!);
-    const automatic = policy.automatic || !!(model && task.model.requested && !sameModel(task.executor, task.model.requested, model));
+    const automatic = policy.automatic || !!(model && task.model.requested && !matchesRequest(model));
     const confirm = (floor: Tier) => confirmFloor({ catalog: ctx.catalog, cfg, executor: task.executor, model, floor,
       effort, automatic, needs: task.needs, minimumEffort: policy.minimumEffort });
     // Mesmo critério do pré-execução: o esforço vale contra o nível do modelo que de fato rodou (nunca abaixo do piso).
@@ -784,7 +788,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       const info: ModelInfo = (ctx.catalog && findModel(ctx.catalog, task.executor, model))
         ?? { provider: task.executor, id: model, aliases: [], displayName: model, description: "", efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: [] };
       // Variante com cobrança extra (ex.: [1m]) só vale se foi exatamente a pedida ou está autorizada (ciência + include).
-      const exactRequest = !!task.model.requested && sameModel(task.executor, task.model.requested, info.id);
+      const exactRequest = matchesRequest(model);
       if (extraUsage(info) && !exactRequest && !automaticModelAllowed(info, cfg)) {
         return `modelo efetivo ${info.id} consome créditos extras e não está autorizado (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
       }
@@ -880,11 +884,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const used = outcome.usedModels ?? [];
   if (ctx.adaptive && !nativeFailure && used.length) {
     const main = task.model.reported;
-    if (main && !used.some((m) => sameModel(task.executor, main, m))) {
+    // O uso registrado é o nome servido pela API: pode não trazer a variante [1m] que o init/pedido trazem.
+    const servedAs = (m: string) => !!main && (sameModel(task.executor, main, m) || reportedMatchesRequested(ctx.catalog, task.executor, main, m));
+    if (main && !used.some(servedAs)) {
       nativeFailure = `o cliente informou ${main}, mas o uso registrado foi em ${used.join(", ")}; modelo efetivo não confirmável; resultado não integrado`;
     }
     for (const m of used) {
-      if (nativeFailure || (main && sameModel(task.executor, main, m))) continue;
+      if (nativeFailure || servedAs(m)) continue;
       const info = (ctx.catalog && findModel(ctx.catalog, task.executor, m)) ?? null;
       if ((info ? extraUsage(info) : /\[[^\]]+\]$/.test(m)) && !(info && automaticModelAllowed(info, cfg))) {
         nativeFailure = `uso auxiliar em ${m} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
@@ -914,7 +920,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     verification.acceptance = await runAcceptance(task.acceptanceCommands, cfg, execCwd, childEnv(env, { DUO_DEPTH: "1" }).env, ctx.signal);
   }
   for (const w of [...new Set(outcome.warnings)].slice(0, 5)) task.limitations.push(`aviso do ${task.executor}: ${w}`);
-  if (task.model.requested && task.model.reported && !sameModelIdentity(ctx.catalog, task.executor, task.model.requested, task.model.reported, "loose")) {
+  if (task.model.requested && task.model.reported && !matchesRequest(task.model.reported) && !sameModelIdentity(ctx.catalog, task.executor, task.model.requested, task.model.reported, "loose")) {
     task.limitations.push(`modelo solicitado ${task.model.requested}, mas o cliente informou ${task.model.reported}`);
   }
   if (outcome.rateLimit?.isUsingOverage === true) {

@@ -247,3 +247,29 @@ it("rodada 11 achado 3: troca nativa para modelo deep com esforço medium é rep
   assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
   assert.match(String(out.summary.outcome), /esforço|effort/);
 });
+
+it("auditoria: pedido [1m] autorizado passa quando o cliente registra o nome servido sem a variante", async () => {
+  const { reportedMatchesRequested } = await import("../src/adapters/catalog.js");
+  const c = cache();
+  assert.ok(reportedMatchesRequested(c, "claude", "claude-fable-5-1[1m]", "claude-fable-5-1"), "relatório pode omitir [1m]");
+  assert.ok(!reportedMatchesRequested(c, "claude", "claude-opus-5-5", "claude-opus-5-5[1m]"), "relatório nunca acrescenta [1m]");
+  assert.ok(!reportedMatchesRequested(c, "claude", "claude-fable-5-1[1m]", "claude-opus-5-5"), "outro modelo não casa");
+  s = makeSandbox({ routing: { include: ["claude:claude-fable-5-1[1m]"] }, billing: { acknowledgeUnverifiableExtraUsage: { claude: true } } });
+  const write = JSON.stringify({ "src/app.ts": "export const app = 2;\n" });
+  const ok = await run(req({ brain: "codex", executor: "claude", model: "claude-fable-5-1[1m]", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-fable-5-1[1m]", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-fable-5-1": {}, "claude-haiku-4-5-20251001": {} }), FAKE_WRITE: write,
+  });
+  assert.equal(ok.summary.state, "succeeded", JSON.stringify(ok.summary));
+  const initWithout = await run(req({ brain: "codex", executor: "claude", model: "claude-fable-5-1[1m]", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-fable-5-1", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-fable-5-1": {} }), FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 3;\n" }),
+  });
+  assert.equal(initWithout.summary.state, "succeeded", JSON.stringify(initWithout.summary));
+});
+
+it("auditoria: uso registrado na variante [1m] de um pedido base continua reprovado", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "claude", model: "claude-opus-5-5", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-opus-5-5", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-opus-5-5[1m]": { costUSD: 1 } }), FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
+});

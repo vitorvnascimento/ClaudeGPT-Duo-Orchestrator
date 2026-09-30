@@ -524,6 +524,19 @@ export function findModel(catalog: Catalog, provider: Provider, name: string): M
  * Mesma identidade? Com catálogo, compara os IDs resolvidos. Sem catálogo (ou nome não resolvido), compara modelKey;
  * um alias de família não resolvido só casa quando `family: "loose"` (usado apenas para bloquear, nunca para autorizar).
  */
+/**
+ * O modelo informado pela execução corresponde ao pedido? Igual a sameModelIdentity estrita, com uma assimetria:
+ * o cliente pode OMITIR a variante (o Claude Code remove "[1m]" antes da API e registra o nome servido), então um
+ * relatório sem colchetes casa com o pedido "[1m]" do mesmo modelo; o relatório ACRESCENTAR uma variante não
+ * pedida (ex.: pedido base, execução "[1m]") nunca casa: é outro modelo, com cobrança própria.
+ */
+export function reportedMatchesRequested(catalog: Catalog | null, provider: Provider, requested: string, reported: string): boolean {
+  if (sameModelIdentity(catalog, provider, requested, reported, "strict")) return true;
+  const resolve = (name: string) => (catalog && findModel(catalog, provider, name)?.id) ?? name;
+  const req = modelKey(resolve(requested)), rep = modelKey(resolve(reported));
+  return !rep.includes("[") && req.includes("[") && req.replace(/\[[^\]]*\]$/, "") === rep;
+}
+
 export function sameModelIdentity(catalog: Catalog | null, provider: Provider, a: string, b: string, family: "strict" | "loose" = "strict"): boolean {
   const resolve = (name: string) => (catalog && findModel(catalog, provider, name)?.id) ?? name;
   const ra = resolve(a), rb = resolve(b);

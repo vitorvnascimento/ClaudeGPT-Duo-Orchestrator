@@ -44,9 +44,9 @@ describe("versões e uso extra", () => {
       assert.equal(compareModelVersions(model(b), model(a)), expected === 0 ? 0 : -expected);
     });
   }
-  it("sinais de preço e créditos na descrição", () => {
-    for (const description of ["Draws from usage credits", "10 per Mtok", "$5.00 / Mtok", "$ 0.50"]) assert.equal(extraUsage(model("foo", { description })), true);
-    for (const description of ["included", "$ is a symbol", "Most capable"]) assert.equal(extraUsage(model("foo", { description })), false);
+  it("créditos explícitos na descrição; preço genérico de API não conta", () => {
+    for (const description of ["Draws from usage credits", "Uses extra usage", "Draws from usage credits · $4/$20 per Mtok"]) assert.equal(extraUsage(model("foo", { description })), true);
+    for (const description of ["included", "$ is a symbol", "Most capable", "10 per Mtok", "$5.00 / Mtok", "$ 0.50", "Opus 5.5 · $4/$20 per Mtok"]) assert.equal(extraUsage(model("foo", { description })), false);
   });
 });
 
@@ -60,4 +60,13 @@ describe("esforço suportado", () => {
   ] as [Tier, string[], boolean, string | null][]) {
     it(`${tier} ${efforts} escalada=${escalateToMax}`, () => assert.equal(selectEffort(tier, model("foo", { efforts }), { escalateToMax }), expected));
   }
+});
+
+it("rodada 14: preço genérico de API não é uso extra; créditos explícitos e [1m] são", async () => {
+  const { extraUsage } = await import("../src/adapters/tiers.js");
+  const m = (id: string, description: string) => ({ provider: "claude" as const, id, aliases: [], displayName: id, description, efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: [] as ("code")[] });
+  assert.equal(extraUsage(m("claude-opus-5-5", "Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok")), false);
+  assert.equal(extraUsage(m("claude-sonnet-5-5", "Sonnet 5.5 · $2/$10 per Mtok")), false);
+  assert.equal(extraUsage(m("claude-opus-5-5[1m]", "Opus 5.5 with 1M context")), true);
+  assert.equal(extraUsage(m("claude-x", "Draws from usage credits · $4/$20 per Mtok")), true);
 });

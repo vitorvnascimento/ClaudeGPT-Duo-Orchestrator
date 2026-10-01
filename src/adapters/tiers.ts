@@ -36,8 +36,13 @@ export function compareModelVersions(a: string | ModelInfo, b: string | ModelInf
   return 0;
 }
 
+/**
+ * Modelo que consome créditos além da assinatura: variante [1m] ou o fornecedor dizendo isso explicitamente.
+ * Preço genérico de API ("$4/$20 per Mtok") não é evidência: o handshake sem login de assinatura (ex.: dentro do
+ * sandbox do Codex) mostra preço em todos os modelos.
+ */
 export function extraUsage(model: ModelInfo): boolean {
-  return /\[1m\]$/i.test(model.id) || /usage credits|per\s+Mtok|\$\s*\d+(?:[.,]\d+)?/i.test(model.description);
+  return /\[1m\]$/i.test(model.id) || /usage credits|extra usage|uso extra|cr[eé]ditos de uso/i.test(model.description);
 }
 
 export function selectEffort(tier: Tier, model: ModelInfo, opts: { escalateToMax?: boolean; minimum?: Effort } = {}): Effort | null {

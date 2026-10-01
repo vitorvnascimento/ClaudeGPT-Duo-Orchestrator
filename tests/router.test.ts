@@ -104,6 +104,20 @@ describe("recomendação adaptativa", () => {
     try { assert.equal(recommend(store2, loadConfig(sb2.root), noBrainModel, allUp, adaptiveCatalog).decision.action, "judgment"); }
     finally { sb2.cleanup(); }
   });
+  it("rodada 14: providerLead e seleção apontam para o mesmo fornecedor, inclusive com economia de cota do cérebro", () => {
+    sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
+    seed(store, [
+      ...Array.from({ length: 3 }, () => ({ executor: "claude" as const, model: "claude-opus-5-5", kind: "review" as const, tags: ["ts"], ok: true })),
+      ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, model: "gpt-6-sol", kind: "review" as const, tags: ["ts"], ok: false, overclaim: true })),
+    ]);
+    for (const brainModel of ["claude-opus-5-5", undefined]) {
+      const q = { kind: "review" as const, tags: ["ts"], risk: "medium" as const, brain: "claude" as const, ...(brainModel ? { brainModel } : {}) };
+      const r = recommend(store, cfg, q, allUp, adaptiveCatalog);
+      assert.equal(r.decision.executor, "claude", JSON.stringify({ decision: r.decision, selection: r.selection }));
+      assert.equal(r.selection?.model, r.decision.model, "seleção e decisão coerentes");
+      assert.notEqual(r.decision.model, "claude-opus-5-5");
+    }
+  });
   it("redução só dentro dos pisos; extra não ganha por evidência sem ack+include", () => {
     sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
     seed(store, Array.from({ length: 12 }, () => ({ executor: "codex" as const, model: "gpt-6-luna", ok: true })));

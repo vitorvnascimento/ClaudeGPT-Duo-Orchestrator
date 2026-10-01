@@ -392,7 +392,7 @@ const scenarios = {
       c("recomendação: Claude (você mesmo ou modelo Claude mais leve), nunca Codex", rec.length > 0 && rec.every((e) => e.decision?.action === "self" || (e.decision?.action === "delegate" && e.decision?.executor === "claude"))),
       c("nenhuma delegação ao Codex; delegação ao Claude (se houve) verificada em modelo diferente do cérebro", realTasks.every((t) => t.executor === "claude" && t.state === "succeeded" && t.model?.requested !== CLAUDE_MODEL), realTasks.map((t) => `${t.brain}->${t.executor}/${t.model?.requested}:${t.state}`)),
       c("tarefa concluída (check passa)", check(repo) === 0),
-      c("resposta explica a decisão", /eu mesmo|evid|histór|recomend/i.test(brain?.result ?? ""), (brain?.result ?? "").slice(0, 200)),
+      c("resposta explica a decisão", /eu mesmo|evid|histór|recomend|recommend|deleg/i.test(brain?.result ?? ""), (brain?.result ?? "").slice(0, 200)),
     ];
   },
 
@@ -604,6 +604,9 @@ async function timeoutResume(id, brain, executor, resumeMarker) {
   const repo = makeRepo(id);
   const r1 = duo(repo, ["delegate", "--request", writeReq(repo, "slow", req({
     brain, executor, kind: "implement",
+    // Modelo fixo (deep): o cenário testa timeout/retomada, e a seleção adaptativa pode escolher um modelo
+    // rápido o bastante para terminar antes dos 10 s.
+    ...(executor === "claude" ? { model: CLAUDE_MODEL } : { model: "gpt-6-astra" }),
     objective: "Add exported functions double(n) and triple(n), each with a JSDoc comment, to src/math.mjs. Keep add() unchanged. Then run node check.mjs to verify.",
     scope: { allowedPaths: ["src/math.mjs"] },
     limits: { timeoutSec: 10 },

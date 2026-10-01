@@ -368,16 +368,21 @@ function recommendResult(
   if (filteredOut.length) notes.push(`Excluídos por não terem a capacidade exigida: ${filteredOut.join(", ")}`);
   const available = evals.filter((e) => e.available && eligible.includes(e));
   const best = available[0];
-  const pc = best ? catalog?.providers[best.executor] : null;
-  const info = pc?.ok && !pc.stale ? pc.models.find((m) => m.id === best?.model) : null;
-  const selected = selections.find((m) => m.executor === best?.executor && m.model === best?.model);
-  const selection: Selection | undefined = adaptive ? {
-    adaptive: true, tier: info ? tierOf(info, cfg).tier : assessment.tier, complexitySignals: assessment.signals,
-    model: info?.id ?? null, effort: info ? selectEffort(tierOf(info, cfg).tier, info) : null,
-    reason: selected?.reason ?? ["nenhum modelo satisfaz a capacidade e o piso exigidos"],
-    attempt: 1, attemptOf: null,
-  } : undefined;
-  const base = { query: q, candidates: evals, notes, ...(selection ? { selection } : {}) };
+  // A seleção sempre descreve o candidato efetivamente escolhido (finishDecision recalcula se ele mudar).
+  const selectionFor = (chosen: CandidateEval | undefined): Selection | undefined => {
+    if (!adaptive) return undefined;
+    const pcc = chosen ? catalog?.providers[chosen.executor] : null;
+    const inf = pcc?.ok && !pcc.stale ? pcc.models.find((m) => m.id === chosen?.model) : null;
+    const sel = selections.find((m) => m.executor === chosen?.executor && m.model === chosen?.model);
+    return {
+      adaptive: true, tier: inf ? tierOf(inf, cfg).tier : assessment.tier, complexitySignals: assessment.signals,
+      model: inf?.id ?? null, effort: sel?.effort ?? (inf ? selectEffort(tierOf(inf, cfg).tier, inf) : null),
+      reason: sel?.reason ?? ["nenhum modelo satisfaz a capacidade e o piso exigidos"],
+      attempt: 1, attemptOf: null,
+    };
+  };
+  const selection = selectionFor(best);
+  let base = { query: q, candidates: evals, notes, ...(selection ? { selection } : {}) };
   if (!best) {
     const why = needs.length ? [`nenhum modelo disponível com ${needs.join(", ")}`] : ["nenhum candidato disponível para delegar"];
     const hasKnownCatalog = adaptive && catalog !== null && Object.values(catalog.providers).some((provider) => provider.ok && !provider.stale);
@@ -439,6 +444,10 @@ function recommendResult(
   return finishDecision(best);
 
   function finishDecision(chosen: CandidateEval): Recommendation {
+    if (chosen !== best) {
+      const sel = selectionFor(chosen);
+      base = { ...base, ...(sel ? { selection: sel } : {}) };
+    }
     // Mesmo fornecedor do cérebro: fazer você mesmo se for o seu modelo; senão delegar ao outro modelo do mesmo fornecedor.
     if (q.brain && chosen.executor === q.brain) {
       const sameAsBrain = q.brainModel ? namesOf(chosen, catalog).includes(q.brainModel.toLowerCase()) : null;

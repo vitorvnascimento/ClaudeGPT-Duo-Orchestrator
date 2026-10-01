@@ -41,13 +41,16 @@ function cleanEnv() {
   return env;
 }
 
+// O shell_snapshot do Codex recarrega o rc do usuário (ex.: nvm) e poria um duo global antes do shim.
+const CODEX_BRAIN_FLAGS = ["-c", "features.shell_snapshot=false"];
+const usedBuild = (repo) => c("cérebro chamou o duo deste build", existsSync(join(repo, ".duo", "shim-calls.log")));
 // Os cérebros chamam `duo` pelo PATH: o shim garante que é este build, nunca uma instalação global antiga.
 let DUO_SHIM_DIR = null;
 if (!DRY_RUN) installDuoShim(BASE);
 function installDuoShim(base) {
   const dir = join(base, ".duo-bin");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "duo"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "duo"), `#!/bin/sh\n[ -d .duo ] && echo "$*" >> .duo/shim-calls.log 2>/dev/null\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
   DUO_SHIM_DIR = dir;
   const r = spawnSync("/bin/zsh", ["-lc", "command -v duo"], { env: cleanEnv(), encoding: "utf8" });
   if (r.stdout.trim() !== join(dir, "duo")) {
@@ -375,6 +378,7 @@ const scenarios = {
     const ok = tasks.find((t) => t.brain === "claude" && t.executor === "codex" && t.state === "succeeded");
     return [
       c("sessão do Claude (cérebro) terminou sem erro", r.status === 0 && brain && brain.is_error === false, (brain?.result ?? r.stderr ?? "").slice(0, 200)),
+      usedBuild(repo),
       c("cérebro delegou pela ponte (task claude→codex succeeded)", ok, tasks.map((t) => `${t.brain}->${t.executor}:${t.state}:${t.outcome?.slice(0, 80)}`)),
       c("mudança feita pelo executor, não pelo cérebro", ok?.verification?.filesChangedActual?.includes("src/math.mjs")),
       c("check passa no repositório", check(repo) === 0),
@@ -402,6 +406,7 @@ const scenarios = {
     const realTasks = allTasks(repo).filter((t) => !t.taskId.startsWith("task-seed-"));
     return [
       c("sessão do Claude (cérebro) terminou sem erro", r.status === 0 && brain?.is_error === false, (brain?.result ?? r.stderr ?? "").slice(0, 200)),
+      usedBuild(repo),
       c("cérebro consultou a evidência (duo recommend)", rec.length > 0, rec.map((e) => e.decision?.action)),
       // v0.3.0: tarefa simples não usa o modelo robusto do cérebro; a recomendação é fazer você mesmo ou delegar a
       // um Claude de nível menor. A evidência (Codex com overclaim) continua excluindo o Codex.
@@ -422,7 +427,7 @@ const scenarios = {
     const prompt =
       `$duo-delegate ${EVIDENCE_PROMPT} Leia .agents/skills/duo-delegate/SKILL.md para o procedimento. ` +
       "O comando duo delegate inicia o Claude Code e precisa de rede e login do usuário: solicite aprovação para executá-lo fora do sandbox.";
-    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", "--cd", repo, "-"], { cwd: repo, env: cleanEnv(), encoding: "utf8", input: prompt, timeout: 12 * 60_000 });
+    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", ...CODEX_BRAIN_FLAGS, "--cd", repo, "-"], { cwd: repo, env: cleanEnv(), encoding: "utf8", input: prompt, timeout: 12 * 60_000 });
     const events = r.stdout.split("\n").filter(Boolean).flatMap((l) => {
       try {
         return [JSON.parse(l)];
@@ -436,6 +441,7 @@ const scenarios = {
     const delegated = allTasks(repo).find((t) => !t.taskId.startsWith("task-seed-") && t.brain === "codex" && t.executor === "claude" && t.state === "succeeded");
     return [
       c("sessão do Codex (cérebro) completou o turno", events.some((e) => e.type === "turn.completed"), r.stderr.slice(-300)),
+      usedBuild(repo),
       c("cérebro consultou a evidência (duo recommend)", rec.length > 0, rec.map((e) => `${e.decision?.action}:${e.decision?.executor}`)),
       c("recomendação: delegar ao Claude", rec.some((e) => e.decision?.action === "delegate" && e.decision?.executor === "claude")),
       c("delegou ao Claude (modelo da seleção adaptativa) e a ponte verificou", delegated && delegated.model?.requested === (delegated.selection?.model ?? delegated.model?.requested) && delegated.model?.reported, allTasks(repo).filter((t) => !t.taskId.startsWith("task-seed-")).map((t) => `${t.executor}:${t.model?.requested}:${t.state}`)),
@@ -487,6 +493,7 @@ const scenarios = {
     const codeByOther = tasks.find((t) => t.kind !== "asset" && t.executor === "codex");
     return [
       c("sessão do cérebro terminou sem erro", r.status === 0 && brain?.is_error === false, (brain?.result ?? r.stderr ?? "").slice(0, 200)),
+      usedBuild(repo),
       c("arte delegada ao codex/gpt-6-astra e verificada", art && (art.verification?.images ?? []).some((i) => i.path === "assets/hero.png"), tasks.map((t) => `${t.executor}/${t.model?.requested}:${t.kind}:${t.state}:${(t.outcome ?? "").slice(0, 80)}`)),
       c("assets/hero.png é imagem válida", imagesIn(repo, "assets").includes("hero.png"), imagesIn(repo, "assets")),
       c("código com Opus 5.5 (o próprio cérebro), não delegado a outro modelo", !codeByOther),
@@ -508,7 +515,7 @@ const scenarios = {
       "Não escolha os modelos por conta própria: rode duo models e depois duo recommend separadamente para cada parte (parte 2 com --kind asset --needs image_generation), passando --brain codex e --brain-model com o seu modelo, e siga cada recomendação. " +
       "Leia .agents/skills/duo-delegate/SKILL.md para o procedimento. O comando duo delegate que envolver o Claude precisa de rede e login: solicite aprovação para executá-lo fora do sandbox. " +
       "Ao final responda em uma linha: quem fez cada parte, com qual modelo, e os taskIds.";
-    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", "--cd", repo, "-"], { cwd: repo, env: cleanEnv(), encoding: "utf8", input: prompt, timeout: 14 * 60_000 });
+    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", ...CODEX_BRAIN_FLAGS, "--cd", repo, "-"], { cwd: repo, env: cleanEnv(), encoding: "utf8", input: prompt, timeout: 14 * 60_000 });
     const events = r.stdout.split("\n").filter(Boolean).flatMap((l) => {
       try {
         return [JSON.parse(l)];
@@ -524,6 +531,7 @@ const scenarios = {
     const code = real.find((t) => t.kind === "implement" && t.executor === "claude" && t.selection?.adaptive && t.model?.requested === t.selection?.model && t.state === "succeeded");
     return [
       c("sessão do Codex completou o turno", events.some((e) => e.type === "turn.completed"), r.stderr.slice(-300)),
+      usedBuild(repo),
       c("recommend consultado para as duas partes", rec.some((e) => e.query?.needs?.includes("image_generation")) && rec.some((e) => e.query?.kind === "implement"), rec.map((e) => `${e.query?.kind}:${e.decision?.action}:${e.decision?.executor}/${e.decision?.model}`)),
       c("código delegado ao Claude (evidência) com modelo da seleção adaptativa e verificado", code, real.map((t) => `${t.executor}/${t.model?.requested}:${t.kind}:${t.state}`)),
       c("assets/hero.png é imagem válida (feita por modelo com image_generation)", imagesIn(repo, "assets").includes("hero.png"), imagesIn(repo, "assets")),
@@ -541,7 +549,7 @@ const scenarios = {
       "Não implemente você mesmo: escreva o pedido em .duo/requests/ e execute a ponte duo exatamente como a skill .agents/skills/duo-delegate/SKILL.md descreve. " +
       "O comando duo delegate inicia o Claude Code e precisa de rede e do login do usuário: solicite aprovação para executá-lo fora do sandbox. " +
       "Ao final responda em uma linha com o taskId e o state devolvidos pela ponte.";
-    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", "--cd", repo, "-"], {
+    const r = spawnSync("codex", ["exec", "--json", "--approve-for-me", ...CODEX_BRAIN_FLAGS, "--cd", repo, "-"], {
       cwd: repo, env: cleanEnv(), encoding: "utf8", input: prompt, timeout: 12 * 60_000,
     });
     const events = r.stdout.split("\n").filter(Boolean).flatMap((l) => {
@@ -557,6 +565,7 @@ const scenarios = {
     writeFileSync(join(BASE, "T11-brain-events.jsonl"), events.filter((e) => e.item?.type !== "reasoning").map((e) => JSON.stringify(e)).join("\n"));
     return [
       c("sessão do Codex (cérebro) completou o turno", events.some((e) => e.type === "turn.completed"), r.stderr.slice(-300)),
+      usedBuild(repo),
       c("cérebro delegou pela ponte (task codex→claude succeeded)", ok, tasks.map((t) => `${t.brain}->${t.executor}:${t.state}:${t.outcome?.slice(0, 120)}`)),
       c("mudança feita pelo executor, não pelo cérebro", ok?.verification?.filesChangedActual?.includes("src/math.mjs")),
       c("check passa no repositório", check(repo) === 0),

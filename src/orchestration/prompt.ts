@@ -61,7 +61,8 @@ export function buildExecutorPrompt(task: Task, extras: PromptExtras): string {
     lines.push("");
     lines.push("## Image generation");
     lines.push("Use your image generation tool to create the requested image. Save the final image file(s) (PNG, JPEG or WebP) INSIDE the authorized paths above, with the exact file name requested; copy the file there if the tool saved it elsewhere.");
-    lines.push("List the saved file paths in filesChanged. The bridge verifies that a valid image file exists in scope.");
+    lines.push("Copy the generated file unchanged: do not resize, convert or re-encode it (no sips, ImageMagick or similar). If the result needs a different size or style, generate it again with the tool instead.");
+    lines.push("List the saved file paths in filesChanged. The bridge verifies that a valid image file exists in scope and that it matches the image your tool generated.");
   }
   lines.push("");
   lines.push("## Acceptance criteria");

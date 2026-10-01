@@ -999,6 +999,9 @@ describe("catálogo das contas, mesmo fornecedor e arte", () => {
     const call = s.execCalls()[0] as { args: string[] };
     assert.ok(call.args.includes("--enable") && call.args.includes("image_generation"));
     assert.equal(call.args[call.args.indexOf("--model") + 1], "gpt-6-astra");
+    // Redimensionar ou recodificar quebra a prova de procedência (hash da imagem gerada pela ferramenta).
+    const prompt = readFileSync(join(task(s, out.summary.taskId).artifactsDir, "prompt.txt"), "utf8");
+    assert.match(prompt, /Copy the generated file unchanged: do not resize, convert or re-encode it/);
   });
 
   it("arte: relatório completed sem imagem válida no escopo → failed", async () => {

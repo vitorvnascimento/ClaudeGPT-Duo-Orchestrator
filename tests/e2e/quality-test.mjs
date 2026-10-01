@@ -60,7 +60,7 @@ if (!DRY_RUN) installDuoShim(BASE);
 function installDuoShim(base) {
   const dir = join(base, ".duo-bin");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "duo"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "duo"), `#!/bin/sh\n[ -d .duo ] && echo "$*" >> .duo/shim-calls.log 2>/dev/null\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
   DUO_SHIM_DIR = dir;
   const r = spawnSync("/bin/zsh", ["-lc", "command -v duo"], { env: cleanEnv(), encoding: "utf8" });
   if (r.stdout.trim() !== join(dir, "duo")) {

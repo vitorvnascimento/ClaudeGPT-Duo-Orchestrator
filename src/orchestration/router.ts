@@ -298,6 +298,28 @@ export function evaluateCandidates(
   return { evals, filteredOut };
 }
 
+/**
+ * Evidência agregada por fornecedor no mesmo tipo de tarefa (qualquer modelo): usada só quando nenhum modelo tem
+ * evidência própria suficiente. Exige amostra mínima dos dois lados e diferença nítida (vencedor ≥ 0,7 de sucesso,
+ * perdedor ≤ 0,3); tarefas excluídas (login, cota, timeout) não contam.
+ */
+function providerLead(store: Store, q: RouteQuery, min: number, available: CandidateEval[]): { winner: Provider; loser: Provider; winnerStats: string; loserStats: string } | null {
+  const providers = [...new Set(available.map((e) => e.executor))];
+  if (providers.length < 2 || (q.needs ?? []).some((n) => n !== "code")) return null;
+  const tasks = store.listRuns().flatMap((r) => store.listTasks(r)).filter((t) => t.kind === q.kind && outcomeOf(t) !== "excluded");
+  const stats = (p: Provider) => {
+    const mine = tasks.filter((t) => t.executor === p);
+    const ok = mine.filter((t) => outcomeOf(t) === "success").length;
+    return { n: mine.length, rate: mine.length ? ok / mine.length : 0, text: `${ok}/${mine.length}` };
+  };
+  const [a, b] = providers as [Provider, Provider];
+  const sa = stats(a), sb = stats(b);
+  if (sa.n < min || sb.n < min) return null;
+  if (sa.rate >= 0.7 && sb.rate <= 0.3) return { winner: a, loser: b, winnerStats: sa.text, loserStats: sb.text };
+  if (sb.rate >= 0.7 && sa.rate <= 0.3) return { winner: b, loser: a, winnerStats: sb.text, loserStats: sa.text };
+  return null;
+}
+
 function recommendResult(
   store: Store, cfg: DuoConfig, q: RouteQuery, availability: AvailabilityFn,
   catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null },
@@ -385,6 +407,16 @@ function recommendResult(
     // A capacidade exigida deixou um único fornecedor: vale a recomendação do próprio fornecedor.
     confidence = "média";
     why.unshift(`só ${best.executor} oferece ${needs.filter((n) => n !== "code").join(", ")} entre as contas conectadas; modelo escolhido pelos sinais do fornecedor`);
+  } else if (providerLead(store, q, min, available)) {
+    // Evidência por modelo insuficiente, mas o histórico do FORNECEDOR no mesmo tipo de tarefa é claro: um tem
+    // sucesso verificado e o outro reprova (ex.: overclaim). Delega ao melhor modelo elegível desse fornecedor.
+    const lead = providerLead(store, q, min, available)!;
+    const pick = available.find((e) => e.executor === lead.winner) as CandidateEval;
+    const index = available.indexOf(pick);
+    if (index > 0) { available.splice(index, 1); available.unshift(pick); }
+    confidence = "média";
+    why.unshift(`histórico do fornecedor em kind=${q.kind}: ${lead.winner} ${lead.winnerStats} vs ${lead.loser} ${lead.loserStats}; modelo escolhido pela complexidade da tarefa`);
+    return finishDecision(pick);
   } else {
     const leastSampled = [...available].sort((a, b) => a.evidence.n - b.evidence.n)[0] as CandidateEval;
     const tops = [...providersLeft].map((p) => available.find((e) => e.executor === p) as CandidateEval);
@@ -404,33 +436,37 @@ function recommendResult(
     };
   }
 
-  // Mesmo fornecedor do cérebro: fazer você mesmo se for o seu modelo; senão delegar ao outro modelo do mesmo fornecedor.
-  if (q.brain && best.executor === q.brain) {
-    const sameAsBrain = q.brainModel ? namesOf(best, catalog).includes(q.brainModel.toLowerCase()) : null;
-    if (sameAsBrain !== false) {
-      return {
-        ...base,
-        decision: {
-          action: "self",
-          executor: q.brain,
-          model: best.model,
-          confidence,
-          why: [
-            sameAsBrain === true
-              ? `o melhor candidato é você mesmo (${best.model}): faça sem delegar`
-              : `o melhor candidato é do seu cliente (${label(best)}); se você já é esse modelo, faça sem delegar; se não, delegue ao ${q.brain} com model=${best.model}`,
-            ...why,
-          ],
-        },
-        explore: null,
-      };
+  return finishDecision(best);
+
+  function finishDecision(chosen: CandidateEval): Recommendation {
+    // Mesmo fornecedor do cérebro: fazer você mesmo se for o seu modelo; senão delegar ao outro modelo do mesmo fornecedor.
+    if (q.brain && chosen.executor === q.brain) {
+      const sameAsBrain = q.brainModel ? namesOf(chosen, catalog).includes(q.brainModel.toLowerCase()) : null;
+      if (sameAsBrain !== false) {
+        return {
+          ...base,
+          decision: {
+            action: "self",
+            executor: q.brain,
+            model: chosen.model,
+            confidence,
+            why: [
+              sameAsBrain === true
+                ? `o melhor candidato é você mesmo (${chosen.model}): faça sem delegar`
+                : `o melhor candidato é do seu cliente (${label(chosen)}); se você já é esse modelo, faça sem delegar; se não, delegue ao ${q.brain} com model=${chosen.model}`,
+              ...why,
+            ],
+          },
+          explore: null,
+        };
+      }
     }
+    return {
+      ...base,
+      decision: { action: "delegate", executor: chosen.executor, model: chosen.model, confidence, why: [`delegue a ${label(chosen)}: melhor opção disponível para esta tarefa`, ...why] },
+      explore: null,
+    };
   }
-  return {
-    ...base,
-    decision: { action: "delegate", executor: best.executor, model: best.model, confidence, why: [`delegue a ${label(best)}: melhor opção disponível para esta tarefa`, ...why] },
-    explore: null,
-  };
 }
 
 export function recommend(

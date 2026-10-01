@@ -77,6 +77,33 @@ describe("recomendação adaptativa", () => {
     assert.equal(selfProvider.decision.action, "delegate"); assert.equal(selfProvider.decision.model, "claude-haiku-4-5-20251001");
     assert.ok(selfProvider.decision.why.some((w) => w.includes("economiza a cota do seu modelo")));
   });
+  it("bateria real T13: histórico do fornecedor decide quando o modelo selecionado não tem evidência própria", () => {
+    sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
+    const q = { kind: "implement" as const, tags: ["mjs"], risk: "low" as const, brain: "codex" as const, brainModel: "gpt-6-astra" };
+    // Histórico com Opus (Claude ok) e Codex (overclaim); a seleção de hoje escolhe outro modelo Claude (Sonnet/Haiku).
+    seed(store, [
+      ...Array.from({ length: 4 }, () => ({ executor: "claude" as const, model: "claude-opus-5-5", tags: ["mjs"], ok: true })),
+      ...Array.from({ length: 4 }, () => ({ executor: "codex" as const, model: null, tags: ["mjs"], ok: false, overclaim: true })),
+    ]);
+    for (const query of [q, (({ brainModel: _x, ...rest }) => rest)(q)]) {
+      const r = recommend(store, cfg, query, allUp, adaptiveCatalog);
+      assert.equal(r.decision.action, "delegate", JSON.stringify(r.decision));
+      assert.equal(r.decision.executor, "claude");
+      assert.notEqual(r.decision.model, "claude-opus-5-5", "modelo pela complexidade, não pelo histórico");
+    }
+    const r = recommend(store, cfg, (({ brainModel: _x, ...rest }) => rest)(q), allUp, adaptiveCatalog);
+    assert.ok(r.decision.why.some((w) => /histórico do fornecedor/.test(w)));
+    // Diferença pouco nítida: continua juízo.
+    const sb2 = makeSandbox(); const store2 = new Store(sb2.root);
+    seed(store2, [
+      ...Array.from({ length: 4 }, (_, i) => ({ executor: "claude" as const, model: "claude-opus-5-5", tags: ["mjs"], ok: i < 2 })),
+      ...Array.from({ length: 4 }, (_, i) => ({ executor: "codex" as const, model: null, tags: ["mjs"], ok: i < 1 })),
+    ]);
+    // Como no T13 real (cérebro sem --brain-model): sem a economia de cota do cérebro, vale só a evidência.
+    const { brainModel: _b, ...noBrainModel } = q;
+    try { assert.equal(recommend(store2, loadConfig(sb2.root), noBrainModel, allUp, adaptiveCatalog).decision.action, "judgment"); }
+    finally { sb2.cleanup(); }
+  });
   it("redução só dentro dos pisos; extra não ganha por evidência sem ack+include", () => {
     sb = makeSandbox(); const store = new Store(sb.root), cfg = loadConfig(sb.root);
     seed(store, Array.from({ length: 12 }, () => ({ executor: "codex" as const, model: "gpt-6-luna", ok: true })));

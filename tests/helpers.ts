@@ -70,7 +70,8 @@ export function makeSandbox(configPatch: Record<string, unknown> = {}): Sandbox 
   writeCfg();
 
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("DUO_") && !k.startsWith("FAKE_")) env[k] = v;
+  // Os testes simulam a execução fora do sandbox do Codex (onde duo delegate realmente roda).
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("DUO_") && !k.startsWith("FAKE_") && !k.startsWith("CODEX_SANDBOX")) env[k] = v;
   Object.assign(env, { DUO_NO_UPDATE_CHECK: "1", HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), FAKE_LOG: logPath });
 
   const readLog = () =>

@@ -305,3 +305,20 @@ it("rodada 12: resposta do assistente em um modelo sem uso registrado nele é co
   assert.equal(out.summary.state, "failed", JSON.stringify(out.summary));
   assert.match(String(out.summary.outcome), /uso registrado/);
 });
+
+it("rodada 13: variante [1m] do modelo do cérebro continua sendo o próprio cérebro", async () => {
+  const { sameBaseModel } = await import("../src/adapters/catalog.js");
+  const c = cache();
+  assert.ok(sameBaseModel(c, "claude", "claude-fable-5-1[1m]", "claude-fable-5-1"));
+  assert.ok(sameBaseModel(c, "claude", "claude-opus-5-5-20260901", "claude-opus-5-5"));
+  assert.ok(sameBaseModel(null, "claude", "opus", "claude-opus-5-5[1m]"));
+  assert.ok(!sameBaseModel(c, "claude", "claude-opus-5-5", "claude-sonnet-5-5"));
+  s = makeSandbox({ routing: { include: ["claude:claude-fable-5-1[1m]"] }, billing: { acknowledgeUnverifiableExtraUsage: { claude: true } } });
+  const out = await run(req({ brain: "claude", brainModel: "claude-fable-5-1", executor: "claude", model: "claude-fable-5-1[1m]", effort: "high", isolation: "worktree" }), {
+    FAKE_CLAUDE_REPORTED_MODEL: "claude-fable-5-1[1m]", FAKE_CLAUDE_MODEL_USAGE: JSON.stringify({ "claude-fable-5-1": {} }),
+    FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }),
+  });
+  assert.notEqual(out.summary.state, "succeeded", JSON.stringify(out.summary));
+  assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
+  assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+});

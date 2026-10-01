@@ -1080,3 +1080,16 @@ describe("catálogo das contas, mesmo fornecedor e arte", () => {
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
   });
 });
+
+describe("sandbox do Codex", () => {
+  it("bateria real T15: duo delegate dentro do sandbox do Codex recusa antes de executar e não cria task", async () => {
+    const s = setup();
+    for (const extra of [{ CODEX_SANDBOX: "seatbelt" }, { CODEX_SANDBOX_NETWORK_DISABLED: "1" }] as Record<string, string>[]) {
+      const out = await run(s, baseRequest("claude"), {}, extra);
+      assert.equal(out.exitCode, 3, "EXIT.blocked");
+      assert.match(String(out.summary.error), /sandbox do Codex/);
+    }
+    assert.equal(s.execCalls().length, 0);
+    assert.equal(new Store(s.root).listRuns().length, 0, "nenhum run/task criado");
+  });
+});

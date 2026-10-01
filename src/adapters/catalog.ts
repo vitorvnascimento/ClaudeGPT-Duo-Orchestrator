@@ -537,6 +537,19 @@ export function reportedMatchesRequested(catalog: Catalog | null, provider: Prov
   return !rep.includes("[") && req.includes("[") && req.replace(/\[[^\]]*\]$/, "") === rep;
 }
 
+/**
+ * Independência do cérebro: mesmo modelo base, ignorando variante de contexto ([1m]) e sufixo de data. Diferente
+ * de sameModelIdentity (que separa variantes por causa da cobrança): aqui "Fable" e "Fable [1m]" são o mesmo modelo.
+ * Alias de família não resolvido casa com qualquer modelo da família (na dúvida, bloqueia).
+ */
+export function sameBaseModel(catalog: Catalog | null, provider: Provider, a: string, b: string): boolean {
+  const base = (name: string) => modelKey((catalog && findModel(catalog, provider, name)?.id) ?? name).replace(/\[[^\]]*\]$/, "");
+  const ba = base(a), bb = base(b);
+  if (ba === bb) return true;
+  const inFamily = (alias: string, id: string) => FAMILY_ALIAS.test(alias) && new RegExp(`(^|-)${alias.toLowerCase()}(-|$)`).test(id);
+  return inFamily(ba, bb) || inFamily(bb, ba);
+}
+
 export function sameModelIdentity(catalog: Catalog | null, provider: Provider, a: string, b: string, family: "strict" | "loose" = "strict"): boolean {
   const resolve = (name: string) => (catalog && findModel(catalog, provider, name)?.id) ?? name;
   const ra = resolve(a), rb = resolve(b);

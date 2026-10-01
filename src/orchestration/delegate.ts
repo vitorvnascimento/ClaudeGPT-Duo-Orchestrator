@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -220,6 +220,11 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   }
   if (Number(env.DUO_DEPTH ?? "0") >= 1) {
     return invalid("delegação recursiva bloqueada: este processo é um executor (profundidade 1)", [], EXIT.blocked);
+  }
+  // Dentro do sandbox do Codex (cérebro Codex sem aprovação de escalada) o executor não consegue iniciar: recusa
+  // antes de criar task, sem gastar invocação nem tentativa da cadeia.
+  if (env.CODEX_SANDBOX || env.CODEX_SANDBOX_NETWORK_DISABLED === "1") {
+    return invalid("duo delegate está rodando dentro do sandbox do Codex, onde o executor não inicia (rede, login e ~/.codex ficam indisponíveis). Peça aprovação para executar este comando fora do sandbox e rode de novo; nada foi executado nem contabilizado.", [], EXIT.blocked);
   }
   const top = repoRoot(opts.cwd);
   if (!top) return invalid("duo delegate requer um repositório Git (o estado base é registrado pelo Git)");
@@ -439,7 +444,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!chosen && autoUnavailable && task.invocations === 0) {
           const other: Provider = task.executor === "claude" ? "codex" : "claude";
           const alt = selectFor(other);
-          if (alt && !(req.brain === other && req.brainModel && sameModelIdentity(catalog, other, alt.model, req.brainModel, "loose"))) {
+          if (alt && !(req.brain === other && req.brainModel && sameBaseModel(catalog, other, alt.model, req.brainModel))) {
             task.executor = other;
             // Sessão nativa pertence ao cliente anterior: o novo fornecedor começa uma sessão própria.
             // Base, worktree e snapshot continuam (o trabalho e o contexto do pedido são os mesmos).
@@ -506,7 +511,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && sameModelIdentity(catalog, task.executor, task.model.requested, req.brainModel, "loose")) {
+      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && sameBaseModel(catalog, task.executor, task.model.requested, req.brainModel)) {
         blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
@@ -795,7 +800,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       // O executor nunca pode ser o próprio modelo do cérebro (a revisão/implementação perderia a independência).
       const brainModel = ctx.req.brainModel;
       if (brainModel && task.executor === task.brain) {
-        if (sameModelIdentity(ctx.catalog, task.executor, model, brainModel, "loose")) {
+        if (sameBaseModel(ctx.catalog, task.executor, model, brainModel)) {
           return `o executor rodou no próprio modelo do cérebro (${info.id}); resultado não integrado — faça no cérebro ou delegue a outro modelo`;
         }
       }
@@ -910,7 +915,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       const paid = info ? extraUsage(info) : /\[[^\]]+\]$/.test(u);
       if (paid && !matchesRequest(u) && !(info && automaticModelAllowed(info, cfg))) {
         nativeFailure = `uso em ${u} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
-      } else if (!servedAs(u) && ctx.req.brainModel && task.executor === task.brain && sameModelIdentity(ctx.catalog, task.executor, ctx.req.brainModel, u, "loose")) {
+      } else if (!servedAs(u) && ctx.req.brainModel && task.executor === task.brain && sameBaseModel(ctx.catalog, task.executor, ctx.req.brainModel, u)) {
         nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${u}); resultado não integrado`;
       }
     }

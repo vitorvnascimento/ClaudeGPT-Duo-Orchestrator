@@ -435,6 +435,54 @@ function unsupportedRootRoutingEntry(line: string): string | null {
   return null;
 }
 
+/**
+ * Linhas lógicas do TOML: o conteúdo de strings multilinha ("""…""" e '''…''') nunca vira linha própria, então
+ * texto como `model_provider = "openai"` dentro de developer_instructions não é lido como configuração. A chave
+ * dona da string fica com o valor substituído por "" (não interessa à checagem). Abertura sem fechamento até o
+ * fim do arquivo lança erro: o chamador trata como TOML não interpretável (falha fechado).
+ */
+function tomlLogicalLines(text: string): string[] {
+  const out: string[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i]!;
+    let result = "";
+    for (;;) {
+      const found = multilineOpening(line);
+      if (!found) { result += line; break; }
+      const { at, delim } = found;
+      result += line.slice(0, at) + '""';
+      let rest = line.slice(at + 3);
+      let close = rest.indexOf(delim);
+      while (close < 0) {
+        i++;
+        if (i >= lines.length) throw new Error("string TOML multilinha sem fechamento");
+        rest = lines[i]!;
+        close = rest.indexOf(delim);
+      }
+      line = rest.slice(close + 3);
+    }
+    out.push(result);
+  }
+  return out;
+}
+
+/** Primeiro """ ou ''' fora de strings de uma linha e de comentários. */
+function multilineOpening(line: string): { at: number; delim: string } | null {
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (ch === "#") return null;
+    if (ch === '"' || ch === "'") {
+      if (line.startsWith(ch.repeat(3), i)) return { at: i, delim: ch.repeat(3) };
+      // String de uma linha: pula até o fechamento (básica aceita escapes; literal não).
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "\\" ? 2 : 1;
+      i = j;
+    }
+  }
+  return null;
+}
+
 function parseCodexConfig(file: string): CodexConfigSnapshot {
   const snapshot: CodexConfigSnapshot = {
     file,
@@ -453,7 +501,7 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
     sandboxWorkspaceNetworkAccess: undefined,
   };
   let table = "";
-  for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
+  for (const raw of tomlLogicalLines(readFileSync(file, "utf8"))) {
     const line = tomlWithoutComment(raw);
     if (!line) continue;
     const header = tomlHeader(line);
@@ -690,6 +738,46 @@ function validateStandaloneManagedCodexSnapshot(
   if (snapshot.sandboxWorkspaceNetworkAccess === true) warnings.push(`${snapshot.file}: sandbox_workspace_write.network_access=true (a ponte força false no executor)`);
 }
 
+/**
+ * Servidores MCP declarados nas configs que o Codex carrega (usuário, salvo com ignoreUserConfig, e projeto).
+ * Só nomes de chave TOML simples ([A-Za-z0-9_-]) podem ser desligados com -c; os demais voltam em `unsupported`.
+ * Arquivo ilegível ou não interpretável: listado em `unsupported` (o chamador falha fechado).
+ */
+export function codexMcpServerNames(env: NodeJS.ProcessEnv, home: string, cwd: string, ignoreUserConfig = false): { names: string[]; unsupported: string[] } {
+  const files = [
+    ...(ignoreUserConfig ? [] : [join(env.CODEX_HOME ?? join(home, ".codex"), "config.toml")]),
+    join(cwd, ".codex", "config.toml"),
+  ];
+  const names = new Set<string>(), unsupported: string[] = [];
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    let lines: string[];
+    try { lines = tomlLogicalLines(readFileSync(f, "utf8")); }
+    catch { unsupported.push(`${f} (não interpretável)`); continue; }
+    let table = "";
+    for (const raw of lines) {
+      const line = tomlWithoutComment(raw);
+      const header = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line);
+      if (header) {
+        table = header[1]!;
+        if (/^mcp_servers\s*\./.test(table)) {
+          const m = /^mcp_servers\s*\.\s*([A-Za-z0-9_-]+)(?:\s*\.|$)/.exec(table);
+          if (m) names.add(m[1]!); else unsupported.push(`${f}: [${table}]`);
+        } else if (table === "mcp_servers") unsupported.push(`${f}: [mcp_servers] com chaves internas`);
+        continue;
+      }
+      const dotted = table === "" ? /^mcp_servers\s*\.\s*([^=\s]+?)\s*(?:\.|=)/.exec(line) : null;
+      if (dotted) {
+        if (/^[A-Za-z0-9_-]+$/.test(dotted[1]!)) names.add(dotted[1]!); else unsupported.push(`${f}: ${dotted[1]}`);
+      } else if (table === "mcp_servers" && /^[A-Za-z0-9_-]+\s*=/.test(line)) {
+        const n = /^([A-Za-z0-9_-]+)/.exec(line)![1]!;
+        names.add(n);
+      }
+    }
+  }
+  return { names: [...names].sort(), unsupported };
+}
+
 /** Modelo padrão do Codex (chave `model` de primeiro nível do config.toml; não é segredo). */
 export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, ignoreUserConfig = false): string | null {
   const files = ignoreUserConfig
@@ -698,8 +786,10 @@ export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, i
   let model: string | null = null;
   for (const f of files) {
     if (!existsSync(f)) continue;
-    for (const raw of readFileSync(f, "utf8").split(/\r?\n/)) {
-      const line = raw.replace(/#.*$/, "").trim();
+    let lines: string[];
+    try { lines = tomlLogicalLines(readFileSync(f, "utf8")); } catch { continue; }
+    for (const raw of lines) {
+      const line = tomlWithoutComment(raw);
       if (line.startsWith("[")) break; // só o nível raiz
       const m = /^model\s*=\s*["']([^"']+)["']/.exec(line);
       if (m) model = m[1] as string;

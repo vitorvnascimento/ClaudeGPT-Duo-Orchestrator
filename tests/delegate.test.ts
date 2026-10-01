@@ -1029,6 +1029,29 @@ describe("catálogo das contas, mesmo fornecedor e arte", () => {
     assert.doesNotMatch((s2.execCalls()[0] as { args: string[] }).args.join(" "), /--disable/);
   });
 
+  it("qualidade real Q12: executor Codex desliga os servidores MCP do usuário e do projeto", async () => {
+    const s = setup();
+    const userCfg = join(s.home, ".codex", "config.toml");
+    s.write(".codex/config.toml", '[mcp_servers.projeto_mcp]\ncommand = "x"\n');
+    writeFileSync(userCfg, [
+      'model = "gpt-6.1-sol"',
+      "[mcp_servers.headroom]", 'command = "headroom"',
+      "[mcp_servers.node_repl]", 'command = "node"', "[mcp_servers.node_repl.env]", 'A = "1"',
+      'notes = """', "[mcp_servers.falso]", '"""',
+    ].join("\n"));
+    await run(s, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
+    const args = (s.execCalls()[0] as { args: string[] }).args.join(" ");
+    for (const n of ["headroom", "node_repl", "projeto_mcp"]) assert.match(args, new RegExp(`--config mcp_servers\\.${n}\\.enabled=false`));
+    assert.doesNotMatch(args, /mcp_servers\.falso/, "texto de string multilinha não é servidor");
+    // Nome que a ponte não consegue desligar (chave entre aspas): recusa antes de executar.
+    const s2 = setup();
+    writeFileSync(join(s2.home, ".codex", "config.toml"), '[mcp_servers."com espaco"]\ncommand = "x"\n');
+    const out = await run(s2, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
+    assert.notEqual(out.summary.state, "succeeded");
+    assert.equal(s2.execCalls().length, 0);
+    assert.match(JSON.stringify(out.summary), /MCP/);
+  });
+
   it("provas do rollout do Codex: modelo efetivo, IDs de resposta do servidor e ferramentas, sem copiar o conteúdo", async () => {
     const s = setup();
     const out = await run(s, baseRequest("claude", { model: "gpt-6-astra" }), { FAKE_WRITE: APP_EDIT });

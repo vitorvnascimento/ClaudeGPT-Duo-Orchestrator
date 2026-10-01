@@ -19,6 +19,21 @@ const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
 const DRY_RUN = argv.includes("--dry-run");
 const ALLOW_LOOPBACK_PROXY = argv.includes("--allow-loopback-proxy");
+// Com proxy loopback autorizado, o rollout registra o provider configurado (ex.: "headroom") em vez de "openai".
+// A prova de execução continua: modelo, originador codex_exec e IDs resp_ do servidor.
+const LOOPBACK_PROVIDER = (() => {
+  if (!ALLOW_LOOPBACK_PROXY) return null;
+  try {
+    for (const raw of readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"), "utf8").split(/\r?\n/)) {
+      const line = raw.replace(/#.*$/, "").trim();
+      if (line.startsWith("[")) break;
+      const m = /^model_provider\s*=\s*["']([^"']+)["']/.exec(line);
+      if (m) return m[1];
+    }
+  } catch {}
+  return null;
+})();
+const okProvider = (p) => p === "openai" || (LOOPBACK_PROVIDER !== null && p === LOOPBACK_PROVIDER);
 const POINTS = { Q1: 12, Q2: 12, Q3: 8, Q4: 8, Q5: 8, Q6: 8, Q7: 8, Q8: 8, Q9: 3, Q10: 3, Q11: 6, Q12: 6, Q13: 5, Q14: 5 };
 assert.equal(Object.values(POINTS).reduce((sum, points) => sum + points, 0), 100);
 if (!DRY_RUN && (!argv.includes("--confirm-quota") || !opt("--base"))) {
@@ -124,6 +139,17 @@ const npmTest = (repo) => spawnSync("npm", ["test"], { cwd: repo, env: cleanEnv(
 const check = (name, ok, evidence) => ({ name, ok: Boolean(ok), evidence });
 const short = (v) => (typeof v === "string" ? v : (JSON.stringify(v) ?? String(v))).slice(0, 300);
 const readJson = (p) => existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null;
+// Origem (auto/explícita) de modelo e esforço: registrada na Chain (v0.3.0), lida aqui direto do disco:
+// maior revisão em .duo/runs/<run>/chains/<chain>.d/<rev>.json; sem revisões, o arquivo legado <chain>.json.
+function originOf(repo, task) {
+  const chainId = task?.selection?.chainId ?? task?.taskId;
+  if (!task?.runId || !chainId) return null;
+  const base = join(repo, ".duo", "runs", task.runId, "chains");
+  const dir = join(base, `${chainId}.d`);
+  const revs = existsSync(dir) ? readdirSync(dir).filter((f) => /^\d{12}\.json$/.test(f)).sort() : [];
+  const chain = revs.length ? readJson(join(dir, revs.at(-1))) : readJson(join(base, `${chainId}.json`));
+  return chain?.origin ?? task?.selection?.origin ?? null;
+}
 const highEffort = (effort) => ["high", "xhigh", "max"].includes(effort);
 
 function filesUnder(dir) {
@@ -145,7 +171,7 @@ function rolloutSnapshot() {
 
 function privacyCheck(stage) {
   // Campos privados e endereços, não a palavra credits em uma descrição pública de modelo.
-  const privateData = /\b(?:accountId|planType)\b|["']?\b(?:credits|e-?mail)\b["']?\s*[:=]|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+/i;
+  const privateData = /\b(?:accountId|planType)\b|["']?\b(?:credits|e-?mail)\b["']?\s*[:=]|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}\b/i;
   const files = allRepos().flatMap((r) => filesUnder(join(r, ".duo")));
   const leaks = files.filter((f) => privateData.test(readFileSync(f, "utf8")));
   return check(`independente (${stage}): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail`, files.length > 0 && leaks.length === 0, { scanned: files.length, leaks });
@@ -189,7 +215,7 @@ const CRITERIA = {
         check("só src/preco.js alterado", JSON.stringify(out?.filesChanged) === '["src/preco.js"]' && !out?.outOfScope?.length, out?.filesChanged),
         check("independente: npm test passa no repositório", npmTest(repo) === 0),
         check("rollout do Codex existe e é desta sessão (mesmo ID e diretório)", ro && ro.id === task?.native?.sessionId && ro.cwd === repo, ro && { file: ro.file, id: ro.id, cwd: ro.cwd }),
-        check("rollout: modelo gpt-6-astra, provedor openai, originador codex_exec", ro?.model === "gpt-6-astra" && ro?.provider === "openai" && ro?.originator === "codex_exec", ro && { model: ro.model, provider: ro.provider, originator: ro.originator }),
+        check("rollout: modelo gpt-6-astra, provedor openai, originador codex_exec", ro?.model === "gpt-6-astra" && okProvider(ro?.provider) && ro?.originator === "codex_exec", ro && { model: ro.model, provider: ro.provider, originator: ro.originator }),
         check("rollout: IDs de resposta emitidos pelo servidor da OpenAI (resp_…)", ro?.responseIds.length > 0 && ro.responseIds.every((r) => /^resp_/.test(r)), ro?.responseIds),
         check("ponte registrou o mesmo modelo via rollout", task?.model?.reported === "gpt-6-astra" && task?.model?.reportedVia === "codex-rollout", task?.model),
         check("executor rodou com hooks/plugins do usuário desligados", task && /"--disable",\s*"hooks",\s*"--disable",\s*"plugins"/.test(readInvocation(task)), task && readInvocation(task).slice(0, 300)),
@@ -220,7 +246,7 @@ const CRITERIA = {
       checks: [
         check("ponte: succeeded com imagem verificada", out?.state === "succeeded" && out?.images?.some((i) => i.path === "assets/foguete.png"), out?.images ?? out?.outcome),
         check("independente: assets/foguete.png é PNG real", isPng(asset)),
-        check("rollout: modelo gpt-6-astra via openai", ro?.model === "gpt-6-astra" && ro?.provider === "openai", ro && { model: ro.model, provider: ro.provider }),
+        check("rollout: modelo gpt-6-astra via openai", ro?.model === "gpt-6-astra" && okProvider(ro?.provider), ro && { model: ro.model, provider: ro.provider }),
         check("rollout: chamada à ferramenta image_gen__imagegen", ro?.usedImageTool, ro?.file),
         check("independente: SHA-256 do asset = imagem gerada pelo Codex nesta sessão", assetSha && gen.some((g) => g.sha === assetSha), { assetSha, generated: gen }),
         check("ponte: generatedByExecutorTool=true", out?.evidence?.images?.[0]?.generatedByExecutorTool === true, out?.evidence?.images),
@@ -276,7 +302,7 @@ const CRITERIA = {
         check("ponte: succeeded", out?.state === "succeeded", out?.outcome),
         check("nenhum arquivo alterado (ponte e git)", !out?.filesChanged?.length && git(repo, "status", "--porcelain") === before, out?.filesChanged),
         check("rollout: sandbox read-only imposto", ro?.sandbox === "read-only", ro?.sandbox),
-        check("rollout: modelo gpt-6-astra via openai", ro?.model === "gpt-6-astra" && ro?.provider === "openai", ro?.model),
+        check("rollout: modelo gpt-6-astra via openai", ro?.model === "gpt-6-astra" && okProvider(ro?.provider), ro?.model),
         check("achou o bug (percentual não dividido por 100)", /100/.test(text) && /percent/i.test(text), text.slice(0, 300)),
       ],
     };
@@ -362,7 +388,7 @@ const CRITERIA = {
       checks: [
         check("sessão do cérebro (Opus 5.5) terminou sem erro", r.status === 0 && brain?.is_error === false, (brain?.result ?? r.stderr ?? "").slice(0, 200)),
         check("arte delegada ao Codex e verificada pela ponte", Boolean(art), tasks.map((t) => `${t.executor}/${t.model?.requested}:${t.kind}:${t.state}`)),
-        check("rollout da arte: gpt-6-astra via openai + ferramenta de imagem", ro?.model === "gpt-6-astra" && ro?.provider === "openai" && ro?.usedImageTool, ro && { model: ro.model, tool: ro.usedImageTool }),
+        check("rollout da arte: gpt-6-astra via openai + ferramenta de imagem", ro?.model === "gpt-6-astra" && okProvider(ro?.provider) && ro?.usedImageTool, ro && { model: ro.model, tool: ro.usedImageTool }),
         check("SHA-256 de assets/hero.png = imagem gerada pelo Codex", existsSync(asset) && gen.some((g) => g.sha === sha256(asset))),
         check("código: node check.mjs passa", spawnSync("node", ["check.mjs"], { cwd: repo }).status === 0),
         check("resposta do cérebro cita Opus e Astra", /opus/i.test(brain?.result ?? "") && /astra/i.test(brain?.result ?? ""), (brain?.result ?? "").slice(0, 240)),
@@ -443,11 +469,11 @@ const CRITERIA = {
       title: "Escolha adaptativa leve: catálogo light, esforço low e execução comprovada",
       checks: [
         check("catálogo atual: modelo escolhido é light (gpt-6-luna esperado)", catalog.exit === 0 && pc?.ok && !pc.stale && selected?.source === "discovered" && selected?.tier === "light" && !selected.extraUsage && selected.efforts.includes("low"), selected),
-        check("task.selection: escolha automática light/low", task?.executor === "codex" && task?.selection?.adaptive && task.selection.tier === "light" && task.selection.effort === "low" && task.selection.origin?.model === "auto" && task.selection.origin?.effort === "auto", task?.selection),
+        check("task.selection: escolha automática light/low", task?.executor === "codex" && task?.selection?.adaptive && task.selection.tier === "light" && task.selection.effort === "low" && originOf(repo, task)?.model === "auto" && originOf(repo, task)?.effort === "auto", task?.selection),
         check("ponte: succeeded e npm test executado/aprovado", out?.state === "succeeded" && task?.verification?.acceptance?.length === 1 && task.verification.acceptance.every((a) => a.ran && a.passed && JSON.stringify(a.argv) === '["npm","test"]'), task?.verification?.acceptance ?? out?.outcome),
         check("só src/preco.js alterado; testes intactos", JSON.stringify(out?.filesChanged) === '["src/preco.js"]' && !out?.outOfScope?.length && sha256(join(repo, "tests/preco.test.js")) === testsBefore, out?.filesChanged),
         check("independente: npm test falhava antes e passa após a implementação", failedBefore && npmTest(repo) === 0),
-        check("rollout independente desta sessão/diretório: modelo selecionado e effort low", ro && ro.id === task?.native?.sessionId && ro.cwd === repo && ro.model === selected?.id && ro.effort === "low" && ro.provider === "openai" && ro.originator === "codex_exec", ro),
+        check("rollout independente desta sessão/diretório: modelo selecionado e effort low", ro && ro.id === task?.native?.sessionId && ro.cwd === repo && ro.model === selected?.id && ro.effort === "low" && okProvider(ro.provider) && ro.originator === "codex_exec", ro),
         check("rollout: IDs de resposta do servidor", ro?.responseIds.length > 0 && ro.responseIds.every((id) => /^resp_/.test(id)), ro?.responseIds),
         check("ponte confirma o mesmo modelo via rollout", selected && task?.model?.requested === selected.id && task.model.reported === selected.id && task.model.reportedVia === "codex-rollout", task?.model),
       ],
@@ -491,11 +517,11 @@ const CRITERIA = {
       title: "Piso deep por risco/escopo: executa com esforço alto e bloqueia Luna antes de executar",
       checks: [
         check("catálogo atual: modelo deep (gpt-6-astra esperado) anuncia high", catalog.exit === 0 && pc?.ok && !pc.stale && selected?.source === "discovered" && selected?.tier === "deep" && !selected.extraUsage && selected.efforts.includes(request.effort), selected),
-        check("task.selection: modelo automático deep, esforço explícito >= high", task?.executor === "codex" && task?.selection?.adaptive && task.selection.tier === "deep" && highEffort(task.selection.effort) && task.selection.origin?.model === "auto" && task.selection.origin?.effort === "explicit", task?.selection),
+        check("task.selection: modelo automático deep, esforço explícito >= high", task?.executor === "codex" && task?.selection?.adaptive && task.selection.tier === "deep" && highEffort(task.selection.effort) && originOf(repo, task)?.model === "auto" && originOf(repo, task)?.effort === "explicit", task?.selection),
         check("ponte: succeeded e npm test executado/aprovado", out?.state === "succeeded" && task?.verification?.acceptance?.length === 1 && task.verification.acceptance.every((a) => a.ran && a.passed && JSON.stringify(a.argv) === '["npm","test"]'), task?.verification?.acceptance ?? out?.outcome),
         check("só src/auth/token.js alterado; testes intactos", JSON.stringify(out?.filesChanged) === '["src/auth/token.js"]' && !out?.outOfScope?.length && sha256(join(repo, "tests/token.test.js")) === testsBefore, out?.filesChanged),
         check("independente: npm test falhava antes e passa após a implementação", failedBefore && npmTest(repo) === 0),
-        check("rollout independente desta sessão/diretório: modelo deep e esforço >= high anunciado", ro && ro.id === task?.native?.sessionId && ro.cwd === repo && ro.model === selected?.id && highEffort(ro.effort) && selected?.efforts.includes(ro.effort) && ro.provider === "openai" && ro.originator === "codex_exec", ro),
+        check("rollout independente desta sessão/diretório: modelo deep e esforço >= high anunciado", ro && ro.id === task?.native?.sessionId && ro.cwd === repo && ro.model === selected?.id && highEffort(ro.effort) && selected?.efforts.includes(ro.effort) && okProvider(ro.provider) && ro.originator === "codex_exec", ro),
         check("rollout: IDs de resposta do servidor", ro?.responseIds.length > 0 && ro.responseIds.every((id) => /^resp_/.test(id)), ro?.responseIds),
         check("ponte confirma o mesmo modelo via rollout", selected && task?.model?.requested === selected.id && task.model.reported === selected.id && task.model.reportedVia === "codex-rollout", task?.model),
         check("Luna: blocked por piso deep (não por login/cota)", blocked.out?.state === "blocked" && blocked.task?.state === "blocked" && /(?:piso|nível) deep/i.test(blocked.out?.outcome ?? "") && /gpt-6-luna.*light/i.test(blocked.out?.outcome ?? ""), blocked.out?.outcome),

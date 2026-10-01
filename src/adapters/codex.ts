@@ -1,6 +1,8 @@
 // Adaptador do Codex via `codex exec --json` (CLI oficial, login ChatGPT).
 // Não usa `codex mcp-server` nem o binário embutido na extensão do VS Code.
+import { homedir } from "node:os";
 import { join } from "node:path";
+import { codexMcpServerNames } from "../permissions/auth.js";
 import { loadSchema, validate } from "../schema.js";
 import { isWriteKind, type ExecutorReport } from "../state/types.js";
 import { writeExecutorSchema } from "./report-schema.js";
@@ -60,6 +62,15 @@ export class CodexAdapter implements ExecutorAdapter {
       // Hooks de plugins do usuário (ex.: Ruflo) gravavam arquivos no projeto durante a delegação real.
       args.push("--disable", "hooks", "--disable", "plugins");
       enforced.push("hooks e plugins do usuário desligados no executor (--disable hooks/plugins)");
+      // Servidores MCP do usuário: sem modo interativo, chamadas que pedem aprovação falham e travam a tarefa
+      // (ex.: ler um arquivo por um MCP). Mesmo princípio do --strict-mcp-config do executor Claude.
+      if (caps.flags.config) {
+        const home = input.env.HOME ?? homedir();
+        const mcp = codexMcpServerNames(input.env, home, input.cwd, cfg.executors.codex.ignoreUserConfig && caps.flags.ignoreUserConfig);
+        if (mcp.unsupported.length) throw new Error(`servidores MCP do Codex em forma que a ponte não consegue desligar: ${mcp.unsupported.join("; ")}`);
+        for (const name of mcp.names) args.push("--config", `mcp_servers.${name}.enabled=false`);
+        if (mcp.names.length) enforced.push(`servidores MCP do usuário desligados no executor: ${mcp.names.join(", ")}`);
+      }
     }
     if (input.model) args.push("--model", input.model);
     if (input.effort) {

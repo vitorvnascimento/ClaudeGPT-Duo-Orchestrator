@@ -14,6 +14,7 @@ import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, ParsedOutcome } from "../adapters/types.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, headCommit, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
+import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { authBlockReason, checkAuth, childEnv, codexConfiguredModel, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import { inScope, isDenied, validateScope, type ScopeEntry } from "../permissions/scope.js";
 import { createStreamRedactor, redact, redactDeep } from "../redact.js";
@@ -405,8 +406,8 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       const id = (value: string | null) => value && (catalog ? findModel(catalog, executor, value)?.id ?? value : value).toLowerCase();
       return chainPolicy(store.loadChain(run.runId, rootId)!).unavailable.find((a) => a.executor === executor && id(a.model) === id(model));
     };
-    const availableCandidates = (tier: Tier) => {
-      return evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: tier }, liveAvailability(store, cfg, env, authPaths, true), catalog).evals.map((candidate) =>
+    const availableCandidates = async (tier: Tier) => {
+      return evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: tier }, await liveAvailability(store, cfg, env, authPaths, true), catalog).evals.map((candidate) =>
         coolingAttempt(candidate.executor, candidate.model) ? { ...candidate, available: false } : candidate);
     };
     for (;;) {
@@ -436,7 +437,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       }
       if (adaptive && !restoring) {
         if (assessment.signals.includes("risk=high")) task.risk = "high";
-        const candidates = availableCandidates(target);
+        const candidates = await availableCandidates(target);
         const selectFor = (executor: Provider) => selectModel(catalog, cfg, executor, target, { candidates, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: !autoUnavailable && policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
         let chosen = origin.model === "auto" ? selectFor(task.executor) : null;
         // Retomada de tentativa que nunca invocou, travada por cota/capacidade: se o fornecedor atual não tem modelo
@@ -458,7 +459,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (autoUnavailable && !chosen && task.model.requested) execReq.model = task.model.requested;
         execReq.model ??= cfg.executors[task.executor].model ?? undefined;
         if (!execReq.model && task.executor === "codex") {
-          try { execReq.model = codexConfiguredModel(authPaths, env, cfg.executors.codex.ignoreUserConfig) ?? undefined; }
+          try { execReq.model = codexConfiguredModel(authPaths, env, cfg.executors.codex.ignoreUserConfig, await readEffectiveCodexConfig({ cwd: authPaths.projectRoot, env, ignoreUserConfig: cfg.executors.codex.ignoreUserConfig, resolved: resolveExecutable("codex", cfg.executors.codex.command, env) })) ?? undefined; }
           catch { /* padrão ilegível continua desconhecido; piso deep bloqueia abaixo */ }
         }
         const info: ModelInfo | null = execReq.model && catalog ? findModel(catalog, task.executor, execReq.model) : null;
@@ -586,7 +587,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!capacity && task.executor === "codex") catalog = await loadCatalog(store, cfg, { env }).catch(() => catalog);
         const exhausted = quotaStates(store)[task.executor];
         const currentTier = chainPolicy(store.loadChain(run.runId, rootId)!).floor;
-        const evals = availableCandidates(currentTier);
+        const evals = await availableCandidates(currentTier);
         // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
         const providers: Provider[] = capacity || exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
         let next: { executor: Provider; selected: ModelSelection } | null = null;
@@ -619,7 +620,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
           if (!task.model.requested || !nextEffort || effortRank(nextEffort) <= effortRank(task.effort?.requested)) return out;
           nextSelection = { model: task.model.requested, effort: nextEffort, tier: currentTier, reason: ["mesmo modelo, esforço máximo suportado"] };
         } else {
-          const selected = selectModel(catalog, cfg, task.executor, nextTier, { candidates: availableCandidates(nextTier), floor: nextTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+          const selected = selectModel(catalog, cfg, task.executor, nextTier, { candidates: await availableCandidates(nextTier), floor: nextTier, needs: req.needs, minimumEffort, allowDowngrade: false });
           if (!selected) {
             task.limitations.push(`escalada não aplicada: nenhum modelo elegível de nível ${nextTier} ou superior`);
             store.saveTask(task);
@@ -729,9 +730,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const writes = isWriteKind(task.kind);
   const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId, DUO_ATTEMPT: String(chainPolicy(store.loadChain(run.runId, ctx.chainId)!).attempts) });
   const adapter = ADAPTERS[task.executor];
+  const effectiveCodexConfig = task.executor === "codex" ? await readEffectiveCodexConfig({
+    cwd: execCwd, env: execEnv, resolved: ctx.resolved,
+    ignoreUserConfig: cfg.executors.codex.ignoreUserConfig && ctx.caps.flags.ignoreUserConfig,
+  }) : null;
   let plan: ReturnType<ExecutorAdapter["plan"]>;
   try {
-    plan = adapter.plan({
+    const input: Parameters<ExecutorAdapter["plan"]>[0] = {
     resolved: ctx.resolved,
     caps: ctx.caps,
     cfg,
@@ -747,16 +752,18 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     resumeSessionId: ctx.resuming ? task.native.sessionId : null,
     artifactsDir: task.artifactsDir,
     env: execEnv,
-    });
+    };
+    plan = adapter instanceof CodexAdapter ? adapter.plan(input, effectiveCodexConfig) : adapter.plan(input);
   } catch (e) {
     return block(`não foi possível montar a invocação do ${task.executor}: ${(e as Error).message}`);
   }
   // Valida o plano efetivo: flags ausentes não excluem fontes, e a worktree
   // pode carregar settings diferentes das que estavam no diretório do cérebro.
   const sourceIndex = plan.args.indexOf("--setting-sources");
-  const auth = checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
+  const auth = await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
     settingSources: sourceIndex < 0 ? "" : plan.args[sourceIndex + 1] ?? "",
     ignoreUserConfig: plan.args.includes("--ignore-user-config"),
+    effectiveCodexConfig,
   });
   const authReason = authBlockReason(auth);
   if (authReason) return block(`autenticação/cobrança: ${authReason}`);

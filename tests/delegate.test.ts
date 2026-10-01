@@ -378,7 +378,7 @@ describe("esforço explícito nos executores", () => {
       resolved: { ok: true, command: "/bin/cli", prefixArgs: [], source: "path" },
       caps: { version: "1.0.0", flags: { model: true, effort: true, config: true }, missingRequired: [], divergences: [] },
       cfg: loadConfig(s.root), cwd: s.root, kind: "review", prompt: "p", writableAbs: [], denyGlobs: [], acceptanceArgv: [], needs: [],
-      model: "fixed-model", resumeSessionId: null, artifactsDir: new Store(s.root).base, env: {},
+      model: "fixed-model", resumeSessionId: null, artifactsDir: new Store(s.root).base, env: s.env,
     };
     // Captura do argv da 0.2.0; apenas caminhos e JSON do schema são normalizados.
     const expected = {
@@ -526,7 +526,7 @@ describe("autenticação e cobrança (subscription-only)", () => {
     assert.equal(out.exitCode, 3);
     assert.ok(!String(out.summary.outcome).includes("ABCD"));
     writeFileSync(join(s.home, ".codex", "config.toml"), 'model_provider = "omniroute"\n');
-    const out2 = await run(s, baseRequest("claude"));
+    const out2 = await run(s, baseRequest("claude"), { FAKE_CODEX_CONFIG: JSON.stringify({ model_provider: "omniroute" }) });
     assert.match(String(out2.summary.outcome), /model_provider/);
     assert.equal(s.execCalls().length, 0);
   });
@@ -1039,14 +1039,14 @@ describe("catálogo das contas, mesmo fornecedor e arte", () => {
       "[mcp_servers.node_repl]", 'command = "node"', "[mcp_servers.node_repl.env]", 'A = "1"',
       'notes = """', "[mcp_servers.falso]", '"""',
     ].join("\n"));
-    await run(s, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
+    await run(s, baseRequest("claude"), { FAKE_WRITE: APP_EDIT, FAKE_CODEX_CONFIG: JSON.stringify({ mcp_servers: { headroom: {}, node_repl: {}, projeto_mcp: {} } }) });
     const args = (s.execCalls()[0] as { args: string[] }).args.join(" ");
     for (const n of ["headroom", "node_repl", "projeto_mcp"]) assert.match(args, new RegExp(`--config mcp_servers\\.${n}\\.enabled=false`));
     assert.doesNotMatch(args, /mcp_servers\.falso/, "texto de string multilinha não é servidor");
     // Nome que a ponte não consegue desligar (chave entre aspas): recusa antes de executar.
     const s2 = setup();
     writeFileSync(join(s2.home, ".codex", "config.toml"), '[mcp_servers."com espaco"]\ncommand = "x"\n');
-    const out = await run(s2, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
+    const out = await run(s2, baseRequest("claude"), { FAKE_WRITE: APP_EDIT, FAKE_CODEX_CONFIG: JSON.stringify({ mcp_servers: { "com espaco": {} } }) });
     assert.notEqual(out.summary.state, "succeeded");
     assert.equal(s2.execCalls().length, 0);
     assert.match(JSON.stringify(out.summary), /MCP/);

@@ -2,6 +2,7 @@
 // Não usa `codex mcp-server` nem o binário embutido na extensão do VS Code.
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { EffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { codexMcpServerNames } from "../permissions/auth.js";
 import { loadSchema, validate } from "../schema.js";
 import { isWriteKind, type ExecutorReport } from "../state/types.js";
@@ -32,7 +33,7 @@ const KNOWN_ITEM_TYPES = new Set([
 export class CodexAdapter implements ExecutorAdapter {
   readonly provider = "codex" as const;
 
-  plan(input: InvocationInput): InvocationPlan {
+  plan(input: InvocationInput, effective?: EffectiveCodexConfig | null): InvocationPlan {
     const { caps, cfg } = input;
     const writes = isWriteKind(input.kind);
     const enforced: string[] = [];
@@ -58,19 +59,20 @@ export class CodexAdapter implements ExecutorAdapter {
       args.push("--ignore-user-config");
       enforced.push("ignore-user-config (MCPs/perfis do usuário não carregados)");
     }
-    if (cfg.executors.codex.disableUserExtensions && caps.flags.disable) {
+    if (cfg.executors.codex.disableUserExtensions) {
       // Hooks de plugins do usuário (ex.: Ruflo) gravavam arquivos no projeto durante a delegação real.
-      args.push("--disable", "hooks", "--disable", "plugins");
-      enforced.push("hooks e plugins do usuário desligados no executor (--disable hooks/plugins)");
+      if (caps.flags.disable) {
+        args.push("--disable", "hooks", "--disable", "plugins");
+        enforced.push("hooks e plugins do usuário desligados no executor (--disable hooks/plugins)");
+      }
       // Servidores MCP do usuário: sem modo interativo, chamadas que pedem aprovação falham e travam a tarefa
       // (ex.: ler um arquivo por um MCP). Mesmo princípio do --strict-mcp-config do executor Claude.
-      if (caps.flags.config) {
-        const home = input.env.HOME ?? homedir();
-        const mcp = codexMcpServerNames(input.env, home, input.cwd, cfg.executors.codex.ignoreUserConfig && caps.flags.ignoreUserConfig);
-        if (mcp.unsupported.length) throw new Error(`servidores MCP do Codex em forma que a ponte não consegue desligar: ${mcp.unsupported.join("; ")}`);
-        for (const name of mcp.names) args.push("--config", `mcp_servers.${name}.enabled=false`);
-        if (mcp.names.length) enforced.push(`servidores MCP do usuário desligados no executor: ${mcp.names.join(", ")}`);
-      }
+      const home = input.env.HOME ?? homedir();
+      const mcp = codexMcpServerNames(input.env, home, input.cwd, cfg.executors.codex.ignoreUserConfig && caps.flags.ignoreUserConfig, effective);
+      if (mcp.unsupported.length) throw new Error(`servidores MCP do Codex em forma que a ponte não consegue desligar: ${mcp.unsupported.join("; ")}`);
+      if (mcp.names.length && !caps.flags.config) throw new Error("esta versão do codex não anuncia --config, necessário para desligar servidores MCP");
+      for (const name of mcp.names) args.push("--config", `mcp_servers.${name}.enabled=false`);
+      if (mcp.names.length) enforced.push(`servidores MCP do usuário desligados no executor: ${mcp.names.join(", ")}`);
     }
     if (input.model) args.push("--model", input.model);
     if (input.effort) {

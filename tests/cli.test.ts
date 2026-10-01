@@ -189,12 +189,13 @@ describe("duo recommend", () => {
     sb = makeSandbox(); const s = sb;
     writeFileSync(join(s.home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8787" } }));
     writeFileSync(join(s.home, ".codex", "config.toml"), 'model_provider = "headroom"\n[model_providers.headroom]\nbase_url = "http://127.0.0.1:8787/v1"\nrequires_openai_auth = true\n');
+    s.env.FAKE_CODEX_CONFIG = JSON.stringify({ model_provider: "headroom", model_providers: { headroom: { base_url: "http://127.0.0.1:8787/v1", requires_openai_auth: true } } });
     const before = cli(s, ["doctor"]);
     assert.match(before.stdout, /se for um proxy local que usa a sua assinatura, habilite billing.allowLoopbackProxy/);
     s.config({ billing: { allowLoopbackProxy: true } });
     const after = cli(s, ["doctor"]);
     assert.equal(after.status, 0, after.stderr);
-    assert.equal(after.stdout.split("proxy local (loopback) autorizado por billing.allowLoopbackProxy: http://127.0.0.1:8787").length - 1, 2);
+    assert.equal(after.stdout.split("proxy local (loopback) autorizado por billing.allowLoopbackProxy").length - 1, 2);
   });
   it("recommend --request inclui tier/effort/selection; status/report mostram e no-adaptive desliga", () => {
     sb = makeSandbox(); const s = sb;

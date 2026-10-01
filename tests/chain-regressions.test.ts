@@ -182,7 +182,7 @@ it("rodada 3 achado 1: flag ausente no plano não exclui settings de projeto", a
 it("rodada 3 achado 1: ignoreUserConfig só exclui usuário quando a CLI anuncia a flag", async () => {
   s = makeSandbox({ billing: { allowLoopbackProxy: true }, executors: { codex: { ignoreUserConfig: true } } });
   writeFileSync(join(s.home, ".codex/config.toml"), 'model_provider="remote"\n[model_providers.remote]\nbase_url="https://gateway.example.test/v1"\nrequires_openai_auth=true\n');
-  const out = await run(req({ adaptive: false }), { FAKE_CODEX_HELP: "missing-ignore-user-config" });
+  const out = await run(req({ adaptive: false }), { FAKE_CODEX_HELP: "missing-ignore-user-config", FAKE_CODEX_CONFIG: JSON.stringify({ model_provider: "remote", model_providers: { remote: { base_url: "https://gateway.example.test/v1", requires_openai_auth: true } } }) });
   assert.equal(out.summary.state, "blocked");
   assert.equal(s.execCalls().length, 0);
 });

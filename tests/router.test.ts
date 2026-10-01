@@ -1,5 +1,7 @@
 // Roteador por evidência: histórico sintético, sem invocar modelos.
 import { strict as assert } from "node:assert";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { Provider } from "../src/config.js";
 import { loadConfig } from "../src/config.js";
@@ -294,13 +296,34 @@ describe("disponibilidade dentro do sandbox do Codex", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);
     const cfg = loadConfig(sb.root);
-    const inSandbox = liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "none", CODEX_SANDBOX: "seatbelt" }, sb.authPaths)("claude");
+    const inSandbox = (await liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "none", CODEX_SANDBOX: "seatbelt" }, sb.authPaths))("claude");
     assert.equal(inSandbox.available, true);
     assert.ok(inSandbox.reasons.some((r) => r.includes("sandbox")));
-    const outside = liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "none" }, sb.authPaths)("claude");
+    const outside = (await liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "none" }, sb.authPaths))("claude");
     assert.equal(outside.available, false);
-    const apiKey = liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "api_key", CODEX_SANDBOX: "seatbelt" }, sb.authPaths)("claude");
+    const apiKey = (await liveAvailability(store, cfg, { ...sb.env, FAKE_AUTH: "api_key", CODEX_SANDBOX: "seatbelt" }, sb.authPaths))("claude");
     assert.equal(apiKey.available, false);
+  });
+
+  it("validação real: sem config/read no sandbox, config não verificável é adiada; problema detectado continua bloqueando", async () => {
+    const { liveAvailability } = await import("../src/orchestration/router.js");
+    sb = makeSandbox({ billing: { allowLoopbackProxy: true } });
+    const store = new Store(sb.root);
+    const cfg = loadConfig(sb.root);
+    const userCfg = join(sb.home, ".codex", "config.toml");
+    // Config legítima que o leitor mínimo não domina (array multilinha), como a do usuário real.
+    writeFileSync(userCfg, ['notify = [', '  "x",', ']', 'model_provider = "headroom"', "[model_providers.headroom]", 'base_url = "http://127.0.0.1:8787/v1"', "requires_openai_auth = true"].join("\n"));
+    const env = { ...sb.env, FAKE_CONFIG_READ: "off" };
+    const inSandbox = (await liveAvailability(store, cfg, { ...env, CODEX_SANDBOX: "seatbelt" }, sb.authPaths))("codex");
+    assert.equal(inSandbox.available, true, JSON.stringify(inSandbox.reasons));
+    assert.ok(inSandbox.reasons.some((r) => /não verificável dentro do sandbox/.test(r)));
+    // Fora do sandbox sem config/read: o leitor mínimo falha fechado.
+    const outside = (await liveAvailability(store, cfg, env, sb.authPaths))("codex");
+    assert.equal(outside.available, false);
+    // Endpoint remoto detectado pelo leitor mínimo continua bloqueando mesmo no sandbox.
+    writeFileSync(userCfg, 'openai_base_url = "https://remote.example/v1"\n');
+    const remote = (await liveAvailability(store, cfg, { ...env, CODEX_SANDBOX: "seatbelt" }, sb.authPaths))("codex");
+    assert.equal(remote.available, false);
   });
 });
 

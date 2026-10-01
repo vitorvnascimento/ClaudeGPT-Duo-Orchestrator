@@ -86,7 +86,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       continue;
     }
     const caps = p === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv) : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
-    const auth = checkAuth(p, resolved, effectiveCfg, authPaths, env);
+    const auth = await checkAuth(p, resolved, effectiveCfg, authPaths, env, { ignoreUserConfig: effectiveCfg.executors.codex.ignoreUserConfig && caps.flags.ignoreUserConfig });
     const blockers: string[] = [];
     if (caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
     const authReason = authBlockReason(auth);

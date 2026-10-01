@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { DuoConfig, Provider } from "../config.js";
 import { runQuick } from "../adapters/process.js";
 import type { Resolved } from "../adapters/resolve.js";
+import { readEffectiveCodexConfig, type EffectiveCodexConfig } from "./codex-effective-config.js";
 
 /** Variáveis que selecionam API paga, gateway ou nuvem em vez da assinatura. Nunca repassadas aos executores. */
 export const BILLING_ENV = [
@@ -65,7 +66,14 @@ export type AuthCheck = {
   warnings: string[];
   removedEnv: string[];
   extraUsage: "unverifiable-acknowledged" | "unverifiable-not-acknowledged";
+  /** Codex: config efetiva lida do próprio Codex (config/read) ou pelo leitor mínimo de reserva. */
+  codexConfigSource?: "config/read" | "fallback";
+  /** Codex sem config/read: conflitos que só indicam "não verificável" (subconjunto de conflicts). */
+  unverifiableConflicts?: string[];
 };
+
+/** Marca dos conflitos do leitor mínimo que significam "não deu para verificar", não "achei um problema". */
+export const UNVERIFIABLE_CODEX_CONFIG = "não foi possível verificar a configuração do Codex";
 
 export type AuthPaths = {
   home: string;
@@ -435,52 +443,37 @@ function unsupportedRootRoutingEntry(line: string): string | null {
   return null;
 }
 
-/**
- * Linhas lógicas do TOML: o conteúdo de strings multilinha ("""…""" e '''…''') nunca vira linha própria, então
- * texto como `model_provider = "openai"` dentro de developer_instructions não é lido como configuração. A chave
- * dona da string fica com o valor substituído por "" (não interessa à checagem). Abertura sem fechamento até o
- * fim do arquivo lança erro: o chamador trata como TOML não interpretável (falha fechado).
- */
-function tomlLogicalLines(text: string): string[] {
-  const out: string[] = [];
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i]!;
-    let result = "";
-    for (;;) {
-      const found = multilineOpening(line);
-      if (!found) { result += line; break; }
-      const { at, delim } = found;
-      result += line.slice(0, at) + '""';
-      let rest = line.slice(at + 3);
-      let close = rest.indexOf(delim);
-      while (close < 0) {
-        i++;
-        if (i >= lines.length) throw new Error("string TOML multilinha sem fechamento");
-        rest = lines[i]!;
-        close = rest.indexOf(delim);
-      }
-      line = rest.slice(close + 3);
+/** Fallback only: unsupported TOML is never approximated or rewritten. */
+function minimalTomlLines(text: string): string[] {
+  const lines = text.split(/\r?\n/).map(tomlWithoutComment);
+  const seen = new Set<string>();
+  let table = "";
+  for (const line of lines) {
+    if (!line) continue;
+    if (/"""|'''/.test(line)) throw new Error("TOML multilinha não verificável");
+    if (/^\[[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\]$/.test(line)) {
+      if (seen.has(line)) throw new Error("tabela duplicada");
+      seen.add(line);
+      table = line.slice(1, -1);
+      continue;
     }
-    out.push(result);
-  }
-  return out;
-}
-
-/** Primeiro """ ou ''' fora de strings de uma linha e de comentários. */
-function multilineOpening(line: string): { at: number; delim: string } | null {
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
-    if (ch === "#") return null;
-    if (ch === '"' || ch === "'") {
-      if (line.startsWith(ch.repeat(3), i)) return { at: i, delim: ch.repeat(3) };
-      // String de uma linha: pula até o fechamento (básica aceita escapes; literal não).
-      let j = i + 1;
-      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "\\" ? 2 : 1;
-      i = j;
+    const kv = /^([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*=\s*(.+)$/.exec(line);
+    if (!kv) throw new Error("forma TOML não verificável");
+    const fullKey = `${table}.${kv[1]}`;
+    if (seen.has(fullKey)) throw new Error("chave duplicada");
+    seen.add(fullKey);
+    const value = kv[2]!.trim();
+    if (tomlString(value) !== undefined || /^(?:true|false|[+-]?\d+(?:\.\d+)?)$/.test(value)) continue;
+    // Flat JSON-compatible arrays are harmless to the routing fields checked below.
+    if (value.startsWith("[")) {
+      try {
+        const parsed: unknown = JSON.parse(value);
+        if (Array.isArray(parsed) && parsed.every((v) => ["string", "number", "boolean"].includes(typeof v))) continue;
+      } catch { /* unsupported TOML */ }
     }
+    throw new Error("valor TOML não verificável");
   }
-  return null;
+  return lines;
 }
 
 function parseCodexConfig(file: string): CodexConfigSnapshot {
@@ -501,7 +494,7 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
     sandboxWorkspaceNetworkAccess: undefined,
   };
   let table = "";
-  for (const raw of tomlLogicalLines(readFileSync(file, "utf8"))) {
+  for (const raw of minimalTomlLines(readFileSync(file, "utf8"))) {
     const line = tomlWithoutComment(raw);
     if (!line) continue;
     const header = tomlHeader(line);
@@ -597,13 +590,16 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
     } else if (key === "preferred_auth_method" && table === "") {
       const value = tomlString(kv[2]!);
       if (value !== undefined) snapshot.preferredAuthMethod = value;
+      else snapshot.unsupportedRoutingEntries.add(key);
     } else if (key === "forced_login_method" && table === "") {
       const value = tomlString(kv[2]!);
       if (value !== undefined) snapshot.forcedLoginMethod = value;
+      else snapshot.unsupportedRoutingEntries.add(key);
     } else if (key === "network_access" && table === "sandbox_workspace_write") {
       const value = kv[2]!.trim();
       if (value === "true") snapshot.sandboxWorkspaceNetworkAccess = true;
       else if (value === "false") snapshot.sandboxWorkspaceNetworkAccess = false;
+      else snapshot.unsupportedRoutingEntries.add(key);
     }
   }
   return snapshot;
@@ -668,7 +664,7 @@ function readCodexSnapshot(file: string | undefined, conflicts: string[]): Codex
   try {
     return parseCodexConfig(file);
   } catch {
-    conflicts.push(`${file}: não foi possível interpretar (TOML inválido); não verificado`);
+    conflicts.push(`${file}: ${UNVERIFIABLE_CODEX_CONFIG} (TOML não suportado pelo leitor mínimo)`);
     return undefined;
   }
 }
@@ -743,7 +739,8 @@ function validateStandaloneManagedCodexSnapshot(
  * Só nomes de chave TOML simples ([A-Za-z0-9_-]) podem ser desligados com -c; os demais voltam em `unsupported`.
  * Arquivo ilegível ou não interpretável: listado em `unsupported` (o chamador falha fechado).
  */
-export function codexMcpServerNames(env: NodeJS.ProcessEnv, home: string, cwd: string, ignoreUserConfig = false): { names: string[]; unsupported: string[] } {
+export function codexMcpServerNames(env: NodeJS.ProcessEnv, home: string, cwd: string, ignoreUserConfig = false, effective?: EffectiveCodexConfig | null): { names: string[]; unsupported: string[] } {
+  if (effective) return { names: effective.mcpServers.filter((name) => /^[A-Za-z0-9_-]+$(?![\s\S])/.test(name)), unsupported: effective.mcpServers.filter((name) => !/^[A-Za-z0-9_-]+$(?![\s\S])/.test(name)) };
   const files = [
     ...(ignoreUserConfig ? [] : [join(env.CODEX_HOME ?? join(home, ".codex"), "config.toml")]),
     join(cwd, ".codex", "config.toml"),
@@ -752,7 +749,7 @@ export function codexMcpServerNames(env: NodeJS.ProcessEnv, home: string, cwd: s
   for (const f of files) {
     if (!existsSync(f)) continue;
     let lines: string[];
-    try { lines = tomlLogicalLines(readFileSync(f, "utf8")); }
+    try { lines = minimalTomlLines(readFileSync(f, "utf8")); }
     catch { unsupported.push(`${f} (não interpretável)`); continue; }
     let table = "";
     for (const raw of lines) {
@@ -779,7 +776,8 @@ export function codexMcpServerNames(env: NodeJS.ProcessEnv, home: string, cwd: s
 }
 
 /** Modelo padrão do Codex (chave `model` de primeiro nível do config.toml; não é segredo). */
-export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, ignoreUserConfig = false): string | null {
+export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, ignoreUserConfig = false, effective?: EffectiveCodexConfig | null): string | null {
+  if (effective) return effective.model ?? null;
   const files = ignoreUserConfig
     ? [join(paths.projectRoot, ".codex", "config.toml")]
     : [join(env.CODEX_HOME ?? join(paths.home, ".codex"), "config.toml"), join(paths.projectRoot, ".codex", "config.toml")];
@@ -787,7 +785,7 @@ export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, i
   for (const f of files) {
     if (!existsSync(f)) continue;
     let lines: string[];
-    try { lines = tomlLogicalLines(readFileSync(f, "utf8")); } catch { continue; }
+    try { lines = minimalTomlLines(readFileSync(f, "utf8")); } catch { continue; }
     for (const raw of lines) {
       const line = tomlWithoutComment(raw);
       if (line.startsWith("[")) break; // só o nível raiz
@@ -798,6 +796,34 @@ export function codexConfiguredModel(paths: AuthPaths, env: NodeJS.ProcessEnv, i
   return model;
 }
 
+/** Codex has already applied syntax, precedence and trust. Values never enter diagnostics. */
+export function codexConflictsFromEffective(eff: EffectiveCodexConfig, allowLoopbackProxy = false): { conflicts: string[]; warnings: string[] } {
+  const conflicts: string[] = [];
+  const warnings: string[] = [];
+  const source = "Codex config/read";
+  const selected = eff.model_provider ?? "openai";
+  if (selected !== "openai" && !Object.hasOwn(eff.providers, selected)) {
+    conflicts.push(`${source}: model_provider customizado (provedor diferente do padrão da assinatura)${allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT}`);
+  }
+  for (const provider of Object.values(eff.providers)) {
+    const unsafe = provider.keys.filter((key) => !SAFE_PROVIDER_KEYS.has(key));
+    const origin = allowLoopbackProxy && provider.requiresOpenaiAuth === true && unsafe.length === 0
+      ? loopbackProxyOrigin(provider.baseUrl) : null;
+    if (origin) warnings.push(`${source}: proxy local (loopback) autorizado por billing.allowLoopbackProxy`);
+    else conflicts.push(`${source}: tabela de provedor customizado não é suportada com segurança${unsafe.length ? ` (chaves: ${unsafe.join(", ")})` : ""}${allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT}`);
+  }
+  if (eff.openai_base_url !== undefined && !isOfficialBaseUrl(eff.openai_base_url, "openai")) {
+    if (allowLoopbackProxy && loopbackProxyOrigin(eff.openai_base_url)) warnings.push(`${source}: openai_base_url: proxy local (loopback) autorizado por billing.allowLoopbackProxy`);
+    else conflicts.push(`${source}: openai_base_url aponta para endpoint não oficial${allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT}`);
+  }
+  if (eff.chatgpt_base_url !== undefined && !isOfficialBaseUrl(eff.chatgpt_base_url, "chatgpt")) conflicts.push(`${source}: chatgpt_base_url aponta para endpoint não oficial`);
+  if (eff.preferredAuthMethod === "apikey") conflicts.push(`${source}: preferred_auth_method=apikey`);
+  if (eff.forcedLoginMethod === "api") conflicts.push(`${source}: forced_login_method=api`);
+  if (eff.networkAccess === true) warnings.push(`${source}: sandbox_workspace_write.network_access=true (a ponte força false no executor)`);
+  return { conflicts, warnings };
+}
+
+/** Minimal, fail-closed fallback used only when config/read is unavailable. */
 export function codexConfigConflicts(
   paths: AuthPaths,
   env: NodeJS.ProcessEnv,
@@ -991,26 +1017,35 @@ export function classifyCodexStatus(output: string): { method: AuthMethod; detai
   return { method: "unknown", detail: "saída de `codex login status` não reconhecida" };
 }
 
-export function checkAuth(
+export async function checkAuth(
   provider: Provider,
   resolved: Resolved,
   cfg: DuoConfig,
   paths: AuthPaths,
   baseEnv: NodeJS.ProcessEnv = process.env,
-  sources: { settingSources?: string; ignoreUserConfig?: boolean } = {},
-): AuthCheck {
+  sources: { settingSources?: string; ignoreUserConfig?: boolean; effectiveCodexConfig?: EffectiveCodexConfig | null } = {},
+): Promise<AuthCheck> {
   const { env, removed } = childEnv(baseEnv);
   const extraUsage = cfg.billing.acknowledgeUnverifiableExtraUsage[provider] === true ? "unverifiable-acknowledged" : "unverifiable-not-acknowledged";
+  const ignoreUserConfig = sources.ignoreUserConfig ?? cfg.executors.codex.ignoreUserConfig;
+  const effective = provider === "codex"
+    ? sources.effectiveCodexConfig !== undefined ? sources.effectiveCodexConfig
+      : await readEffectiveCodexConfig({ cwd: paths.projectRoot, env: baseEnv, ignoreUserConfig, resolved })
+    : null;
   const settings =
     provider === "claude"
       ? claudeSettingsConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, sources.settingSources ?? cfg.executors.claude.settingSources)
-      : codexConfigConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, sources.ignoreUserConfig ?? cfg.executors.codex.ignoreUserConfig);
+      : effective ? codexConflictsFromEffective(effective, cfg.billing.allowLoopbackProxy)
+      : codexConfigConflicts(paths, baseEnv, cfg.billing.allowLoopbackProxy, ignoreUserConfig);
+  // Conflitos que só dizem "não deu para verificar" (leitor mínimo sem config/read), separados dos detectados.
+  const unverifiable = provider === "codex" && !effective ? settings.conflicts.filter((c) => c.includes(UNVERIFIABLE_CODEX_CONFIG)) : [];
   const base = {
     provider,
     conflicts: settings.conflicts,
     warnings: settings.warnings,
     removedEnv: removed.filter((k) => BILLING_ENV.includes(k)),
     extraUsage,
+    ...(provider === "codex" ? { codexConfigSource: effective ? "config/read" as const : "fallback" as const, unverifiableConflicts: unverifiable } : {}),
   } as const;
   if (!resolved.ok) return { ...base, ok: false, method: "unknown", detail: resolved.reason };
 

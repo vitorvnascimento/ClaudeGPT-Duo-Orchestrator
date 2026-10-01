@@ -182,7 +182,9 @@ describe("política", () => {
 });
 
 describe("adaptadores (argumentos, sem executar)", () => {
-  const input = (kind: InvocationInput["kind"]): InvocationInput => ({
+  const input = (kind: InvocationInput["kind"]): InvocationInput => {
+    const artifactsDir = mkdtempSync(join(tmpdir(), "duo-art-"));
+    return ({
     resolved: { ok: true, command: "/bin/x", prefixArgs: [], source: "path" },
     caps: { version: "1.0.0", flags: Object.fromEntries(["settingSources", "strictMcpConfig", "disableSlashCommands", "appendSystemPrompt", "resume", "model", "outputLastMessage", "config"].map((k) => [k, true])), missingRequired: [], divergences: [] },
     cfg: structuredClone(DEFAULT_CONFIG),
@@ -195,9 +197,10 @@ describe("adaptadores (argumentos, sem executar)", () => {
     needs: [],
     model: null,
     resumeSessionId: null,
-    artifactsDir: mkdtempSync(join(tmpdir(), "duo-art-")),
-    env: {},
+    artifactsDir,
+    env: { HOME: artifactsDir, CODEX_HOME: join(artifactsDir, ".codex") },
   });
+  };
   it("Claude: leitura sem Edit/Bash; escrita limitada ao escopo; recursão negada; prompt por stdin", () => {
     const review = new ClaudeAdapter().plan(input("review"));
     assert.equal(review.args[review.args.indexOf("--tools") + 1], "Read,Grep,Glob");

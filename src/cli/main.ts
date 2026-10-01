@@ -10,6 +10,8 @@ import { formatCatalog, loadCatalog, type Capability } from "../adapters/catalog
 import { deriveTags, formatRecommendation, liveAvailability, recommend, type Risk } from "../orchestration/router.js";
 import { validateScope } from "../permissions/scope.js";
 import { codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
+import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
+import { resolveExecutable } from "../adapters/resolve.js";
 import { loadSchema, validate } from "../schema.js";
 import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
@@ -274,8 +276,10 @@ async function main(argv: string[]): Promise<number> {
       } catch {
         catalog = null;
       }
-      const defaults = { claude: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env) };
-      const rec = recommend(store, request?.adaptive === false ? { ...cfg, routing: { ...cfg.routing, adaptive: { ...cfg.routing.adaptive, enabled: false } } } : cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs, paths: scopeEntries, ...(request ? { objective: request.objective, acceptance: request.acceptance, complexity: request.complexity } : {}) }, liveAvailability(store, cfg), catalog, defaults);
+      const effective = await readEffectiveCodexConfig({ cwd: root, env: process.env, ignoreUserConfig: cfg.executors.codex.ignoreUserConfig,
+        resolved: resolveExecutable("codex", cfg.executors.codex.command, process.env) });
+      const defaults = { claude: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env, cfg.executors.codex.ignoreUserConfig, effective) };
+      const rec = recommend(store, request?.adaptive === false ? { ...cfg, routing: { ...cfg.routing, adaptive: { ...cfg.routing.adaptive, enabled: false } } } : cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs, paths: scopeEntries, ...(request ? { objective: request.objective, acceptance: request.acceptance, complexity: request.complexity } : {}) }, await liveAvailability(store, cfg), catalog, defaults);
       store.telemetry({ event: "recommend", query: rec.query, decision: rec.decision });
       print(args.flags.json ? rec : formatRecommendation(rec));
       return 0;

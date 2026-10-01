@@ -322,7 +322,7 @@ describe("proxy local de loopback", () => {
     assert.match(result.conflicts[0]!, /confiança verificável/);
   });
 
-  it("checkAuth usa as fontes efetivas do Claude e do Codex", () => {
+  it("checkAuth usa as fontes efetivas do Claude e do Codex", async () => {
     const s = sandbox();
     const projectClaudeDir = join(s.paths.projectRoot, ".claude");
     mkdirSync(projectClaudeDir, { recursive: true });
@@ -334,7 +334,7 @@ describe("proxy local de loopback", () => {
     const cfg = structuredClone(DEFAULT_CONFIG);
     cfg.billing.allowLoopbackProxy = true;
     cfg.billing.acknowledgeUnverifiableExtraUsage.claude = true;
-    const claude = checkAuth("claude", resolved, cfg, s.paths, s.env);
+    const claude = await checkAuth("claude", resolved, cfg, s.paths, s.env);
     assert.equal(claude.ok, true);
     assert.deepEqual(claude.conflicts, []);
     assert.ok(claude.warnings.some((warning) => !warning.includes("project.example.test") && warning.includes("ignorada")));
@@ -357,7 +357,7 @@ describe("proxy local de loopback", () => {
     cfg.billing.acknowledgeUnverifiableExtraUsage.codex = true;
     const codexStatus = `process.stdout.write("Logged in using ChatGPT\\n")`;
     const codexResolved = { ok: true as const, command: process.execPath, prefixArgs: ["-e", codexStatus], source: "path" as const };
-    const codex = checkAuth("codex", codexResolved, cfg, s.paths, s.env);
+    const codex = await checkAuth("codex", codexResolved, cfg, s.paths, s.env);
     assert.equal(codex.ok, true);
     assert.deepEqual(codex.conflicts, []);
     assert.ok(codex.warnings.some((warning) => warning.includes("--ignore-user-config")));
@@ -643,16 +643,16 @@ describe("proxy local de loopback", () => {
     ].join("\n");
     writeFileSync(s.codexConfig, evil);
     const r = codexConfigConflicts(s.paths, s.env, true);
-    assert.ok(r.conflicts.some((c) => /provedor diferente|customizado/.test(c)), JSON.stringify(r));
+    assert.ok(r.conflicts.some((c) => /não foi possível verificar/.test(c)), JSON.stringify(r));
     writeFileSync(s.codexConfig, evil.replace(/"""/g, "'''"));
     assert.ok(codexConfigConflicts(s.paths, s.env, true).conflicts.length >= 1, "string literal multilinha também");
     // String multilinha sem fechamento: TOML não interpretável, falha fechado.
     writeFileSync(s.codexConfig, ['model_provider = "openai"', 'x = """', "sem fim"].join("\n"));
-    assert.ok(codexConfigConflicts(s.paths, s.env, true).conflicts.some((c) => /não foi possível interpretar/.test(c)));
-    // Uso legítimo: instruções multilinha com aspas e # no texto não geram conflito.
+    assert.ok(codexConfigConflicts(s.paths, s.env, true).conflicts.some((c) => /não foi possível verificar/.test(c)));
+    // Mesmo o TOML legítimo multilinha exige config/read; fallback recusa.
     writeFileSync(s.codexConfig, ['developer_instructions = """', 'Use "aspas" e # sem problema', 'model = "x"', '"""', 'model = "gpt-6.1-sol"'].join("\n"));
-    assert.deepEqual(codexConfigConflicts(s.paths, s.env, true).conflicts, []);
-    assert.equal(codexConfiguredModel(s.paths, s.env), "gpt-6.1-sol");
+    assert.ok(codexConfigConflicts(s.paths, s.env, true).conflicts.length);
+    assert.equal(codexConfiguredModel(s.paths, s.env), null);
   });
 
   it("bateria real: openai_base_url loopback na raiz só com a opção; chatgpt_base_url nunca", () => {

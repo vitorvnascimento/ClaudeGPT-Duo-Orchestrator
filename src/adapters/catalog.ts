@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
+import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { childEnv, codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
 import { redact } from "../redact.js";
 import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
@@ -435,7 +436,7 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog
 }
 
 /** Só lê model; configurações inválidas ou inacessíveis não impedem a descoberta. */
-function withUserModels(catalog: Catalog, cfg: DuoConfig, cwd: string, env: NodeJS.ProcessEnv): Catalog {
+async function withUserModels(catalog: Catalog, cfg: DuoConfig, cwd: string, env: NodeJS.ProcessEnv): Promise<Catalog> {
   const out = structuredClone(catalog);
   const paths = defaultAuthPaths(cwd, env);
   const configured: { provider: Provider; id: string }[] = cfg.routing.extraModels.map((m) => {
@@ -443,7 +444,8 @@ function withUserModels(catalog: Catalog, cfg: DuoConfig, cwd: string, env: Node
     return { provider: m.slice(0, colon) as Provider, id: m.slice(colon + 1) };
   });
   try {
-    const model = codexConfiguredModel(paths, env);
+    const effective = await readEffectiveCodexConfig({ cwd, env, ignoreUserConfig: cfg.executors.codex.ignoreUserConfig, resolved: resolveExecutable("codex", cfg.executors.codex.command, env) });
+    const model = codexConfiguredModel(paths, env, cfg.executors.codex.ignoreUserConfig, effective);
     if (model) configured.push({ provider: "codex", id: model });
   } catch { /* config inacessível */ }
   try {

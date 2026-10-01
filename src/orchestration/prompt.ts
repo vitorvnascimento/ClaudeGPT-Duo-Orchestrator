@@ -70,12 +70,14 @@ export function buildExecutorPrompt(task: Task, extras: PromptExtras): string {
     lines.push("");
     lines.push("The bridge will independently run these commands after you finish (your claims are not trusted without them):");
     for (const c of task.acceptanceCommands) lines.push(`- ${c.name}: ${c.argv.join(" ")}`);
-    lines.push("If you run them yourself, use exactly the command above from the working directory (no pipes, `;`, `&&` or absolute paths); other shell commands are denied.");
+    lines.push("If you run them yourself, use exactly the command above from the working directory (no pipes, `;`, `&&` or absolute paths); running any other program is denied, but reading files is allowed (see Rules).");
     lines.push('If the requested change is done but you could not run a command, still return status "completed" and mention it in limitations: the bridge runs the checks anyway.');
   }
   lines.push("");
   lines.push("## Rules");
-  lines.push("- Never read or print .env files, credentials, tokens or keys.");
+  lines.push("- Never read or print .env files, credential files, or secret values (API keys, tokens, passwords, private keys).");
+  lines.push("- Source code under the authorized paths is always readable and editable, even when its name or path suggests auth, token or security logic: that is the task, not a secret.");
+  lines.push("- You may read any file inside the authorized paths and the tests that exercise them, using the read tools you have (a shell command like cat or sed on those files is allowed for READING); only the acceptance command restriction above limits running programs.");
   lines.push("- Do not run git commit, push, reset, clean, stash or checkout; do not delete user files outside the task.");
   lines.push("- If you cannot finish within the authorized paths, stop and return status \"blocked\" with blockedReason.");
   lines.push("- Report only tests you actually ran, with their real exit codes.");

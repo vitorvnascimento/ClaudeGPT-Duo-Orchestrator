@@ -152,7 +152,8 @@ describe("catálogo: fallbacks", () => {
     assert.equal(inside.discoveredInSandbox, true);
     assert.equal(inside.providers.codex.sourceKind, "codex-debug-models");
     assert.match(inside.providers.codex.attempts?.[0] ?? "", /app-server pulado: dentro do sandbox/);
-    assert.ok(!s.log().some((e) => e.cmd === "app-server"), "o app-server não deve ser iniciado no sandbox");
+    assert.ok(!s.log().some((e) => e.method === "model/list"), "a descoberta via model/list não deve ser iniciada no sandbox");
+    assert.ok(s.log().some((e) => e.method === "config/read"), "a leitura local da configuração tem fallback próprio");
     const outside = await loadCatalog(store, cfg, { env: s.env });
     assert.equal(outside.discoveredInSandbox, undefined);
     assert.equal(outside.providers.codex.sourceKind, "codex-app-server");
@@ -212,7 +213,7 @@ describe("cache por versão e modelos configurados", () => {
   it("cada atualização de CLI invalida antes de 6 h; versões iguais usam cache", async () => {
     const s = fresh(), store = new Store(s.root), cfg = loadConfig(s.root);
     const env = { ...s.env, FAKE_CLAUDE_VERSION: "2.1.283", FAKE_CODEX_VERSION: "0.157.1" };
-    const count = () => s.log().filter((c) => c.cmd === "initialize" || c.cmd === "app-server").length;
+    const count = () => s.log().filter((c) => c.cmd === "initialize" || (c.method === "model/list" && c.hasCursor !== true)).length;
     const first = await loadCatalog(store, cfg, { env });
     assert.deepEqual(first.cliVersions, { claude: "2.1.283", codex: "0.157.1" });
     await loadCatalog(store, cfg, { env });
@@ -271,12 +272,14 @@ describe("cache por versão e modelos configurados", () => {
     const claudeFile = join(s.home, ".claude", "settings.json"), codexFile = join(s.home, ".codex", "config.toml");
     writeFileSync(claudeFile, '{"model":"custom-opus"}');
     writeFileSync(codexFile, 'model = "custom-sol"');
+    s.env.FAKE_CODEX_CONFIG = JSON.stringify({ model: "custom-sol" });
     const first = await loadCatalog(store, cfg, { env: s.env });
     assert.ok(findModel(first, "claude", "custom-opus"));
     assert.ok(findModel(first, "codex", "custom-sol"));
     for (const invalid of ["{", "null", '{"model":1}', '{"model":"foo\\u001b[31m"}']) {
       writeFileSync(claudeFile, invalid);
       writeFileSync(codexFile, 'model = "unterminated\n[broken');
+      s.env.FAKE_CONFIG_READ = "off";
       const c = await loadCatalog(store, cfg, { env: s.env });
       assert.ok(c.providers.claude.models.every((m) => m.source === "discovered"));
       assert.ok(c.providers.codex.models.every((m) => m.source === "discovered"));

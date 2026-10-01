@@ -90,7 +90,7 @@ describe("cota no catálogo e na seleção", () => {
     for (let i = 0; i < 30 && isPidAlive(pid); i++) await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(isPidAlive(pid), false, "consulta opcional não pode deixar app-server órfão");
   });
-  it("warning penaliza só light/standard; exhausted filtra modelo ou conta", () => {
+  it("warning penaliza só light/standard; exhausted filtra modelo ou conta", async () => {
     s = makeSandbox(); const store = new Store(s.root), cfg = loadConfig(s.root);
     const evals = (complexity: "light" | "standard" | "deep") => evaluateCandidates(store, cfg, { kind: "implement", tags: [], risk: "low", brain: null, complexity }, () => ({ available: true, reasons: [] }), adaptiveCatalog).evals;
     const before = evals("standard"); saveQuota(store, "codex", state("warning", { usedPercent: 95 }));
@@ -104,12 +104,12 @@ describe("cota no catálogo e na seleção", () => {
     saveQuota(store, "codex", state("exhausted", { affectedModels: ["gpt-6.1-sol"] }));
     assert.equal(evals("standard").find((c) => c.model === "gpt-6.1-sol")?.available, false);
     assert.equal(evals("standard").find((c) => c.model === "gpt-6-sol")?.available, true);
-    assert.equal(liveAvailability(store, cfg, s.env, s.authPaths)("codex").available, true);
+    assert.equal((await liveAvailability(store, cfg, s.env, s.authPaths))("codex").available, true);
     saveQuota(store, "codex", state("exhausted"));
-    assert.equal(liveAvailability(store, cfg, s.env, s.authPaths)("codex").available, false);
+    assert.equal((await liveAvailability(store, cfg, s.env, s.authPaths))("codex").available, false);
     assert.match(quotaBlock(quotaStates(store).codex)!, /cota esgotada até/);
     saveQuota(store, "codex", state("exhausted", { resetsAt: new Date(now - 1).toISOString() }));
-    assert.equal(liveAvailability(store, cfg, s.env, s.authPaths)("codex").available, true);
+    assert.equal((await liveAvailability(store, cfg, s.env, s.authPaths))("codex").available, true);
     assert.ok(recommend(store, cfg, { kind: "implement", tags: [], risk: "low", brain: null }, () => ({ available: true, reasons: [] }), adaptiveCatalog).notes.some((n) => n.includes("Saúde de cota")));
   });
   it("CLI refresh usa descoberta, show expõe estado e set respeita limiar", () => {

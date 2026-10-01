@@ -152,12 +152,10 @@ function evidenceFor(tasks: Task[], cand: Cand, q: RouteQuery, minSamples: numbe
 export type AvailabilityFn = (executor: Provider) => { available: boolean; reasons: string[] };
 
 /** Disponibilidade real, sem inferência: CLI instalada, login por assinatura, ciência de uso extra, limite observado. */
-export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths, deferSettingsToPlan = false): AvailabilityFn {
+export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths, deferSettingsToPlan = false): Promise<AvailabilityFn> {
   const paths = authPaths ?? defaultAuthPaths(store.projectRoot, env);
   const cache = new Map<Provider, { available: boolean; reasons: string[] }>();
-  return (executor) => {
-    const hit = cache.get(executor);
-    if (hit) return hit;
+  for (const executor of ["claude", "codex"] as const) {
     const reasons: string[] = [];
     const resolved = resolveExecutable(executor, cfg.executors[executor].command, env);
     let available = true;
@@ -165,12 +163,18 @@ export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.Proce
       available = false;
       reasons.push(resolved.reason);
     } else {
-      const auth = checkAuth(executor, resolved, cfg, paths, env);
+      const auth = await checkAuth(executor, resolved, cfg, paths, env);
       // Na delegação, cwd/flags só são definitivos no plano (pode ser outra worktree).
       // A seleção não autoriza execução: o gate final sempre inspeciona essas settings.
-      const block = authBlockReason(deferSettingsToPlan ? { ...auth, conflicts: [] } : auth);
       const inCodexSandbox = Boolean(env.CODEX_SANDBOX) || env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
-      if (block && inCodexSandbox && (auth.method === "none" || auth.method === "unknown") && auth.conflicts.length === 0) {
+      // Dentro do sandbox do Codex o app-server não abre (config/read indisponível): conflitos que só dizem
+      // "não verificável" são adiados; duo delegate recusa rodar no sandbox e confere tudo de novo fora dele.
+      // Conflitos detectados de fato continuam bloqueando.
+      const deferred = inCodexSandbox ? new Set(auth.unverifiableConflicts ?? []) : new Set<string>();
+      const conflicts = deferSettingsToPlan ? [] : auth.conflicts.filter((c) => !deferred.has(c));
+      const block = authBlockReason({ ...auth, conflicts });
+      if (deferred.size && !deferSettingsToPlan) reasons.push("configuração do Codex não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
+      if (block && inCodexSandbox && (auth.method === "none" || auth.method === "unknown") && conflicts.length === 0) {
         // Dentro do sandbox do Codex o status de outro cliente pode não ser legível (Keychain, rede); não é indisponibilidade.
         reasons.push("login não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
       } else if (block) {
@@ -182,8 +186,8 @@ export function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.Proce
     if (blocked) { available = false; reasons.push(blocked); }
     const res = { available, reasons };
     cache.set(executor, res);
-    return res;
-  };
+  }
+  return (executor) => cache.get(executor)!;
 }
 
 const key = (p: Provider, m: string | null) => `${p}:${m ?? "(padrão)"}`;

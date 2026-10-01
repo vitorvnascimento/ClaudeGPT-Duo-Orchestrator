@@ -43,7 +43,7 @@ if (args[0] === "debug" && args[1] === "models") {
 if (args[0] === "app-server" && args[1] === "generate-json-schema") {
   // Subconjunto do schema real (0.157.1). FAKE_SCHEMA=drift simula model/list saindo da superfície estável.
   const out = valueOf("--out") ?? valueOf("-o");
-  const methods = ["initialize", "model/list", "modelProvider/capabilities/read", "thread/start"].filter((m) => !(process.env.FAKE_SCHEMA === "drift" && m === "model/list"));
+  const methods = ["initialize", "config/read", "model/list", "modelProvider/capabilities/read", "thread/start"].filter((m) => !(process.env.FAKE_SCHEMA === "drift" && m === "model/list"));
   const required = ["defaultReasoningEffort", "description", "displayName", "hidden", "id", "isDefault", "model", "supportedReasoningEfforts"];
   mkdirSync(join(out, "v2"), { recursive: true });
   writeFileSync(join(out, "ClientRequest.json"), JSON.stringify({ oneOf: methods.map((m) => ({ properties: { method: { enum: [m] } } })) }));
@@ -89,7 +89,7 @@ if (args[0] === "app-server") {
       buf = buf.slice(i + 1);
       if (!line || mode === "hang") continue;
       const m = JSON.parse(line);
-      log({ cmd: "app-server-method", method: m.method, hasParams: "params" in m, env: sensitiveEnvSeen() });
+      log({ cmd: "app-server-method", method: m.method, hasParams: "params" in m, hasCursor: Boolean(m.params?.cursor), env: sensitiveEnvSeen() });
       if (m.method.startsWith("account/") && m.method !== "account/rateLimits/read") throw new Error("forbidden account method");
       if (m.method === "account/rateLimits/read") {
         if (process.env.FAKE_QUOTA === "close") process.exit(1);
@@ -104,7 +104,13 @@ if (args[0] === "app-server") {
         send({ method: "account/updated", params: { email: "pessoa-secreta@example.com", planType: "pro" } });
       } else if (m.method === "initialized") initialized = true;
       else if (!initialized) send({ id: m.id, error: { code: -32002, message: "Not initialized" } });
-      else if (m.method === "model/list") {
+      else if (m.method === "config/read") {
+        log({ cmd: "config-read", env: sensitiveEnvSeen(), pid: process.pid, cwd: m.params?.cwd, includeLayers: m.params?.includeLayers, codexHome: process.env.CODEX_HOME,
+          emptyHome: process.env.CODEX_HOME ? !existsSync(join(process.env.CODEX_HOME, "config.toml")) : null });
+        if (process.env.FAKE_CONFIG_READ === "off") send({ id: m.id, error: { code: -32601, message: "unavailable" } });
+        else if (process.env.FAKE_CONFIG_READ === "hang") continue;
+        else send({ id: m.id, result: { config: JSON.parse(process.env.FAKE_CODEX_CONFIG ?? "{}"), layers: JSON.parse(process.env.FAKE_CODEX_LAYERS ?? "null"), origins: {} } });
+      } else if (m.method === "model/list") {
         if (mode === "badshape") send({ id: m.id, result: { items: [{ slug: "gpt-6-astra" }] } });
         else {
           // Paginação forçada: 3 modelos por página.

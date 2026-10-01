@@ -511,6 +511,12 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
+      // Mesmo cliente com modelo escolhido pela ponte: sem brainModel não há como provar que não é o próprio cérebro.
+      if (adaptive && req.brain === task.executor && !req.brainModel && chainPolicy(store.loadChain(run.runId, rootId)!).automatic) {
+        blockTask(task, `delegar ao mesmo cliente (${task.executor}) com escolha automática de modelo exige brainModel (o modelo do cérebro), para garantir que o executor não é o próprio cérebro; informe brainModel ou fixe model`);
+        store.saveTask(task);
+        return { exitCode: EXIT.blocked, summary: summarize(task) };
+      }
       if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && sameBaseModel(catalog, task.executor, task.model.requested, req.brainModel)) {
         blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
         store.saveTask(task);

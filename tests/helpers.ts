@@ -111,7 +111,18 @@ export function makeSandbox(configPatch: Record<string, unknown> = {}): Sandbox 
   };
 }
 
+// Cérebro realista nos pedidos adaptativos: o modelo do cérebro é conhecido (exigido para delegar ao mesmo
+// cliente com escolha automática) e nunca é escolhido automaticamente nos catálogos de teste (Fable só com
+// ciência+include; gpt-5.5 é legado). Testes que exercitam o próprio cérebro informam brainModel explicitamente.
+const DEFAULT_BRAIN_MODEL = { claude: "claude-fable-5-1", codex: "gpt-5.5" } as const;
+
 export function baseRequest(brain: "claude" | "codex", overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const req = baseRequestRaw(brain, overrides);
+  if (req.adaptive === true && !("brainModel" in overrides)) req.brainModel = DEFAULT_BRAIN_MODEL[brain];
+  return req;
+}
+
+function baseRequestRaw(brain: "claude" | "codex", overrides: Record<string, unknown>): Record<string, unknown> {
   return {
     version: 1,
     adaptive: false, // Contrato pré-adaptativo; testes da fase 2 optam por true.

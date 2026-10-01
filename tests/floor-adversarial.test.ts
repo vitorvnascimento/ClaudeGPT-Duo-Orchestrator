@@ -322,3 +322,15 @@ it("rodada 13: variante [1m] do modelo do cérebro continua sendo o próprio cé
   assert.equal(applyTask(s.root, String(out.summary.taskId)).ok, false);
   assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
 });
+
+it("rodada 15: mesmo cliente com escolha automática sem brainModel é bloqueado antes de executar", async () => {
+  s = makeSandbox();
+  const out = await run(req({ brain: "codex", executor: "codex", kind: "review", reason: "cross_review", risk: "high", brainModel: undefined }));
+  assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+  assert.match(String(out.summary.outcome), /exige brainModel/);
+  assert.equal(s.execCalls().length, 0);
+  // Com brainModel diferente do modelo escolhido, segue normalmente até a execução.
+  const ok = await run(req({ brain: "codex", executor: "codex", kind: "review", reason: "cross_review", risk: "high", brainModel: "gpt-5.5" }));
+  assert.notEqual(String(ok.summary.outcome ?? ""), "", JSON.stringify(ok.summary));
+  assert.doesNotMatch(String(ok.summary.outcome), /exige brainModel/);
+});

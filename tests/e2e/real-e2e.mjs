@@ -37,7 +37,23 @@ function cleanEnv() {
     if (/^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_PID$|CLAUDE_AGENT_SDK|CLAUDE_EFFORT$|ANTHROPIC_|OPENAI_API|OPENAI_BASE|CODEX_API_KEY$|DUO_)/.test(k)) continue;
     env[k] = v;
   }
+  if (DUO_SHIM_DIR) env.PATH = `${DUO_SHIM_DIR}:${process.env.PATH ?? ""}`;
   return env;
+}
+
+// Os cérebros chamam `duo` pelo PATH: o shim garante que é este build, nunca uma instalação global antiga.
+let DUO_SHIM_DIR = null;
+if (!DRY_RUN) installDuoShim(BASE);
+function installDuoShim(base) {
+  const dir = join(base, ".duo-bin");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "duo"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+  DUO_SHIM_DIR = dir;
+  const r = spawnSync("/bin/zsh", ["-lc", "command -v duo"], { env: cleanEnv(), encoding: "utf8" });
+  if (r.stdout.trim() !== join(dir, "duo")) {
+    console.error(`o shell de login não resolve duo para o build em teste (resolveu: ${r.stdout.trim() || "nada"})`);
+    process.exit(2);
+  }
 }
 
 const CHECK_DOUBLE = `import { add, double } from "./src/math.mjs";

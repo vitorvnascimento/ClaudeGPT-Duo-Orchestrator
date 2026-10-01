@@ -51,9 +51,24 @@ function cleanEnv() {
     if (/^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_PID$|CLAUDE_AGENT_SDK|CLAUDE_EFFORT$|ANTHROPIC_|OPENAI_API|OPENAI_BASE|CODEX_API_KEY$|DUO_)/.test(k)) continue;
     env[k] = v;
   }
+  if (DUO_SHIM_DIR) env.PATH = `${DUO_SHIM_DIR}:${process.env.PATH ?? ""}`;
   return env;
 }
-const git = (repo, ...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+// Os cérebros chamam `duo` pelo PATH: o shim garante que é este build, nunca uma instalação global antiga.
+let DUO_SHIM_DIR = null;
+if (!DRY_RUN) installDuoShim(BASE);
+function installDuoShim(base) {
+  const dir = join(base, ".duo-bin");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "duo"), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+  DUO_SHIM_DIR = dir;
+  const r = spawnSync("/bin/zsh", ["-lc", "command -v duo"], { env: cleanEnv(), encoding: "utf8" });
+  if (r.stdout.trim() !== join(dir, "duo")) {
+    console.error(`o shell de login não resolve duo para o build em teste (resolveu: ${r.stdout.trim() || "nada"})`);
+    process.exit(2);
+  }
+}
+const git =(repo, ...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
 const sha256 = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
 const PKG = JSON.stringify({ name: "qt", version: "0.0.0", private: true, type: "module", scripts: { test: "node --test" } }, null, 2);

@@ -27,7 +27,7 @@ describe("versões publicadas das CLIs, sem rede real", () => {
     const fetchImpl: FetchLike = async (url, init) => {
       calls++;
       assert.ok(url === "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest" || url === "https://registry.npmjs.org/@openai%2Fcodex/latest");
-      assert.deepEqual(init.headers, { Accept: "application/json", "User-Agent": "duo-orchestrator/0.2.0" });
+      assert.deepEqual(init.headers, { Accept: "application/json", "User-Agent": "duo-orchestrator/0.3.0" });
       assert.equal(init.redirect, "error");
       assert.equal(init.signal.aborted, false);
       assert.ok(init.signal instanceof AbortSignal);

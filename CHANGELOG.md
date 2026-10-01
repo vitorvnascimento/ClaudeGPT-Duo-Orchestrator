@@ -2,7 +2,7 @@
 
 **English** · [Português](#português)
 
-## 0.3.0 — in development / em desenvolvimento
+## 0.3.0 — 2026-10-01
 
 ### English
 

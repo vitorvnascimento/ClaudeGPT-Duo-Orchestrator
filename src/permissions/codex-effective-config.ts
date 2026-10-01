@@ -169,7 +169,7 @@ async function read(options: ReadOptions, resolved: Resolved & { ok: true }): Pr
         }
       });
       child.stdin.write(`${JSON.stringify({ id: 1, method: "initialize", params: {
-        clientInfo: { name: "duo-orchestrator", version: "0.2.0" },
+        clientInfo: { name: "duo-orchestrator", version: "0.3.0" },
       } })}\n`);
     });
   } catch { return null; }

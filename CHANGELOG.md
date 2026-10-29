@@ -2,6 +2,16 @@
 
 **English** · [Português](#português)
 
+## 0.3.1 — in development / em desenvolvimento
+
+### English
+
+- Windows: Claude Code and Codex installed with npm are now found. npm only puts `claude.cmd`/`codex.cmd` shims on PATH, which the bridge refused because running them needs a shell, so model discovery fell back to the last saved catalog and new models did not appear. The bridge now reads the npm shim and runs its target directly, without a shell: a `.js` target runs with the current Node and a `.exe` target runs as is. Only a single target inside the shim's own `node_modules` folder is accepted; anything else keeps the previous error.
+
+### Português
+
+- Windows: Claude Code e Codex instalados pelo npm agora são encontrados. O npm só coloca os shims `claude.cmd`/`codex.cmd` no PATH, que a ponte recusava por exigirem shell; por isso a descoberta de modelos caía no último catálogo salvo e os modelos novos não apareciam. A ponte agora lê o shim do npm e executa o alvo direto, sem shell: alvo `.js` roda com o Node atual e alvo `.exe` roda como está. Só é aceito um único alvo dentro da própria pasta `node_modules` do shim; qualquer outra coisa mantém o erro anterior.
+
 ## 0.3.0 — 2026-10-01
 
 ### English

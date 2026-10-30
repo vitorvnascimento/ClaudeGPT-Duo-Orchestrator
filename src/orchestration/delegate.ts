@@ -827,7 +827,10 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let result: Awaited<ReturnType<typeof runProcess>>;
   // No Windows não há SIGTERM tratável: `duo cancel` só marca o run, e a ponte percebe aqui e encerra o executor.
   const cancelWatch = process.platform === "win32"
-    ? setInterval(() => { if (store.loadRun(run.runId)?.cancelled) nativeAbort.abort(); }, 300)
+    ? setInterval(() => {
+      // Erro de leitura (arquivo preso por um instante) não pode escapar do timer: tenta de novo no próximo ciclo.
+      try { if (store.loadRun(run.runId)?.cancelled) nativeAbort.abort(); } catch { /* próximo ciclo */ }
+    }, 300)
     : null;
   try {
     result = await runProcess({

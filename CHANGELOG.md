@@ -2,7 +2,7 @@
 
 **English** · [Português](#português)
 
-## 0.3.1 — in development / em desenvolvimento
+## 0.3.1 — 2026-10-30
 
 ### English
 

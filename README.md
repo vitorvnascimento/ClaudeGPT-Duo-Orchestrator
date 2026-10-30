@@ -17,7 +17,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
                                   effective model gpt-6-astra (from Codex's own session log)
 ```
 
-> **Status (September 2026):** 566 offline tests in the current tree; the v0.3.0 validation includes a real E2E suite of 16/16 and a real quality score of **100/100**, with independent evidence of which model executed each part ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Tested on macOS; Windows and Linux have not yet been tested.
+> **Status (October 2026):** 570 offline tests in the current tree; the v0.3.1 validation includes a real E2E suite of 16/16 and a real quality score of **100/100**, with independent evidence of which model executed each part ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Tested on macOS. On Windows the offline suite passes (POSIX-only tests are skipped); the real suite has not been run there yet, and Linux has not been tested.
 
 ## What the project is and is not
 
@@ -57,15 +57,15 @@ To update later: `git pull && npm ci`. To run the offline tests (no model is inv
 **Option 2 — prebuilt release package (no compilation):**
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
 duo --version
 ```
 
 Or download with the GitHub CLI and install the local file:
 
 ```bash
-gh release download v0.3.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.3.0.tgz
+gh release download v0.3.1 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.3.1.tgz
 ```
 
 Without `npm link` or a global installation, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` instead of `duo`. **Removal:** `npm uninstall -g duo-orchestrator` (or `npm unlink -g duo-orchestrator`).
@@ -75,7 +75,7 @@ Without `npm link` or a global installation, use `node /caminho/duo-orchestrator
 `duo` notifies you when a new version is released: at most once a day, in the background, it checks this repository's latest public GitHub release and, if a newer version exists, prints a terminal message (stderr, without interfering with `--json` output):
 
 ```text
-duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.0
+duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.1
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -351,7 +351,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (setembro de 2026):** 566 testes offline na árvore atual; a validação da v0.3.0 inclui bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS; Windows e Linux ainda não foram testados.
+> **Estado (outubro de 2026):** 570 testes offline na árvore atual; a validação da v0.3.1 inclui bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS. No Windows a suíte offline passa (testes só de POSIX são pulados); a bateria real ainda não rodou lá, e o Linux não foi testado.
 
 
 ## O que o projeto é e o que não é
@@ -392,15 +392,15 @@ Para atualizar depois: `git pull && npm ci`. Para rodar os testes offline (nenhu
 **Opção 2 — pacote pronto da release (sem compilar):**
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.0/duo-orchestrator-0.3.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
 duo --version
 ```
 
 Ou baixe com o GitHub CLI e instale o arquivo local:
 
 ```bash
-gh release download v0.3.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.3.0.tgz
+gh release download v0.3.1 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.3.1.tgz
 ```
 
 Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
@@ -410,7 +410,7 @@ Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/
 O `duo` avisa quando sai uma versão nova: no máximo uma vez por dia, em segundo plano, ele consulta a última release pública deste repositório no GitHub e, se houver versão mais nova, mostra no terminal (stderr, sem atrapalhar saídas `--json`):
 
 ```text
-duo: nova versão 0.3.0 disponível (instalada: 0.2.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.0
+duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.1
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 

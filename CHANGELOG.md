@@ -7,7 +7,6 @@
 ### English
 
 - Windows: Claude Code and Codex installed with npm are now found. npm only puts `claude.cmd`/`codex.cmd` shims on PATH, which the bridge refused because running them needs a shell, so model discovery fell back to the last saved catalog and new models did not appear. The bridge now reads the npm shim and runs its target directly, without a shell: a `.js` target runs with the current Node and a `.exe` target runs as is. Only a single target inside the shim's own `node_modules` folder is accepted; anything else keeps the previous error.
-
 - Windows: state files are written with a short retry when another process briefly holds the target open (`EPERM`/`EACCES`/`EBUSY` on rename), instead of blocking the task. `duo cancel` now stops the bridge cleanly: the bridge watches the run's cancel flag and ends the executor itself, so `duo delegate` exits with code 4 and prints its summary instead of being killed after 10 s. Tests that need symlinks or POSIX signals adapt when Windows does not provide them.
 
 ### Português

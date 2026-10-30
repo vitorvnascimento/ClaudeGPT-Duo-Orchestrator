@@ -31,7 +31,7 @@ export async function runAcceptance(
     }
     const r = await runProcess({
       command: resolved.command,
-      args: c.argv.slice(1),
+      args: [...resolved.prefixArgs, ...c.argv.slice(1)],
       cwd,
       env,
       timeoutMs: cfg.limits.acceptanceTimeoutSec * 1000,

@@ -825,6 +825,10 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
   let result: Awaited<ReturnType<typeof runProcess>>;
+  // No Windows não há SIGTERM tratável: `duo cancel` só marca o run, e a ponte percebe aqui e encerra o executor.
+  const cancelWatch = process.platform === "win32"
+    ? setInterval(() => { if (store.loadRun(run.runId)?.cancelled) nativeAbort.abort(); }, 300)
+    : null;
   try {
     result = await runProcess({
       command: plan.command,
@@ -871,6 +875,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     } catch {
       throw e;
     }
+  } finally {
+    if (cancelWatch) clearInterval(cancelWatch);
   }
   if (result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;

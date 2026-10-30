@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { packageRoot } from "../src/paths.js";
@@ -8,6 +8,20 @@ import type { AuthPaths } from "../src/permissions/auth.js";
 export const FAKE_CLAUDE = join(packageRoot(), "tests", "fixtures", "fake-claude.mjs");
 export const FAKE_CODEX = join(packageRoot(), "tests", "fixtures", "fake-codex.mjs");
 export const CLI = join(packageRoot(), "dist", "src", "cli", "main.js");
+
+/** No Windows, criar symlink exige admin ou modo desenvolvedor; os testes que dependem disso pulam essa parte. */
+export const CAN_SYMLINK = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "duo-symlink-"));
+  try {
+    writeFileSync(join(dir, "a"), "");
+    symlinkSync(join(dir, "a"), join(dir, "b"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
 
 export type Sandbox = {
   tmp: string;

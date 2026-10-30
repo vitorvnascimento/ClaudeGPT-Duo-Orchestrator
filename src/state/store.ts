@@ -1,6 +1,6 @@
 // Estado local: Chain/Run versionados por CAS; auditorias em JSON/JSONL.
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { duoDir } from "../paths.js";
 import { isPidAlive } from "../adapters/process.js";
@@ -19,7 +19,25 @@ export function writeJsonAtomic(path: string, value: unknown): void {
   } finally {
     closeSync(fd);
   }
-  renameSync(tmp, path);
+  renameWithRetry(tmp, path);
+}
+
+// No Windows, rename sobre um arquivo aberto por outro processo (leitor do duo, antivírus, indexador) falha com
+// EPERM/EACCES/EBUSY por alguns milissegundos. Tenta de novo por até ~2 s; nos outros sistemas, falha na hora.
+function renameWithRetry(tmp: string, path: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmp, path);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) {
+        try { unlinkSync(tmp); } catch { /* já removido */ }
+        throw e;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + attempt * 5);
+    }
+  }
 }
 
 export function readJson<T>(path: string): T | null {

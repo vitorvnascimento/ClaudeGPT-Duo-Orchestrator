@@ -7,7 +7,7 @@ import { cliUpdateWarnings, fetchCliLatest, loadCliLatest, type FetchLike } from
 import { doctor, formatDoctor } from "../src/cli/doctor.js";
 import { loadConfig } from "../src/config.js";
 import { Store } from "../src/state/store.js";
-import { makeSandbox, type Sandbox } from "./helpers.js";
+import { CAN_SYMLINK, makeSandbox, type Sandbox } from "./helpers.js";
 
 let sb: Sandbox | null = null;
 afterEach(() => { sb?.cleanup(); sb = null; });
@@ -90,11 +90,13 @@ describe("versões publicadas das CLIs, sem rede real", () => {
       writeFileSync(path, raw);
       assert.equal((await loadCliLatest(store, cfg, { env, fetchImpl }))?.versions.codex, "0.159.2");
     }
-    const target = join(s.tmp, "other.json");
-    writeFileSync(target, "não tocar");
-    rmSync(path); symlinkSync(target, path);
-    assert.equal((await loadCliLatest(store, cfg, { env, fetchImpl }))?.versions.codex, "0.159.2");
-    assert.equal(readFileSync(target, "utf8"), "não tocar");
+    if (CAN_SYMLINK) {
+      const target = join(s.tmp, "other.json");
+      writeFileSync(target, "não tocar");
+      rmSync(path); symlinkSync(target, path);
+      assert.equal((await loadCliLatest(store, cfg, { env, fetchImpl }))?.versions.codex, "0.159.2");
+      assert.equal(readFileSync(target, "utf8"), "não tocar");
+    }
     if (process.platform !== "win32") {
       rmSync(path);
       assert.equal(spawnSync("mkfifo", [path]).status, 0);

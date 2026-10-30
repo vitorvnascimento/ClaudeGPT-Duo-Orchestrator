@@ -19,7 +19,7 @@ import { loadSchema, validate } from "../src/schema.js";
 import { canTransition, transition, TransitionError } from "../src/state/machine.js";
 import { writeJsonAtomic } from "../src/state/store.js";
 import type { DelegationRequest, Run, Task } from "../src/state/types.js";
-import { baseRequest } from "./helpers.js";
+import { baseRequest, CAN_SYMLINK } from "./helpers.js";
 
 describe("schema", () => {
   it("aceita pedido válido e rejeita campos extras, enum inválido e tipos errados", () => {
@@ -275,7 +275,7 @@ describe("exemplos da documentação", () => {
 });
 
 describe("duo init: comando gravado nas skills", () => {
-  it("usa `duo` quando o PATH aponta para esta instalação; senão, o caminho absoluto", async () => {
+  it("usa `duo` quando o PATH aponta para esta instalação; senão, o caminho absoluto", { skip: !CAN_SYMLINK && "symlink indisponível" }, async () => {
     const { symlinkSync } = await import("node:fs");
     const { duoCliCommand } = await import("../src/cli/init.js");
     const { cliEntry } = await import("../src/paths.js");

@@ -384,7 +384,9 @@ it("CAS: SIGKILL após fsync do temporário deixa o próximo escritor avançar",
     new Store(root).updateRun(runId, (fresh) => { fresh.invocations++; fresh.taskIds.push('task-crash-before-link'); });
   `;
   const crashed = await worker(script, [store.projectRoot, run.runId]);
-  assert.equal(crashed.signal, "SIGKILL", `${crashed.stderr}\n${crashed.stdout}`);
+  // No Windows, process.kill(SIGKILL) encerra na hora, mas sem sinal: só o código de saída diferente de zero.
+  if (process.platform === "win32") assert.notEqual(crashed.code, 0, `${crashed.stderr}\n${crashed.stdout}`);
+  else assert.equal(crashed.signal, "SIGKILL", `${crashed.stderr}\n${crashed.stdout}`);
   const runDir = revisionDirectory(store, "run", run.runId);
   const orphan = readdirSync(runDir).find((name) => name.endsWith(".tmp"))!;
   assert.ok(orphan, "SIGKILL deixa um temporário completo antes da publicação");

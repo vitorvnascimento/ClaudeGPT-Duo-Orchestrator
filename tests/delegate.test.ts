@@ -15,7 +15,7 @@ import { loadSchema, validate } from "../src/schema.js";
 import type { Task } from "../src/state/types.js";
 import { quotaStates, saveQuota } from "../src/orchestration/quota.js";
 import { buildReport } from "../src/telemetry/report.js";
-import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
+import { baseRequest, CAN_SYMLINK, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
 let sb: Sandbox | null = null;
 afterEach(() => {
@@ -737,8 +737,8 @@ describe("recursão e escopo", () => {
 
   it("traversal, caminho absoluto, .env e symlink para fora são rejeitados antes da execução", async () => {
     const s = setup();
-    symlinkSync(s.tmp, join(s.root, "escape"));
-    for (const p of ["../outside.ts", "/etc/passwd", ".env", "escape/x.ts", ".git/config"]) {
+    if (CAN_SYMLINK) symlinkSync(s.tmp, join(s.root, "escape"));
+    for (const p of ["../outside.ts", "/etc/passwd", ".env", ...(CAN_SYMLINK ? ["escape/x.ts"] : []), ".git/config"]) {
       const out = await run(s, baseRequest("claude", { scope: { allowedPaths: [p] } }));
       assert.equal(out.exitCode, 3, p);
       assert.match(String(out.summary.outcome), /escopo inválido/, p);

@@ -2,6 +2,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
@@ -36,7 +37,7 @@ globalThis.fetch = async (url, init) => {
   return { ok: true, json: async () => ({ version: String(url).includes("openai") ? "0.159.2" : "2.1.285" }) };
 };`);
     const env = { ...s.env, DUO_NO_UPDATE_CHECK: "0", CI: "", CODEX_SANDBOX: "", CODEX_SANDBOX_NETWORK_DISABLED: "", XDG_CACHE_HOME: cache, FAKE_CODEX_VERSION: "0.157.1", FAKE_CLAUDE_VERSION: "2.1.283" };
-    const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, ["--import", preload, CLI, ...args], { cwd: s.root, env: { ...env, ...extra }, encoding: "utf8" });
+    const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, CLI, ...args], { cwd: s.root, env: { ...env, ...extra }, encoding: "utf8" });
     const text = run(["models"]);
     assert.equal(text.status, 0, text.stderr);
     assert.match(text.stdout, /CLI codex desatualizada \(0\.157\.1 < 0\.159\.2\).*npm i -g @openai\/codex@latest/);

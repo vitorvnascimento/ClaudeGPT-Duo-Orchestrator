@@ -178,8 +178,12 @@ export function loadConfig(projectRoot: string): DuoConfig {
   if (!["balance", "preserve-codex", "preserve-claude"].includes(cfg.quotaPreference)) problems.push("quotaPreference");
   if (!Number.isInteger(cfg.limits.maxDelegationsPerRun) || cfg.limits.maxDelegationsPerRun < 1) problems.push("limits.maxDelegationsPerRun");
   if (!Number.isInteger(cfg.limits.maxConcurrentExecutors) || cfg.limits.maxConcurrentExecutors < 1 || cfg.limits.maxConcurrentExecutors > 4) problems.push("limits.maxConcurrentExecutors (inteiro de 1 a 4)");
+  const rawLimits = (raw as { limits?: Record<string, unknown> } | null)?.limits;
+  if (!rawLimits || !Object.hasOwn(rawLimits, "worktreeLinks")) {
+    cfg.limits.worktreeLinks = cfg.limits.worktreeLinks.filter((p) => !isDenied(p, cfg.scope.deny));
+  }
   if (!Array.isArray(cfg.limits.worktreeLinks) || !cfg.limits.worktreeLinks.every((p) =>
-    typeof p === "string" && p !== "." && normalizeRel(p) === p && !p.includes("\\") && !p.split("/").includes("..") && !isDenied(p, cfg.scope.deny)
+    typeof p === "string" && p !== "." && p !== ".duo" && !p.startsWith(".duo/") && normalizeRel(p) === p && !p.includes("\\") && !p.split("/").includes("..") && !isDenied(p, cfg.scope.deny)
   )) problems.push("limits.worktreeLinks (caminhos relativos POSIX, sem .. e fora de scope.deny)");
   for (const field of ["timeoutSec", "acceptanceTimeoutSec"] as const) {
     const value = cfg.limits[field];

@@ -41,6 +41,16 @@ describe("limites numéricos da config", () => {
     }
   });
 
+  it("config existente com node_modules/** negado continua carregando e não liga node_modules", () => {
+    const dir = writeLimits({});
+    writeFileSync(configPath(dir), JSON.stringify({ scope: { deny: ["node_modules/**"] } }));
+    assert.deepEqual(loadConfig(dir).limits.worktreeLinks, []);
+    writeFileSync(configPath(dir), JSON.stringify({ scope: { deny: ["node_modules/**"] }, limits: { worktreeLinks: ["node_modules"] } }));
+    assert.throws(() => loadConfig(dir), /worktreeLinks/);
+    writeFileSync(configPath(dir), JSON.stringify({ scope: { deny: [] }, limits: { worktreeLinks: [".duo/locks"] } }));
+    assert.throws(() => loadConfig(dir), /worktreeLinks/);
+  });
+
   const ranges = [
     { field: "timeoutSec", minimum: 1, maximum: 86400 },
     { field: "acceptanceTimeoutSec", minimum: 1, maximum: 86400 },

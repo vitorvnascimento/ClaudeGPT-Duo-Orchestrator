@@ -444,7 +444,8 @@ const scenarios = {
       c("4 tarefas succeeded (2 implement, review, test)", names.every(ok), names.map((k) => `${k}: ${results[k].json?.state} ${(results[k].json?.outcome ?? results[k].stderr).slice(0, 140)}`)),
       c("executores Codex vivos ao mesmo tempo (≥ 2 processos em worktrees distintas)", maxExecutors >= 2, `máximo observado: ${maxExecutors}`),
       c("as 4 vagas ficaram ocupadas antes da quinta", slotsAtFifth === 4, slotsAtFifth),
-      c("quinta tarefa recusada pelo limite, sem chamar executor", fifthRejected || fifthInconclusive, `${fifthInconclusive ? "INCONCLUSIVO (uma vaga foi liberada antes da admissão) — " : ""}${fifth.code}: ${fifth.json?.outcome ?? fifth.stdout.slice(0, 200)}`),
+      // Só passa com rejeição observada. Admissão com uma vaga possivelmente liberada é inconclusiva e NÃO aprova: repita o P1.
+      c("quinta tarefa recusada pelo limite, sem chamar executor", fifthRejected, `${fifthInconclusive ? "INCONCLUSIVO (talvez uma vaga tenha sido liberada antes da admissão; repita o P1) — " : ""}${fifth.code}: ${fifth.json?.outcome ?? fifth.stdout.slice(0, 200)}`),
       c("todas em worktree", names.every((k) => task(k)?.isolation === "worktree"), names.map((k) => task(k)?.isolation)),
       c("worktrees enxergaram o trabalho não commitado do cérebro", sawBrainEdit),
       c("patches só com o arquivo da própria tarefa", JSON.stringify(task("implA")?.verification?.filesChangedActual) === '["src/a.mjs"]' && JSON.stringify(task("implB")?.verification?.filesChangedActual) === '["src/b.mjs"]' && JSON.stringify(task("test")?.verification?.filesChangedActual) === '["tests/d.test.mjs"]', names.map((k) => task(k)?.verification?.filesChangedActual)),

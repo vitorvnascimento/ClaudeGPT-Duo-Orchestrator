@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -121,4 +122,51 @@ describe("cota no catálogo e na seleção", () => {
     cli("set", "--provider", "claude", "--used-percent", "85");
     assert.equal(cli("show").claude.state.status, "warning");
   });
+});
+
+it("8 processos gravando cota e capacidade ao mesmo tempo não perdem entradas", async () => {
+  s = makeSandbox();
+  const root = s.root;
+  const modules = {
+    store: new URL("../src/state/store.js", import.meta.url).href,
+    report: new URL("../src/telemetry/report.js", import.meta.url).href,
+    capacity: new URL("../src/orchestration/capacity.js", import.meta.url).href,
+  };
+  const children = Array.from({ length: 8 }, (_, i) => spawn(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const original = fs.readFileSync;
+    fs.readFileSync = function(path, ...args) {
+      try { return original.call(this, path, ...args); }
+      finally {
+        if (String(path).endsWith('quota.json') || String(path).endsWith('quota-state.json') || String(path).endsWith('capacity-state.json'))
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60);
+      }
+    };
+    syncBuiltinESMExports();
+    const { Store } = await import(${JSON.stringify(modules.store)});
+    const { setQuota } = await import(${JSON.stringify(modules.report)});
+    const { recordCapacity } = await import(${JSON.stringify(modules.capacity)});
+    process.on('message', () => {
+      const store = new Store(${JSON.stringify(root)}), provider = ${JSON.stringify(i % 2 ? "claude" : "codex")};
+      setQuota(store, { provider, usedPercent: ${i}, resetsAt: null, note: 'concorrência' });
+      recordCapacity(store, provider, ${JSON.stringify(`modelo-${i}`)});
+      process.disconnect();
+    });
+    process.send('ready');
+  `], { stdio: ["ignore", "ignore", "inherit", "ipc"] }));
+  const exits = children.map((c) => once(c, "exit"));
+  try {
+    await Promise.all(children.map((c) => once(c, "message")));
+    children.forEach((c) => c.send("go"));
+    for (const [code] of await Promise.all(exits)) assert.equal(code, 0);
+    const quota = JSON.parse(readFileSync(join(root, ".duo/quota.json"), "utf8"));
+    assert.deepEqual(Object.keys(quota).sort(), ["claude", "codex"]);
+    assert.deepEqual(Object.keys(quotaStates(new Store(root))).sort(), ["claude", "codex"]);
+    const capacity = JSON.parse(readFileSync(join(root, ".duo/capacity-state.json"), "utf8"));
+    assert.deepEqual(capacity.entries.map((e: { model: string }) => e.model).sort(), Array.from({ length: 8 }, (_, i) => `modelo-${i}`));
+  } finally {
+    children.forEach((c) => { if (c.exitCode === null) c.kill(); });
+    await Promise.all(exits);
+  }
 });

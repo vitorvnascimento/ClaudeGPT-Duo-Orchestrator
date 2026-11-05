@@ -3,7 +3,7 @@
 // procura outro de nível igual ou superior. Nada da conta é gravado.
 import { join } from "node:path";
 import type { Provider } from "../config.js";
-import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
+import { readJson, type Store, updateJsonLocked } from "../state/store.js";
 
 export const CAPACITY_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -13,8 +13,7 @@ function capacityPath(store: Store): string {
   return join(store.base, "capacity-state.json");
 }
 
-function entries(store: Store, now: number): CapacityEntry[] {
-  const raw = readJson<{ entries?: unknown }>(capacityPath(store));
+function entries(raw: { entries?: unknown } | null, now: number): CapacityEntry[] {
   const list = Array.isArray(raw?.entries) ? raw.entries : [];
   return list.filter((e): e is CapacityEntry =>
     !!e && typeof e === "object"
@@ -28,14 +27,15 @@ export function recordCapacity(store: Store, provider: Provider, model: string |
   const until = new Date(now + CAPACITY_COOLDOWN_MS).toISOString();
   const key = (e: CapacityEntry) => `${e.provider}:${e.model ?? ""}`.toLowerCase();
   const fresh: CapacityEntry = { provider, model, until };
-  const kept = entries(store, now).filter((e) => key(e) !== key(fresh));
-  writeJsonAtomic(capacityPath(store), { entries: [...kept, fresh] });
+  updateJsonLocked<{ entries: CapacityEntry[] }>(capacityPath(store), (saved) => ({
+    entries: [...entries(saved, now).filter((e) => key(e) !== key(fresh)), fresh],
+  }));
   return until;
 }
 
 /** Motivo do bloqueio se o modelo está sem capacidade agora; null se está livre. */
 export function capacityBlock(store: Store, provider: Provider, model: string | null, now = Date.now()): string | null {
   const m = model?.toLowerCase() ?? null;
-  const hit = entries(store, now).find((e) => e.provider === provider && (e.model?.toLowerCase() ?? null) === m);
+  const hit = entries(readJson(capacityPath(store)), now).find((e) => e.provider === provider && (e.model?.toLowerCase() ?? null) === m);
   return hit ? `modelo ${model ?? "padrão"} sem capacidade no fornecedor até ${hit.until}` : null;
 }

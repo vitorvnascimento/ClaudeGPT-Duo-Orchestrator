@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import type { Provider } from "../config.js";
 import { quotaStates, quotaStatus, saveQuota } from "../orchestration/quota.js";
-import { readJson, Store, writeJsonAtomic } from "../state/store.js";
+import { readJson, Store, updateJsonLocked } from "../state/store.js";
 import type { Run, Task } from "../state/types.js";
 
 export type QuotaEntry = {
@@ -21,10 +21,8 @@ export function quotaPath(store: Store): string {
 }
 
 export function setQuota(store: Store, entry: Omit<QuotaEntry, "source" | "recordedAt">, warn = 90): QuotaEntry {
-  const all = readJson<Record<string, QuotaEntry>>(quotaPath(store)) ?? {};
   const full: QuotaEntry = { ...entry, source: "manual", recordedAt: new Date().toISOString() };
-  all[entry.provider] = full;
-  writeJsonAtomic(quotaPath(store), all);
+  updateJsonLocked<Record<string, QuotaEntry>>(quotaPath(store), (all) => ({ ...all, [entry.provider]: full }));
   saveQuota(store, entry.provider, { status: quotaStatus(entry.usedPercent, warn), usedPercent: entry.usedPercent, resetsAt: entry.resetsAt ? new Date(entry.resetsAt).toISOString() : null, observedAt: full.recordedAt, source: "manual", affectedModels: null });
   return full;
 }

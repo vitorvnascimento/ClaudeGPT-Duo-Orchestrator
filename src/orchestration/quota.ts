@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ModelInfo } from "../adapters/catalog.js";
 import type { ParsedOutcome } from "../adapters/types.js";
 import type { Provider } from "../config.js";
-import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
+import { readJson, type Store, updateJsonLocked } from "../state/store.js";
 
 export type QuotaState = {
   status: "ok" | "warning" | "exhausted" | "unknown";
@@ -34,10 +34,18 @@ export function quotaStates(store: Store, now = Date.now()): Partial<Record<Prov
   return states;
 }
 export function saveQuota(store: Store, provider: Provider, state: QuotaState): void {
-  // Lista fechada: nenhum campo de conta, plano, créditos ou credencial chega ao disco.
-  const safe: QuotaState = { status: state.status, usedPercent: state.usedPercent, resetsAt: state.resetsAt,
-    observedAt: state.observedAt, source: state.source, affectedModels: state.affectedModels };
-  writeJsonAtomic(quotaStatePath(store), { ...quotaStates(store), [provider]: safe });
+  updateQuota(store, provider, () => state);
+}
+
+function updateQuota(store: Store, provider: Provider, change: (previous: QuotaState | undefined) => QuotaState): void {
+  updateJsonLocked<Partial<Record<Provider, QuotaState>>>(quotaStatePath(store), () => {
+    const states = quotaStates(store);
+    const state = change(states[provider]);
+    // Lista fechada: nenhum campo de conta, plano, créditos ou credencial chega ao disco.
+    const safe: QuotaState = { status: state.status, usedPercent: state.usedPercent, resetsAt: state.resetsAt,
+      observedAt: state.observedAt, source: state.source, affectedModels: state.affectedModels };
+    return { ...states, [provider]: safe };
+  });
 }
 
 /** Lê somente janelas, reachedType, slug e admissão geral. Todo o resto é descartado. */
@@ -80,16 +88,15 @@ export function parseCodexQuota(raw: unknown, models: ModelInfo[], warn = 90, no
 }
 
 export function observeTaskQuota(store: Store, provider: Provider, outcome: ParsedOutcome, model: string | null = null): void {
-  const previous = quotaStates(store)[provider];
   const rl = outcome.rateLimit;
   if (rl && provider === "claude") {
     saveQuota(store, provider, { status: rl.status === "allowed" ? "ok" : rl.status === "allowed_warning" ? "warning" : rl.status ? "exhausted" : "unknown",
       usedPercent: null, resetsAt: iso(rl.resetsAt), observedAt: new Date().toISOString(), source: "claude-rate-limit-event", affectedModels: null });
   }
   if (outcome.errorKind === "quota") {
-    saveQuota(store, provider, { status: "exhausted", usedPercent: previous?.usedPercent ?? null,
+    updateQuota(store, provider, (previous) => ({ status: "exhausted", usedPercent: previous?.usedPercent ?? null,
       resetsAt: iso(rl?.resetsAt) ?? previous?.resetsAt ?? null, observedAt: new Date().toISOString(), source: "task-error",
-      affectedModels: previous?.status === "exhausted" && (!previous.affectedModels || model && previous.affectedModels.includes(model)) ? previous.affectedModels : null });
+      affectedModels: previous?.status === "exhausted" && (!previous.affectedModels || model && previous.affectedModels.includes(model)) ? previous.affectedModels : null }));
   }
 }
 

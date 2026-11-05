@@ -33,6 +33,7 @@ Each scenario creates a disposable Git repository at `<base>/<id>`, with `.duo/c
 | A1 | Claude→Codex | Direct art: `kind: asset`, `needs: [image_generation]`, `model: gpt-6-astra` | `succeeded`, args with `--model gpt-6-astra --enable image_generation`, valid image (signature + dimensions) at the authorized path |
 | T14 | **Claude brain**, models named by user | "Opus 5.5 for code, GPT-6-Astra for art" | Art delegated to `codex/gpt-6-astra` and verified; code done by Opus 5.5 itself (not delegated to another model); `check.mjs` passes; response cites both models |
 | T15 | **Codex brain**, automatic choice by part | Same task, without naming models; history: `claude-opus-5-5` 4/4 in implement/mjs | `duo recommend` consulted for both parts; code delegated to `claude-opus-5-5` and verified; image made by a model with `image_generation`; no art sent to a model without the capability |
+| P1 | Claude→4×Codex | 2 `implement` in the same wide scope (`src`), 1 `review`, 1 `test`, all `isolation: worktree` with one shared `runId`, while the brain has an uncommitted edit; a 5th request once all four slots are busy; then the brain edits `src/b.mjs` and applies the patches | All 4 `succeeded`; ≥ 2 live Codex executors in distinct worktrees at once; 5th refused by the 4-executor limit without calling an executor; every worktree saw the brain's uncommitted edit and no patch carries it; `impl-b` apply rejected for drift in `src/b.mjs`, `impl-a` and `test` applied; 5 invocations counted; no slot, mirror, executor process or new plugin broker left |
 
 ## Results
 
@@ -41,6 +42,7 @@ Each scenario creates a disposable Git repository at `<base>/<id>`, with `.duo/c
 | Complete, from scratch | `claude` 2.1.114 + Sonnet, `codex` 0.157.1, T1–T11 | 11/11 |
 | Complete, from scratch | `claude` 2.1.283 + **`claude-opus-5-5`**, `codex` 0.157.1, T1–T13 | **13/13** (~10 min, no remaining processes) |
 | Complete, from scratch | Same, T1–T15 + A1 (multiple models and art) | **16/16** (~14.5 min, no remaining processes) |
+| Complete, from scratch (05/11/2026, `feature/parallel-executors`) | `claude` 2.1.303 + `claude-opus-5-5`, `codex` 0.163.0, T1–T15 + A1 + **P1** | **17/17** (~17 min, no remaining processes); P1 rerun alone with the final checks: 19/19, peak of **4** live Codex executors at once |
 
 ## Execution notes from 26/09/2026
 
@@ -117,6 +119,7 @@ Cada cenário cria um repositório Git descartável em `<base>/<id>`, com `.duo/
 | A1 | Claude→Codex | Arte direta: `kind: asset`, `needs: [image_generation]`, `model: gpt-6-astra` | `succeeded`, args com `--model gpt-6-astra --enable image_generation`, imagem válida (assinatura + dimensões) no caminho autorizado |
 | T14 | **Claude cérebro**, modelos nomeados pelo usuário | "Opus 5.5 para o código, GPT-6-Astra para a arte" | Arte delegada a `codex/gpt-6-astra` e verificada; código feito pelo próprio Opus 5.5 (não delegado a outro modelo); `check.mjs` passa; resposta cita os dois modelos |
 | T15 | **Codex cérebro**, escolha automática por parte | Mesma tarefa, sem nomear modelos; histórico: `claude-opus-5-5` 4/4 em implement/mjs | `duo recommend` consultado para as duas partes; código delegado ao `claude-opus-5-5` e verificado; imagem feita por modelo com `image_generation`; nenhuma arte para modelo sem a capacidade |
+| P1 | Claude→4×Codex | 2 `implement` no mesmo escopo amplo (`src`), 1 `review`, 1 `test`, todos `isolation: worktree` com um `runId` compartilhado, com edição não commitada do cérebro; um 5º pedido com as quatro vagas ocupadas; depois o cérebro edita `src/b.mjs` e aplica os patches | Os 4 `succeeded`; ≥ 2 executores Codex vivos em worktrees distintas ao mesmo tempo; 5º recusado pelo limite de 4 sem chamar executor; toda worktree viu a edição não commitada e nenhum patch a carrega; apply de `impl-b` rejeitado por deriva em `src/b.mjs`, `impl-a` e `test` aplicados; 5 invocações contadas; nenhuma vaga, espelho, processo de executor ou broker novo do plugin sobrando |
 
 ## Resultados
 
@@ -125,6 +128,7 @@ Cada cenário cria um repositório Git descartável em `<base>/<id>`, com `.duo/
 | Completa, do zero | `claude` 2.1.114 + Sonnet, `codex` 0.157.1, T1–T11 | 11/11 |
 | Completa, do zero | `claude` 2.1.283 + **`claude-opus-5-5`**, `codex` 0.157.1, T1–T13 | **13/13** (~10 min, sem processos remanescentes) |
 | Completa, do zero | Idem, T1–T15 + A1 (multimodelo e arte) | **16/16** (~14,5 min, sem processos remanescentes) |
+| Completa, do zero (05/11/2026, `feature/parallel-executors`) | `claude` 2.1.303 + `claude-opus-5-5`, `codex` 0.163.0, T1–T15 + A1 + **P1** | **17/17** (~17 min, sem processos remanescentes); P1 repetido sozinho com os critérios finais: 19/19, pico de **4** executores Codex vivos ao mesmo tempo |
 
 ## Observações da execução de 26/09/2026
 

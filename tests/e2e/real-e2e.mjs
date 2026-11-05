@@ -138,6 +138,24 @@ function duo(repo, args, timeoutMs = 9 * 60_000) {
   return { code: r.status, json, stdout: r.stdout, stderr: r.stderr };
 }
 
+/** Versão assíncrona de duo(): permite vários `duo delegate` ao mesmo tempo (cenário P1). */
+function duoAsync(repo, args, timeoutMs = 12 * 60_000) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(process.execPath, [CLI, ...args], { cwd: repo, env: cleanEnv() });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      let json = null;
+      try { json = JSON.parse(stdout); } catch { /* saída não JSON */ }
+      resolve({ code, json, stdout, stderr, started, ended: Date.now() });
+    });
+  });
+}
+
 function allTasks(repo) {
   const runs = join(repo, ".duo", "runs");
   if (!existsSync(runs)) return [];
@@ -332,6 +350,115 @@ const scenarios = {
       c("working tree principal intocado antes do apply", mainUntouched),
       c("duo apply ok", applied?.code === 0, applied?.stdout?.slice(0, 200)),
       c("check passa no working tree principal", check(repo) === 0),
+    ];
+  },
+
+  // P1: quatro Codex em paralelo no mesmo run (2 implement no mesmo escopo amplo, 1 review, 1 test), cada um numa
+  // worktree com o trabalho não commitado do cérebro; 5º recusado; applies em sequência com rejeição por deriva.
+  async P1() {
+    const files = {
+      "src/a.mjs": `export const nomeA = "a";\n`,
+      "src/b.mjs": `export const nomeB = "b";\n`,
+      "src/c.mjs": BUGGY,
+      "src/d.mjs": `export function fd() {\n  return "d";\n}\n`,
+      "check-a.mjs": `import { fa } from "./src/a.mjs";\nprocess.exit(fa() === "a" ? 0 : 1);\n`,
+      "check-b.mjs": `import { fb } from "./src/b.mjs";\nprocess.exit(fb() === "b" ? 0 : 1);\n`,
+    };
+    const repo = makeRepo("P1", { files, config: {
+      acceptance: { allowedCommands: [["node", "check.mjs"], ["node", "check-a.mjs"], ["node", "check-b.mjs"], ["node", "tests/d.test.mjs"]] },
+      limits: { maxConcurrentExecutors: 4, maxDelegationsPerRun: 8 },
+    } });
+    const brokers = () => (spawnSync("pgrep", ["-f", "app-server-broker"], { encoding: "utf8" }).stdout ?? "").split("\n").filter(Boolean).length;
+    const brokersBefore = brokers();
+    // Trabalho não commitado do cérebro: cada worktree precisa enxergá-lo, e nenhum patch pode trazê-lo.
+    const brainEdit = "export function add(a, b) {\n  // nota do cérebro, ainda não commitada\n  return a + b;\n}\n";
+    writeFileSync(join(repo, "src", "math.mjs"), brainEdit);
+    // Um run compartilhado: uma revisão curta só leitura cria o run que as quatro tarefas usam.
+    const seed = duo(repo, ["delegate", "--request", writeReq(repo, "seed", req({
+      brain: "claude", executor: "codex", kind: "review",
+      objective: "Read src/math.mjs and say in one sentence what add() returns. Do not change any file.",
+      scope: { allowedPaths: ["src/math.mjs"] }, acceptance: { criteria: ["nenhum arquivo alterado"], commands: [] },
+    }))]);
+    const runId = seed.json?.runId;
+    const job = (name, o) => duoAsync(repo, ["delegate", "--request", writeReq(repo, name, req({ brain: "claude", executor: "codex", isolation: "worktree", runId, taskKey: name, ...o }))]);
+    const jobs = {
+      implA: job("impl-a", { kind: "implement", scope: { allowedPaths: ["src"] },
+        objective: 'In src/a.mjs add an exported function fa() that returns "a". Change only src/a.mjs.',
+        acceptance: { criteria: ["node check-a.mjs termina com exit 0"], commands: [{ name: "check", argv: ["node", "check-a.mjs"] }] } }),
+      implB: job("impl-b", { kind: "implement", scope: { allowedPaths: ["src"] },
+        objective: 'In src/b.mjs add an exported function fb() that returns "b". Change only src/b.mjs.',
+        acceptance: { criteria: ["node check-b.mjs termina com exit 0"], commands: [{ name: "check", argv: ["node", "check-b.mjs"] }] } }),
+      review: job("review-c", { kind: "review", scope: { allowedPaths: ["src/c.mjs"] },
+        objective: "Review src/c.mjs for a bug in applyDiscount and describe it in one sentence. Do not change any file.",
+        acceptance: { criteria: ["nenhum arquivo alterado"], commands: [] } }),
+      test: job("test-d", { kind: "test", scope: { allowedPaths: ["tests"] },
+        objective: 'Create tests/d.test.mjs that imports fd from "../src/d.mjs", exits with code 1 if fd() !== "d" and 0 otherwise. Use only node built-ins.',
+        acceptance: { criteria: ["node tests/d.test.mjs termina com exit 0"], commands: [{ name: "check", argv: ["node", "tests/d.test.mjs"] }] } }),
+    };
+    // Amostra os slots enquanto rodam: slot ativo = executor admitido e em execução (evidência de sobreposição real).
+    // Sobreposição real: executores Codex vivos ao mesmo tempo, contados por worktree distinta no `--cd` do processo.
+    let maxExecutors = 0, slotsAtFifth = 0, sampling = true;
+    const liveExecutors = () => new Set(processesFor(repo).filter((l) => /codex/.test(l) && /\bexec\b/.test(l))
+      .map((l) => /\.duo\/worktrees\/([^ /]+)/.exec(l)?.[1]).filter(Boolean)).size;
+    const sampler = (async () => {
+      while (sampling) {
+        maxExecutors = Math.max(maxExecutors, liveExecutors());
+        await sleep(250);
+      }
+    })();
+    // Quinta tarefa só quando as quatro vagas estiverem ocupadas (até 3 min): precisa ser recusada, sem fila.
+    // Sem espera depois de ver 4: a quinta sai na hora. Se a saturação nunca aparecer, a quinta não é disparada.
+    for (const deadline = Date.now() + 180_000; Date.now() < deadline; await sleep(300)) {
+      slotsAtFifth = (duo(repo, ["status", "--json"]).json?.slots ?? []).length;
+      if (slotsAtFifth === 4) break;
+    }
+    const fifthStarted = Date.now();
+    const fifth = slotsAtFifth !== 4 ? { code: null, json: null, stdout: "quinta não disparada: as 4 vagas nunca ficaram ocupadas" } : duo(repo, ["delegate", "--request", writeReq(repo, "quinta", req({
+      brain: "claude", executor: "codex", kind: "review", isolation: "worktree", runId, taskKey: "quinta",
+      objective: "Read src/a.mjs. Do not change any file.", scope: { allowedPaths: ["src/a.mjs"] }, acceptance: { criteria: ["nada alterado"], commands: [] },
+    }))]);
+    const names = Object.keys(jobs);
+    const results = Object.fromEntries(names.map((k, i) => [k, null]));
+    const settled = await Promise.all(Object.values(jobs));
+    names.forEach((k, i) => { results[k] = settled[i]; });
+    sampling = false; await sampler;
+    const task = (k) => allTasks(repo).find((t) => t.taskId === results[k].json?.taskId);
+    const mainUntouchedBefore = ["a", "b", "c", "d"].every((x) => readFileSync(join(repo, "src", `${x}.mjs`), "utf8") === files[`src/${x}.mjs`]) && !existsSync(join(repo, "tests", "d.test.mjs"));
+    const sawBrainEdit = names.every((k) => task(k)?.worktree && readFileSync(join(task(k).worktree, "src", "math.mjs"), "utf8") === brainEdit);
+    // Deriva: o cérebro mexe em src/b.mjs depois do snapshot; o patch de impl-b precisa ser rejeitado.
+    writeFileSync(join(repo, "src", "b.mjs"), `export const nomeB = "b"; // editado depois do snapshot\n`);
+    const applyB = duo(repo, ["apply", "--task-id", task("implB").taskId]);
+    const applyA = duo(repo, ["apply", "--task-id", task("implA").taskId]);
+    const applyT = duo(repo, ["apply", "--task-id", task("test").taskId]);
+    const run = duo(repo, ["status", "--json"]).json?.runs?.find((x) => x.runId === runId);
+    const finalSlots = duo(repo, ["status", "--json"]).json?.slots ?? [];
+    await sleep(500);
+    const leftovers = processesFor(repo).filter((l) => /codex|claude/.test(l));
+    const ok = (k) => results[k].json?.state === "succeeded";
+    // Se alguma das quatro terminou antes de a quinta chegar à admissão, aceitar a quinta é correto: tentativa inconclusiva.
+    const fifthRejected = fifth.code === 3 && /limite de 4/.test(fifth.json?.outcome ?? fifth.stdout);
+    const fifthInconclusive = !fifthRejected && slotsAtFifth === 4 && Math.min(...settled.map((r) => r.ended)) < Date.now() && settled.some((r) => r.ended < fifthStarted + 15_000);
+    const expectedInvocations = 5 + (fifthInconclusive && fifth.json?.taskId ? 1 : 0);
+    return [
+      c("run compartilhado criado", Boolean(runId), seed.json?.outcome),
+      c("4 tarefas succeeded (2 implement, review, test)", names.every(ok), names.map((k) => `${k}: ${results[k].json?.state} ${(results[k].json?.outcome ?? results[k].stderr).slice(0, 140)}`)),
+      c("executores Codex vivos ao mesmo tempo (≥ 2 processos em worktrees distintas)", maxExecutors >= 2, `máximo observado: ${maxExecutors}`),
+      c("as 4 vagas ficaram ocupadas antes da quinta", slotsAtFifth === 4, slotsAtFifth),
+      c("quinta tarefa recusada pelo limite, sem chamar executor", fifthRejected || fifthInconclusive, `${fifthInconclusive ? "INCONCLUSIVO (uma vaga foi liberada antes da admissão) — " : ""}${fifth.code}: ${fifth.json?.outcome ?? fifth.stdout.slice(0, 200)}`),
+      c("todas em worktree", names.every((k) => task(k)?.isolation === "worktree"), names.map((k) => task(k)?.isolation)),
+      c("worktrees enxergaram o trabalho não commitado do cérebro", sawBrainEdit),
+      c("patches só com o arquivo da própria tarefa", JSON.stringify(task("implA")?.verification?.filesChangedActual) === '["src/a.mjs"]' && JSON.stringify(task("implB")?.verification?.filesChangedActual) === '["src/b.mjs"]' && JSON.stringify(task("test")?.verification?.filesChangedActual) === '["tests/d.test.mjs"]', names.map((k) => task(k)?.verification?.filesChangedActual)),
+      c("review não alterou nada", (task("review")?.verification?.filesChangedActual ?? []).length === 0 && /percent|100/i.test(task("review")?.executorReport?.summary ?? ""), (task("review")?.executorReport?.summary ?? "").slice(0, 200)),
+      c("working tree principal intocado antes dos applies", mainUntouchedBefore),
+      c("apply de impl-b rejeitado por deriva em src/b.mjs", applyB.code !== 0 && /src\/b\.mjs/.test(applyB.stdout), applyB.stdout.slice(0, 200)),
+      c("apply de impl-a ok no mesmo escopo amplo (outra deriva só avisa)", applyA.code === 0, applyA.stdout.slice(0, 240)),
+      c("apply do test ok", applyT.code === 0, applyT.stdout.slice(0, 200)),
+      c("checks finais passam (fa e teste de fd)", spawnSync(process.execPath, ["check-a.mjs"], { cwd: repo }).status === 0 && spawnSync(process.execPath, ["tests/d.test.mjs"], { cwd: repo }).status === 0),
+      c("edição do cérebro preservada", readFileSync(join(repo, "src", "math.mjs"), "utf8") === brainEdit),
+      c("invocações do run contadas sem perda (1 + 4, + quinta se inconclusiva)", run?.invocations === expectedInvocations, `${run?.invocations} (esperado ${expectedInvocations})`),
+      c("nenhum slot nem espelho sobrando", finalSlots.length === 0 && !existsSync(join(repo, ".duo", "lock.json")) && !existsSync(join(repo, ".duo", "locks", "admission.lock")), finalSlots),
+      c("sem processo de executor sobrando", leftovers.length === 0, leftovers),
+      c("nenhum broker novo do plugin (sem threads Codex Companion Task)", brokers() <= brokersBefore, `${brokersBefore} → ${brokers()}`),
     ];
   },
 

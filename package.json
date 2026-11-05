@@ -1,6 +1,6 @@
 {
   "name": "duo-orchestrator",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "ClaudeGPT - Duo Orchestrator by Fusic: a local bridge for Claude Code and Codex through official CLIs and your own subscriptions, with the best model for each task and independent verification. · Ponte local para Claude Code e Codex pelas CLIs oficiais e suas assinaturas, com o melhor modelo para cada tarefa e verificação independente.",
   "keywords": [
@@ -38,7 +38,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test --test-concurrency=1 \"dist/tests/*.test.js\"",
+    "test": "npm run build && node --test --test-concurrency=1 --test-reporter=tap \"dist/tests/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "duo": "node dist/src/cli/main.js",
     "prepare": "npm run build"

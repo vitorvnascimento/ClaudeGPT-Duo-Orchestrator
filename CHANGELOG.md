@@ -2,11 +2,13 @@
 
 **English** · [Português](#português)
 
-## Unreleased
+## 0.4.0 — 2026-11-05
 
 ### English
 
+- The Q8 battery gate requires all 17 distinct expected scenarios to pass.
 - Windows: user-edited JSON files accept one leading UTF-8 BOM, including `.duo/config.json`, delegation/recommendation requests, package metadata, local schemas and Claude/MCP settings. JSON validation and BOM characters inside values are preserved.
+- Windows: rename, removal and hard-link operations for locks, slots and the legacy mirror retry transient `EPERM`/`EACCES`/`EBUSY` failures for up to about 2 seconds; a failed rename never deletes its source. Recreating a file symlink without Developer Mode or administrator privileges blocks the snapshot with a clear diagnostic; dependency directory junctions do not require those privileges.
 - Codex authentication: `config/read` and the TOML fallback recognize provider tables equivalent to OpenAI, including an inactive table without `base_url`. This requires literal `requires_openai_auth = true`, the Responses protocol, an absent or exact official inference URL, and no credential, routing or unknown fields. Existing loopback authorization remains separate.
 - Up to four concurrent executors per project (configurable 1..4, default 4), with atomic slot admission and a legacy lock mirror. Any in-place task remains exclusive; chain isolation survives resume and adaptive retries.
 - Worktrees include the brain's uncommitted tracked/untracked non-ignored state, excluding denied paths and `.duo/`, bounded by `maxSnapshotBytes`. Executor patches use that snapshot; shared dependency links default to `["node_modules"]` (directory junctions on Windows).
@@ -17,7 +19,9 @@
 
 ### Português
 
+- O gate de bateria Q8 exige aprovação dos 17 cenários esperados, sem duplicatas.
 - Windows: arquivos JSON editados pelo usuário aceitam um BOM UTF-8 inicial, incluindo `.duo/config.json`, pedidos de delegação/recomendação, metadados de pacote, schemas locais e settings Claude/MCP. A validação JSON e os caracteres BOM dentro de valores são preservados.
+- Windows: operações de rename, remoção e hard link de locks, vagas e espelho legado repetem falhas transitórias `EPERM`/`EACCES`/`EBUSY` por até cerca de 2 segundos; um rename que falha nunca apaga a origem. Recriar um symlink de arquivo sem modo desenvolvedor ou privilégios de administrador bloqueia o snapshot com diagnóstico claro; junctions de diretórios de dependências não exigem esses privilégios.
 - Autenticação Codex: `config/read` e o fallback TOML reconhecem tabelas de provedor equivalentes à OpenAI, inclusive uma tabela inativa sem `base_url`. Exige `requires_openai_auth = true` literal, protocolo Responses, URL de inferência ausente ou exatamente oficial e nenhum campo de credencial, roteamento ou desconhecido. A autorização existente de loopback continua separada.
 - Até quatro executores simultâneos por projeto (configurável 1..4, padrão 4), com admissão atômica por slots e espelho do lock legado. Qualquer tarefa in-place continua exclusiva; isolamento da cadeia é preservado em retomadas e retentativas adaptativas.
 - Worktrees incluem o estado não commitado rastreado/não rastreado não ignorado do cérebro, sem caminhos negados nem `.duo/`, limitado por `maxSnapshotBytes`. Patches usam esse snapshot; links de dependências têm padrão `["node_modules"]` (junctions de diretórios no Windows).

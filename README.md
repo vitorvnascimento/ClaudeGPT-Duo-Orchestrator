@@ -4,7 +4,7 @@
 
 **Claude Code and Codex working together in your VS Code, each part of the task handled by the model best suited to it, using the official CLIs and your own subscriptions.**
 
-**ClaudeGPT - Duo Orchestrator by Fusic** (`duo-orchestrator`) is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys; optional user-authorized loopback proxy). You talk normally to Claude Code (or Codex). When a task has different parts, such as code and an illustration, the agent you opened (the **brain**) uses the `duo-delegate` skill to send each part to the best available model in your connected accounts: Opus 5.5 for code and GPT-6-Astra for art, for example. The `duo` bridge runs the other CLI and **independently verifies the result** (changed files, scope, diffs, acceptance tests and valid images) before returning it to the brain. It records which model actually ran, reading Codex's own session log. Install with `git clone … && npm ci && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Documentation is available in English and Portuguese.
+**ClaudeGPT - Duo Orchestrator by Fusic** (`duo-orchestrator`) is a local bridge that lets **Claude Code** and **OpenAI Codex** work together through their official CLIs and your own subscriptions (no API keys; optional user-authorized loopback proxy). You talk normally to Claude Code (or Codex). When a task has different parts, such as code and an illustration, the agent you opened (the **brain**) uses the `duo-delegate` skill to send each part to the best available model in your connected accounts: Opus 5.5 for code and GPT-6-Astra for art, for example. The `duo` bridge runs the executor's CLI and **independently verifies the result** (changed files, scope, diffs, acceptance tests and valid images) before returning it to the brain. It records which model actually ran, reading Codex's own session log. Install with `git clone … && npm ci && npm run build && npm link` (or the release `.tgz`), run `duo init --apply` inside a Git project, and use `/duo-delegate` in Claude Code or `$duo-delegate` in Codex. Documentation is available in English and Portuguese.
 
 ```text
 You: "/duo-delegate build the home page and a robot illustration at assets/robo.png"
@@ -17,7 +17,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
                                   effective model gpt-6-astra (from Codex's own session log)
 ```
 
-> **Status (October 2026):** 570 offline tests in the current tree; the v0.3.1 validation includes a real E2E suite of 16/16 and a real quality score of **100/100**, with independent evidence of which model executed each part ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Tested on macOS. On Windows the offline suite passes (POSIX-only tests are skipped); the real suite has not been run there yet, and Linux has not been tested.
+> **Status (November 5, 2026):** **v0.3.1 is the latest public release**; **v0.4.0 is in preparation, with the Claude validation gate still pending**. The integrated macOS offline suite passed **672/672**, with **0 failures**. Q9 scored **3/3** for this offline check only, not 100/100 for the full release gate. The user reported **646 passed, 0 failed, 12 skipped (658 total)** on Windows; real E2E has not run there, and Linux remains untested. Historical v0.3.1 evidence includes real E2E **16/16** and quality **100/100** ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)); it does not complete the v0.4.0 gate. The parallel workflow below describes the development tree, not a published v0.4.0 package.
 
 ## What the project is and is not
 
@@ -26,7 +26,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
 | A local bridge calling the official `codex exec` and `claude -p` | A gateway reusing tokens to call private endpoints |
 | Individual use, each client with its own official login | A service offering subscription login to third parties |
 | A `subscription-only` profile that blocks API, gateway and cloud access | A disguised paid API or automatic billing fallback |
-| One brain per task and up to four isolated executors per project | An autonomous swarm or a third planning AI |
+| One brain per run and up to four isolated executors per project | An autonomous swarm or a third planning AI |
 
 ## Requirements
 
@@ -47,14 +47,27 @@ You can use just one of the two accounts, but the project's goal is to combine b
 ```bash
 git clone https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator.git duo-orchestrator
 cd duo-orchestrator
-npm ci          # instala só typescript e @types/node e compila
-npm link        # coloca o comando duo no PATH
+npm ci          # install development dependencies
+npm run build   # compile explicitly, even if prepare was blocked
+npm link        # make the duo command available on PATH
 duo --version
 ```
 
-To update later: `git pull && npm ci`. To run the offline tests (no model is invoked): `npm test`.
+To update later, run these commands in the cloned duo installation directory (also on Windows):
+
+```bash
+git pull
+npm ci
+npm run build
+npm link
+duo --version
+```
+
+Recent npm versions may block automatic install scripts, including `prepare` in some installation modes. Run `npm run build` explicitly after `git pull`; `npm link` links the local package and its `duo` command globally. Keep npm's script protections enabled ([npm link](https://github.com/npm/cli/blob/latest/docs/lib/content/commands/npm-link.md), [npm script approval](https://github.com/npm/cli/blob/latest/docs/lib/content/commands/npm-approve-scripts.md)). To run the offline tests (no model is invoked): `npm test`.
 
 **Option 2 — prebuilt release package (no compilation):**
+
+These downloads remain **v0.3.1**, the latest published version. There is no published v0.4.0 download yet.
 
 ```bash
 npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
@@ -84,7 +97,7 @@ duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://githu
 - It does not check inside executors, in CI, in the Codex sandbox or with `DUO_NO_UPDATE_CHECK=1`.
 - Only the maintainer publishes releases; the repository is public for reading and use.
 
-> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` is **not** recommended: in this mode, npm 10 does not correctly prepare packages that require compilation. Use one of the options above.
+> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` is **not** recommended: installing directly from GitHub depends on automatic preparation of a package that requires compilation. Use the explicit build above or the published release package.
 
 ## First use (5 minutes)
 
@@ -138,21 +151,35 @@ When the brain requests permission to run `duo delegate`, approve that command. 
 - **Switch brains during work:** `duo handoff --to codex --next "..."` creates a document in `.duo/handoffs/` to open in the other AI.
 - **Another computer:** install duo (Option 1 or 2), sign in to both CLIs and you are ready. If the project already has versioned skills and `duo` is on PATH, you do not need to run `init` again.
 
+### When Claude has no quota
+
+Open Codex as the brain and delegate independent work to another Codex model. Merge this field at the **root of the target project's `.duo/config.json`**, alongside `limits` and `routing`:
+
+```json
+{ "quotaPreference": "preserve-claude" }
+```
+
+In each delegation request, use `"brain": "codex"`, `"brainModel": "gpt-6-astra"` (replace with the brain's actual model), `"executor": "codex"` and an explicitly different `"model": "gpt-6.1-sol"`, available in your account. `quotaPreference` belongs in the project config, not inside `routing`, `billing` or the request. Delegating to the brain's own model is rejected. A run's brain is fixed: continue an existing Codex run or create a new Codex run with one initial request omitting `runId`; do not change a Claude run into a Codex run. The parallel example below uses this setup and `adaptive: false` to keep the executor choice explicit without automatic quota fallback.
+
 Tips:
 - In Codex with many installed skills, it may not find the skill on its own ("Exceeded skills context budget"). Invoke `$duo-delegate` explicitly.
 - Do not edit scoped files during in-place execution. With worktrees, edits to files touched by the patch invalidate the base; other in-scope edits produce a warning.
 - For HTML pages opened directly from disk in Safari, images in folders above the page do not load. Keep the HTML at the root and images in subfolders.
 
-## Windows (untested)
+## Windows
 
-The bridge runs processes **without a shell**. `.cmd` shims (such as npm's `claude.cmd`) would require a shell, so the bridge rejects them. Use the official `.exe` (Claude Code's native installer creates `claude.exe`) or configure `.duo/config.json`:
+The user reported an offline run with **646 passed, 0 failed and 12 skipped (658 total)**. This is a prior report, not a new run or a real E2E validation on Windows.
+
+For a clone installation, use `npm link` and run `npm run build` explicitly after every `git pull`, following the update commands above: recent npm versions may block `prepare`. Edit **the target project's `.duo/config.json`**, not the duo installation's config, to set executor paths.
+
+The bridge runs processes **without a shell**. For npm-generated `.cmd` shims with a single supported, existing target inside the `node_modules` directory beside the shim, the bridge reads the shim and executes the target directly: `.js`/`.cjs`/`.mjs` via the current Node.js executable, or `.exe` directly. Unknown or ambiguous shims, or those with targets outside that directory or otherwise unsupported, remain rejected. In those cases, configure the official `.exe` (Claude Code's native installer creates `claude.exe`) or an explicit `["node", "<script.js>"]` command in `.duo/config.json` as a fallback:
 
 ```json
 { "executors": { "claude": { "command": ["C:\\Users\\voce\\.local\\bin\\claude.exe"] },
                  "codex":  { "command": ["node", "C:\\caminho\\para\\@openai\\codex\\bin\\codex.js"] } } }
 ```
 
-The code was written to be portable (`taskkill /T /F` to terminate processes), but tests ran only on macOS. Reports and fixes are welcome.
+Worktrees share the existing `node_modules` directory through a **directory junction** (`limits.worktreeLinks` defaults to `["node_modules"]`), normally without administrator rights or Developer Mode. Ordinary symlinks, including file links, can still require administrator rights or Developer Mode; tests requiring them may be skipped when unavailable. Junction support does not make arbitrary symlinks valid scope paths. Prepare dependencies before launching executors; link failures are reported as limitations. Process termination uses `taskkill /T /F`.
 
 ## Commands
 
@@ -164,7 +191,7 @@ The code was written to be portable (`taskkill /T /F` to terminate processes), b
 | `duo delegate --resume <taskId> [--timeout-sec N]` | Resumes a `blocked` task (timeout, interruption, quota, login…), reusing the native session; `--timeout-sec` gives the resumed execution more time. |
 | `duo models [--refresh] [--json]` | Models available in connected accounts (Claude and Codex), with tier, efforts, extra usage, origin, vendor recommended/legacy status, successor and retirement, tools (e.g. image generation) and the source used. No inference; 6 h cache per CLI version (1 h if any source is degraded). |
 | `duo recommend [--request <pedido.json>] [--kind …] [--needs image_generation] [--paths …] [--risk …] [--brain …] [--brain-model …]` | Deterministic recommendation based on evidence, capability and availability. Output includes `tier`, `effort` and `selection`, plus executor/model, or indicates doing it yourself. `--request` provides the actual objective, scope and acceptance criteria. |
-| `duo status [--run-id]` | Runs and tasks. Detects interruptions (bridge no longer running) and marks tasks `blocked`. |
+| `duo status [--run-id <id>] [--json]` | Runs, tasks and active executor slots. Detects interruptions (bridge no longer running) and marks tasks `blocked`. |
 | `duo report [--run-id] [--json]` | Deterministic report with the source of each number. |
 | `duo cancel --run-id <id>` | Terminates bridge and executor (process tree) and marks `cancelled`. |
 | `duo apply --task-id <id>` | Integrates a `worktree` task's patch, only if HEAD and the files touched by the patch have not changed. |
@@ -267,18 +294,77 @@ A model's "completed" with a failing test becomes `failed`. Nothing is automatic
 
 ## Parallel executors
 
-Set `isolation: "worktree"` on every parallel request and use the same existing `runId` for the orchestration, with a distinct `taskKey` for each task. After the first delegation creates the run, prepare the requests with its returned `runId` and dispatch them in the background:
+One brain can run **up to four independent executors in separate worktrees in the same existing run**. Use `isolation: "worktree"`, the same `runId` and a distinct `taskKey` in every parallel request. Assign separate writable files and enough context for each executor to finish without another executor's patch.
+
+The defaults in the target project's `.duo/config.json` are:
+
+```json
+{
+  "limits": {
+    "maxConcurrentExecutors": 4,
+    "maxDelegationsPerRun": 8,
+    "worktreeLinks": ["node_modules"]
+  }
+}
+```
+
+For example, start from an existing **Codex-brain run** and a Git repository with at least one commit. If no run exists, submit one initial request without `runId`, wait for its result and copy its returned `runId`. Do not dispatch four requests without `runId`: that would create separate runs.
+
+Prepare `.duo/requests/a.json` as follows, replacing `run-existing-id` with that actual ID and `brainModel` with the model running the brain:
+
+```json
+{
+  "version": 1,
+  "runId": "run-existing-id",
+  "taskKey": "docs-install",
+  "brain": "codex",
+  "brainModel": "gpt-6-astra",
+  "executor": "codex",
+  "model": "gpt-6.1-sol",
+  "adaptive": false,
+  "kind": "implement",
+  "isolation": "worktree",
+  "objective": "Document project installation in docs/install.md; change only that file.",
+  "reason": "clear_benefit",
+  "rationale": "Independent documentation task with a separate writable file.",
+  "scope": { "allowedPaths": ["docs/install.md"] },
+  "acceptance": { "criteria": ["Accurate installation instructions; only docs/install.md changed"], "commands": [] }
+}
+```
+
+Prepare the other three requests with the **same `runId`, brain and models**, adapting `objective`, `scope.allowedPaths` and `acceptance.criteria` to each file:
+
+| Request | Unique `taskKey` | Only writable file / topic |
+| --- | --- | --- |
+| `a.json` | `docs-install` | `docs/install.md` — installation |
+| `b.json` | `docs-usage` | `docs/usage.md` — everyday usage |
+| `c.json` | `docs-troubleshooting` | `docs/troubleshooting.md` — troubleshooting |
+| `d.json` | `docs-faq` | `docs/faq.md` — FAQ |
+
+Dispatch from the brain's project directory (POSIX shell example; on Windows, run one `delegate` command per terminal in four terminals, without the trailing `&` or `wait`, and wait for all four commands to finish):
 
 ```sh
 duo delegate --request .duo/requests/a.json > .duo/a-result.json &
 duo delegate --request .duo/requests/b.json > .duo/b-result.json &
-wait
+duo delegate --request .duo/requests/c.json > .duo/c-result.json &
+duo delegate --request .duo/requests/d.json > .duo/d-result.json &
+duo status
 duo status --json
-duo apply --task-id <task-a>
-duo apply --task-id <task-b>
+wait
 ```
 
-`limits.maxConcurrentExecutors` accepts 1..4 (default 4), with no queue. `limits.maxDelegationsPerRun` defaults to 8 and also bounds parallel dispatches and retries in the shared run. An in-place task of any kind is exclusive and blocks both admission and `duo apply`. An in-place request arriving while worktrees are active is forced into a worktree; isolation then stays fixed for the chain, including resume and adaptive retries. Without a git commit, parallel execution is blocked.
+`duo status` shows occupied slots; `duo status --json` exposes them in `slots[]`. With only worktree executors active, free slots are `limits.maxConcurrentExecutors - slots.length`, **across the project**, not per run. The limit accepts 1..4 (default 4), with no queue: a fifth executor is blocked while all four slots are occupied. Wait for a slot before submitting more work. The default **8 delegations per run includes retries**, not eight per executor. If the run has only one prior invocation, these four initial executions bring the count to five, leaving three for further invocations, including retries.
+
+After all four finish, inspect each result and patch. Apply only tasks with `state: "succeeded"` that the brain approves; replace the placeholders below with the `taskId` from each result. Run **one `duo apply` at a time**, then validate the combined result. Keep HEAD unchanged until all intended patches have been applied; committing between applies invalidates the remaining patches' base.
+
+```sh
+duo apply --task-id TASK_ID_FROM_A_RESULT
+duo apply --task-id TASK_ID_FROM_B_RESULT
+duo apply --task-id TASK_ID_FROM_C_RESULT
+duo apply --task-id TASK_ID_FROM_D_RESULT
+```
+
+An in-place task of any kind is exclusive and blocks both admission and `duo apply`. An in-place request arriving while worktrees are active is forced into a worktree; isolation then stays fixed for the chain, including resume and adaptive retries. Without a git commit, parallel execution is blocked.
 
 Each worktree starts with HEAD plus the brain's tracked and untracked non-ignored changes, excluding denied paths and `.duo/`. `limits.maxSnapshotBytes` bounds this snapshot. The local snapshot commit is detached and never pushed; the executor patch contains only its subsequent changes. Shared dependency links are excluded from the patch and are not executor writable roots. Keep dependency installation outside these runs.
 
@@ -300,14 +386,16 @@ Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in 
 
 | Item | Status |
 | --- | --- |
-| Code, tests and documentation | Implemented |
-| 424 offline tests across phases 1–3 (adapters with simulated CLIs, complete flow, router, model catalog with fallbacks, art, CLI as a real process, process-tree termination, secret redaction) | **Passing**, no orphan processes |
-| Real `duo doctor` | Claude 2.1.114 and Codex 0.157.1 authenticated by subscription, with all required flags present |
-| Real E2E suite ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** in a complete run from scratch with Opus 5.5 (previously 13/13 and 11/11): read-only review in both directions, impossible acceptance, out-of-scope temptation, timeout + resume (Codex and Claude), cancellation, worktree + apply, blocked recursion, evidence-based routing in both directions, **real art with GPT-6-Astra** and **tasks with different models per part** (Opus 5.5 for code + GPT-6-Astra for art), with Claude or Codex as brain |
-| Native brain using the skill | **Validated in headless mode**: `claude -p "/duo-delegate …"` → Codex and `codex exec "$duo-delegate …"` → Claude, both `succeeded` |
-| Exhausted quota and scope violation with a real executor | **Not exercised**: real executors respected scope and quota did not run out; both cases remain covered only by offline tests |
+| Public release | **v0.3.1**, latest published package; download links above point to it |
+| v0.4.0 | **In preparation, not published**; Claude validation gate pending because quota is unavailable |
+| Integrated macOS offline suite | **672/672 passed, 0 failed** on November 5, 2026; Q9 **3/3** confirms only this offline check |
+| Historical real `duo doctor` | Claude 2.1.114 and Codex 0.157.1 authenticated by subscription, with all required flags present; not a current compatibility check |
+| Historical v0.3.1 real E2E suite ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** in a complete run from scratch with Opus 5.5 (previously 13/13 and 11/11): read-only review in both directions, impossible acceptance, out-of-scope temptation, timeout + resume (Codex and Claude), cancellation, worktree + apply, blocked recursion, evidence-based routing in both directions, **real art with GPT-6-Astra** and **tasks with different models per part** (Opus 5.5 for code + GPT-6-Astra for art), with Claude or Codex as brain; not validation of v0.4.0 |
+| Historical native brain using the skill | **Validated in headless mode**: `claude -p "/duo-delegate …"` → Codex and `codex exec "$duo-delegate …"` → Claude, both `succeeded`; the v0.4.0 Claude gate remains pending |
+| Historical v0.3.1 real-executor quota/scope-violation scenarios | **Not exercised in that validation**: real executors respected scope and quota did not run out; both cases had offline coverage |
 | VS Code extensions (interactive panel) | **Not exercised**: brains ran through CLIs in headless mode; skills and commands are the same, but interactive approvals were not tested |
-| Windows | Portable code written; **untested** |
+| Windows | User-reported offline run: **646 passed, 0 failed, 12 skipped (658 total)**; real E2E not run there |
+| Linux | **Not tested** |
 
 Details in [docs/compatibilidade.md](docs/compatibilidade.md).
 
@@ -357,7 +445,7 @@ A dedicated VS Code panel, an optional Codex App Server adapter (sessions, appro
 
 **Claude Code e Codex trabalhando juntos no seu VS Code, cada parte da tarefa feita pelo modelo que faz melhor, usando as CLIs oficiais e as suas próprias assinaturas.**
 
-Você conversa normalmente com o Claude Code (ou com o Codex). Quando a tarefa tem partes diferentes, por exemplo código e uma ilustração, a IA que você abriu (o **cérebro**) usa a skill `duo-delegate` para mandar cada parte ao melhor modelo disponível nas suas contas: o Opus 5.5 no código e o GPT-6-Astra na arte, por exemplo. A ponte `duo` executa a outra CLI e **confere o resultado de forma independente** (arquivos alterados, testes, imagem válida) antes de devolver ao cérebro.
+Você conversa normalmente com o Claude Code (ou com o Codex). Quando a tarefa tem partes diferentes, por exemplo código e uma ilustração, a IA que você abriu (o **cérebro**) usa a skill `duo-delegate` para mandar cada parte ao melhor modelo disponível nas suas contas: o Opus 5.5 no código e o GPT-6-Astra na arte, por exemplo. A ponte `duo` executa a CLI do executor e **confere o resultado de forma independente** (arquivos alterados, testes, imagem válida) antes de devolver ao cérebro.
 
 ```text
 Você: "/duo-delegate crie a página inicial e uma ilustração de um robô em assets/robo.png"
@@ -370,7 +458,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (outubro de 2026):** 570 testes offline na árvore atual; a validação da v0.3.1 inclui bateria E2E real 16/16 e teste de qualidade real **100/100** com provas independentes de qual modelo executou cada parte ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Testado no macOS. No Windows a suíte offline passa (testes só de POSIX são pulados); a bateria real ainda não rodou lá, e o Linux não foi testado.
+> **Estado (5 de novembro de 2026):** **v0.3.1 é a última release pública**; **v0.4.0 está em preparação, com o gate de validação do Claude ainda pendente**. A suíte offline integrada no macOS passou **672/672**, com **0 falhas**. O Q9 marcou **3/3** apenas por essa verificação offline, não 100/100 pelo gate completo da release. O usuário relatou **646 pass, 0 fail, 12 skip (658 no total)** no Windows; a bateria E2E real não rodou lá, e o Linux segue sem teste. A evidência histórica da v0.3.1 inclui E2E real **16/16** e qualidade **100/100** ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)); ela não conclui o gate da v0.4.0. O fluxo paralelo abaixo descreve a árvore de desenvolvimento, não um pacote v0.4.0 publicado.
 
 
 ## O que o projeto é e o que não é
@@ -380,7 +468,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
 | Uma ponte local que chama `codex exec` e `claude -p` oficiais | Um gateway que reutiliza tokens para chamar endpoints privados |
 | Uso individual, cada cliente com seu próprio login oficial | Um serviço que oferece login de assinaturas a terceiros |
 | Perfil `subscription-only`, que bloqueia API, gateway e nuvem | Uma API paga disfarçada ou fallback automático de cobrança |
-| Um cérebro por tarefa e até quatro executores isolados por projeto | Um enxame autônomo ou uma terceira IA planejadora |
+| Um cérebro por run e até quatro executores isolados por projeto | Um enxame autônomo ou uma terceira IA planejadora |
 
 ## Requisitos
 
@@ -401,14 +489,27 @@ Você pode usar só uma das duas contas, mas o objetivo do projeto é combinar a
 ```bash
 git clone https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator.git duo-orchestrator
 cd duo-orchestrator
-npm ci          # instala só typescript e @types/node e compila
+npm ci          # instala as dependências de desenvolvimento
+npm run build   # compila explicitamente, mesmo se prepare foi bloqueado
 npm link        # coloca o comando duo no PATH
 duo --version
 ```
 
-Para atualizar depois: `git pull && npm ci`. Para rodar os testes offline (nenhum modelo é invocado): `npm test`.
+Para atualizar depois, rode estes comandos na pasta clonada da instalação do duo (também no Windows):
+
+```bash
+git pull
+npm ci
+npm run build
+npm link
+duo --version
+```
+
+Versões recentes do npm podem bloquear scripts automáticos de instalação, incluindo `prepare` em alguns modos de instalação. Rode `npm run build` explicitamente após `git pull`; `npm link` liga globalmente o pacote local e o comando `duo`. Mantenha as proteções de scripts do npm ativadas ([npm link](https://github.com/npm/cli/blob/latest/docs/lib/content/commands/npm-link.md), [aprovação de scripts do npm](https://github.com/npm/cli/blob/latest/docs/lib/content/commands/npm-approve-scripts.md)). Para rodar os testes offline (nenhum modelo é invocado): `npm test`.
 
 **Opção 2 — pacote pronto da release (sem compilar):**
+
+Estes downloads continuam na **v0.3.1**, a última versão publicada. Ainda não há download publicado da v0.4.0.
 
 ```bash
 npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
@@ -438,7 +539,7 @@ duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://githu
 - Não consulta dentro dos executores, em CI, no sandbox do Codex nem com `DUO_NO_UPDATE_CHECK=1`.
 - Só o mantenedor publica releases; o repositório é público para leitura e uso.
 
-> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` **não** é recomendado: nesse modo o npm 10 não prepara corretamente pacotes que precisam compilar. Use uma das opções acima.
+> `npm install -g github:vitorvnascimento/ClaudeGPT-Duo-Orchestrator` **não** é recomendado: instalar direto do GitHub depende da preparação automática de um pacote que precisa compilar. Use a compilação explícita acima ou o pacote da release publicada.
 
 ## Primeiro uso (5 minutos)
 
@@ -492,21 +593,35 @@ Quando o cérebro pedir permissão para rodar `duo delegate`, aprove esse comand
 - **Trocar o cérebro no meio do trabalho:** `duo handoff --to codex --next "..."` gera um documento em `.duo/handoffs/` para abrir na outra IA.
 - **Outro computador:** instale o duo (Opção 1 ou 2), faça login nas duas CLIs e pronto. Se o projeto já tem as skills versionadas e o `duo` está no PATH, não precisa rodar `init` de novo.
 
+### Quando o Claude está sem cota
+
+Abra o Codex como cérebro e delegue trabalho independente a outro modelo do Codex. Mescle este campo na **raiz do `.duo/config.json` do projeto de trabalho**, ao lado de `limits` e `routing`:
+
+```json
+{ "quotaPreference": "preserve-claude" }
+```
+
+Em cada pedido de delegação, use `"brain": "codex"`, `"brainModel": "gpt-6-astra"` (substitua pelo modelo real do cérebro), `"executor": "codex"` e um `"model": "gpt-6.1-sol"` explicitamente diferente, disponível na sua conta. `quotaPreference` pertence à config do projeto, não a `routing`, `billing` ou ao pedido. Delegar ao próprio modelo do cérebro é recusado. O cérebro é fixo no run: continue um run Codex existente ou crie um novo run Codex com um primeiro pedido sem `runId`; não transforme um run Claude em run Codex. O exemplo paralelo abaixo usa essa configuração e `adaptive: false` para manter a escolha explícita do executor, sem fallback automático de cota.
+
 Dicas:
 - No Codex com muitas skills instaladas, ele pode não achar a skill sozinho ("Exceeded skills context budget"). Invoque `$duo-delegate` explicitamente.
 - Não edite os arquivos do escopo durante execução in-place. Em worktrees, mudanças em arquivos tocados pelo patch invalidam a base; nos demais arquivos do escopo, geram aviso.
 - Em páginas HTML abertas direto do disco no Safari, imagens em pastas acima da página não carregam. Deixe o HTML na raiz e as imagens em subpastas.
 
-## Windows (não testado)
+## Windows
 
-A ponte executa processos **sem shell**. Shims `.cmd` (como o `claude.cmd` do npm) exigiriam shell, então a ponte os recusa. Use o `.exe` oficial (o instalador nativo do Claude Code gera `claude.exe`) ou configure em `.duo/config.json`:
+O usuário relatou uma rodada offline com **646 pass, 0 fail e 12 skip (658 no total)**. É um relato anterior, não uma nova execução nem uma validação E2E real no Windows.
+
+Na instalação por clone, use `npm link` e rode `npm run build` explicitamente após cada `git pull`, seguindo os comandos de atualização acima: versões recentes do npm podem bloquear `prepare`. Edite **o `.duo/config.json` do projeto de trabalho**, não a config da instalação do duo, para definir os caminhos dos executores.
+
+A ponte executa processos **sem shell**. Para shims `.cmd` gerados pelo npm com um único alvo permitido e existente no diretório `node_modules` ao lado do shim, a ponte lê o shim e executa o alvo diretamente: `.js`/`.cjs`/`.mjs` pelo executável Node.js atual, ou `.exe` diretamente. Shims desconhecidos ou ambíguos, com alvo fora desse diretório ou não permitido, continuam recusados. Nesses casos, configure como fallback o `.exe` oficial (o instalador nativo do Claude Code gera `claude.exe`) ou um comando explícito `["node", "<script.js>"]` em `.duo/config.json`:
 
 ```json
 { "executors": { "claude": { "command": ["C:\\Users\\voce\\.local\\bin\\claude.exe"] },
                  "codex":  { "command": ["node", "C:\\caminho\\para\\@openai\\codex\\bin\\codex.js"] } } }
 ```
 
-O código foi escrito para ser portável (`taskkill /T /F` para encerrar processos), mas os testes rodaram apenas no macOS. Relatos e correções são bem-vindos.
+As worktrees compartilham o diretório `node_modules` existente por **junction de diretório** (`limits.worktreeLinks` tem padrão `["node_modules"]`), normalmente sem administrador ou Modo de Desenvolvedor. Symlinks comuns, inclusive links de arquivos, ainda podem exigir administrador ou Modo de Desenvolvedor; testes que precisam deles podem ser pulados quando indisponíveis. O suporte a junctions não torna symlinks arbitrários válidos no escopo. Prepare as dependências antes de iniciar os executores; falhas nos links são registradas como limitações. O encerramento de processos usa `taskkill /T /F`.
 
 ## Comandos
 
@@ -518,7 +633,7 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | `duo delegate --resume <taskId> [--timeout-sec N]` | Retoma uma task `blocked` (timeout, interrupção, cota, login…), reutilizando a sessão nativa; `--timeout-sec` dá mais tempo à retomada. |
 | `duo models [--refresh] [--json]` | Modelos disponíveis nas contas conectadas (Claude e Codex), com nível, esforços, uso extra, origem, recomendado/legado do fornecedor, sucessor e aposentadoria, ferramentas (ex.: geração de imagem) e a fonte usada. Sem inferência; cache de 6 h por versão das CLIs (1 h se alguma fonte estiver degradada). |
 | `duo recommend [--request <pedido.json>] [--kind …] [--needs image_generation] [--paths …] [--risk …] [--brain …] [--brain-model …]` | Recomendação determinística por evidência, capacidade e disponibilidade. A saída inclui `tier`, `effort` e `selection`, além do executor/modelo, ou indica fazer você mesmo. `--request` fornece objetivo, escopo e aceite reais. |
-| `duo status [--run-id]` | Runs e tasks. Detecta interrupções (ponte morta) e marca como `blocked`. |
+| `duo status [--run-id <id>] [--json]` | Runs, tasks e vagas ocupadas pelos executores. Detecta interrupções (ponte morta) e marca como `blocked`. |
 | `duo report [--run-id] [--json]` | Relatório determinístico com a origem de cada número. |
 | `duo cancel --run-id <id>` | Encerra ponte e executor (árvore de processos) e marca `cancelled`. |
 | `duo apply --task-id <id>` | Integra o patch de uma task `worktree`, só se HEAD e os arquivos tocados pelo patch não mudaram. |
@@ -623,18 +738,77 @@ Um "completed" do modelo com teste falhando vira `failed`. Nada é revertido aut
 
 ## Executores paralelos
 
-Use `isolation: "worktree"` em todo pedido paralelo, o mesmo `runId` existente para a orquestração e um `taskKey` diferente por tarefa. Depois que a primeira delegação criar o run, prepare os pedidos com o `runId` retornado e dispare-os em segundo plano:
+Um cérebro pode executar **até quatro executores independentes em worktrees separadas no mesmo run existente**. Use `isolation: "worktree"`, o mesmo `runId` e um `taskKey` diferente em cada pedido paralelo. Separe os arquivos graváveis e forneça contexto suficiente para cada executor terminar sem depender do patch de outro.
+
+Os padrões no `.duo/config.json` do projeto de trabalho são:
+
+```json
+{
+  "limits": {
+    "maxConcurrentExecutors": 4,
+    "maxDelegationsPerRun": 8,
+    "worktreeLinks": ["node_modules"]
+  }
+}
+```
+
+Por exemplo, parta de um **run existente com cérebro Codex** e de um repositório Git com pelo menos um commit. Se ainda não houver run, envie um primeiro pedido sem `runId`, espere o resultado e copie o `runId` retornado. Não dispare quatro pedidos sem `runId`: isso criaria runs separados.
+
+Prepare `.duo/requests/a.json` assim, substituindo `run-existing-id` pelo ID real e `brainModel` pelo modelo que executa o cérebro:
+
+```json
+{
+  "version": 1,
+  "runId": "run-existing-id",
+  "taskKey": "docs-install",
+  "brain": "codex",
+  "brainModel": "gpt-6-astra",
+  "executor": "codex",
+  "model": "gpt-6.1-sol",
+  "adaptive": false,
+  "kind": "implement",
+  "isolation": "worktree",
+  "objective": "Documentar a instalação do projeto em docs/install.md; alterar somente esse arquivo.",
+  "reason": "clear_benefit",
+  "rationale": "Documentação independente com um arquivo gravável separado.",
+  "scope": { "allowedPaths": ["docs/install.md"] },
+  "acceptance": { "criteria": ["Instruções de instalação corretas; somente docs/install.md alterado"], "commands": [] }
+}
+```
+
+Prepare os outros três pedidos com o **mesmo `runId`, cérebro e modelos**, adaptando `objective`, `scope.allowedPaths` e `acceptance.criteria` ao arquivo de cada um:
+
+| Pedido | `taskKey` único | Único arquivo gravável / assunto |
+| --- | --- | --- |
+| `a.json` | `docs-install` | `docs/install.md` — instalação |
+| `b.json` | `docs-usage` | `docs/usage.md` — uso no dia a dia |
+| `c.json` | `docs-troubleshooting` | `docs/troubleshooting.md` — solução de problemas |
+| `d.json` | `docs-faq` | `docs/faq.md` — perguntas frequentes |
+
+Dispare a partir da pasta do projeto do cérebro (exemplo para shell POSIX; no Windows, rode um comando `delegate` por terminal em quatro terminais, sem o `&` final nem `wait`, e espere os quatro comandos terminarem):
 
 ```sh
 duo delegate --request .duo/requests/a.json > .duo/a-result.json &
 duo delegate --request .duo/requests/b.json > .duo/b-result.json &
-wait
+duo delegate --request .duo/requests/c.json > .duo/c-result.json &
+duo delegate --request .duo/requests/d.json > .duo/d-result.json &
+duo status
 duo status --json
-duo apply --task-id <task-a>
-duo apply --task-id <task-b>
+wait
 ```
 
-`limits.maxConcurrentExecutors` aceita 1..4 (padrão 4), sem fila. `limits.maxDelegationsPerRun` tem padrão 8 e também limita os disparos paralelos e as retentativas no mesmo run. Qualquer tarefa in-place é exclusiva e bloqueia novas admissões e `duo apply`. Um pedido in-place que chega enquanto worktrees estão ativas é convertido em worktree; o isolamento fica fixo na cadeia, inclusive em retomadas e retentativas adaptativas. Sem commit Git, a execução paralela é bloqueada.
+`duo status` mostra as vagas ocupadas; `duo status --json` as expõe em `slots[]`. Com apenas executores em worktrees ativos, as vagas livres são `limits.maxConcurrentExecutors - slots.length`, **no projeto inteiro**, não por run. O limite aceita 1..4 (padrão 4), sem fila: um quinto executor é bloqueado enquanto as quatro vagas estiverem ocupadas. Espere uma vaga antes de enviar mais trabalho. O padrão de **8 delegações por run inclui retentativas**, não são oito por executor. Se o run tinha apenas uma invocação anterior, essas quatro execuções iniciais levam a contagem a cinco, restando três para novas invocações, incluindo retentativas.
+
+Quando os quatro terminarem, inspecione cada resultado e patch. Aplique só as tarefas com `state: "succeeded"` aprovadas pelo cérebro; substitua os marcadores abaixo pelo `taskId` de cada resultado. Execute **um `duo apply` por vez** e depois valide o resultado combinado. Mantenha HEAD inalterado até aplicar todos os patches pretendidos; commitar entre os applies invalida a base dos patches restantes.
+
+```sh
+duo apply --task-id TASK_ID_FROM_A_RESULT
+duo apply --task-id TASK_ID_FROM_B_RESULT
+duo apply --task-id TASK_ID_FROM_C_RESULT
+duo apply --task-id TASK_ID_FROM_D_RESULT
+```
+
+Qualquer tarefa in-place é exclusiva e bloqueia novas admissões e `duo apply`. Um pedido in-place que chega enquanto worktrees estão ativas é convertido em worktree; o isolamento fica fixo na cadeia, inclusive em retomadas e retentativas adaptativas. Sem commit Git, a execução paralela é bloqueada.
 
 Cada worktree começa com HEAD mais as alterações rastreadas e não rastreadas não ignoradas do cérebro, excluindo caminhos negados e `.duo/`. `limits.maxSnapshotBytes` limita esse snapshot. O commit local do snapshot fica destacado e nunca recebe push; o patch contém apenas as mudanças posteriores do executor. Links de dependências compartilhadas ficam fora do patch e das raízes de escrita do executor. Instale dependências fora dessas execuções.
 
@@ -656,14 +830,16 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 
 | Item | Situação |
 | --- | --- |
-| Código, testes e documentação | Implementados |
-| 424 testes offline das fases 1–3 (adaptadores com CLIs simuladas, fluxo completo, roteador, catálogo de modelos com fallbacks, arte, CLI como processo real, encerramento de árvores de processos, redação de segredos) | **Passando**, sem processos órfãos |
-| `duo doctor` real | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes |
-| Bateria E2E real ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro |
-| Cérebro nativo usando a skill | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded` |
-| Cota esgotada e violação de escopo com executor real | **Não exercitados**: os executores reais respeitaram o escopo e não houve cota esgotada; os dois casos seguem cobertos só pelos testes offline |
+| Release pública | **v0.3.1**, último pacote publicado; os links de download acima apontam para ele |
+| v0.4.0 | **Em preparação, não publicada**; gate de validação do Claude pendente por indisponibilidade de cota |
+| Suíte offline integrada no macOS | **672/672 passaram, 0 falhas**, em 5 de novembro de 2026; Q9 **3/3** confirma apenas essa verificação offline |
+| `duo doctor` real histórico | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes; não é uma checagem atual de compatibilidade |
+| Bateria E2E real histórica da v0.3.1 ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro; não é validação da v0.4.0 |
+| Cérebro nativo usando a skill, histórico | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded`; o gate Claude da v0.4.0 continua pendente |
+| Cenários históricos da v0.3.1 de cota esgotada/violação de escopo com executor real | **Não exercitados naquela validação**: os executores reais respeitaram o escopo e não houve cota esgotada; os dois casos tinham cobertura offline |
 | Extensões do VS Code (painel interativo) | **Não exercitado**: os cérebros rodaram pelas CLIs em modo headless; as skills e os comandos são os mesmos, mas as aprovações interativas não foram testadas |
-| Windows | Código portável escrito; **não testado** |
+| Windows | Rodada offline relatada pelo usuário: **646 pass, 0 fail, 12 skip (658 no total)**; E2E real não executado lá |
+| Linux | **Não testado** |
 
 Detalhes em [docs/compatibilidade.md](docs/compatibilidade.md).
 

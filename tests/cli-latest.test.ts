@@ -7,6 +7,7 @@ import { cliUpdateWarnings, fetchCliLatest, loadCliLatest, type FetchLike } from
 import { doctor, formatDoctor } from "../src/cli/doctor.js";
 import { loadConfig } from "../src/config.js";
 import { Store } from "../src/state/store.js";
+import { currentVersion } from "../src/update.js";
 import { CAN_SYMLINK, makeSandbox, type Sandbox } from "./helpers.js";
 
 let sb: Sandbox | null = null;
@@ -27,7 +28,7 @@ describe("versões publicadas das CLIs, sem rede real", () => {
     const fetchImpl: FetchLike = async (url, init) => {
       calls++;
       assert.ok(url === "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/latest" || url === "https://registry.npmjs.org/@openai%2Fcodex/latest");
-      assert.deepEqual(init.headers, { Accept: "application/json", "User-Agent": "duo-orchestrator/0.3.1" });
+      assert.deepEqual(init.headers, { Accept: "application/json", "User-Agent": `duo-orchestrator/${currentVersion()}` });
       assert.equal(init.redirect, "error");
       assert.equal(init.signal.aborted, false);
       assert.ok(init.signal instanceof AbortSignal);

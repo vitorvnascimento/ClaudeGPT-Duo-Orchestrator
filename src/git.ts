@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
 
@@ -189,8 +189,13 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       mkdirSync(dirname(dest), { recursive: true });
       const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));
       if (parent.startsWith("..") || isAbsolute(parent)) return { ok: false, error: `snapshot fora da worktree: ${rel}` };
-      if (lstatSync(src).isSymbolicLink()) symlinkSync(readlinkSync(src), dest);
-      else copyFileSync(src, dest);
+      if (lstatSync(src).isSymbolicLink()) {
+        // Link só entra se o alvo resolvido fica dentro do projeto e não é negado; senão vira porta para fora da cópia.
+        let target: string;
+        try { target = relative(realpathSync(root), realpathSync(src)); } catch { continue; }
+        if (target.startsWith("..") || isAbsolute(target) || !allowed(target.split(sep).join("/"))) continue;
+        symlinkSync(readlinkSync(src), dest);
+      } else copyFileSync(src, dest);
     }
     const add = git(wt, ["add", "-A", "--", ".", ...excludes]);
     if (!add.ok) return { ok: false, error: add.stderr };

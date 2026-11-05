@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+const lexists = (p: string) => { try { lstatSync(p); return true; } catch { return false; } };
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -356,6 +357,22 @@ describe("snapshot de worktree", () => {
       assert.equal(git(wt, ["ls-files", "forcado.log"]).stdout.trim(), "forcado.log");
       writeFileSync(join(wt, "forcado.log"), "v2\n");
       assert.deepEqual(worktreePatch(wt, snap.snapshot).files, ["forcado.log"]);
+    } finally { s.cleanup(); }
+  });
+  it("snapshot não copia link não rastreado que aponta para fora do projeto ou para arquivo negado", () => {
+    const s = makeSandbox();
+    try {
+      const fora = join(s.tmp, "segredo-fora.txt"); writeFileSync(fora, "fora\n");
+      s.write(".env", "TOKEN=x\n"); s.write("ok.txt", "ok\n");
+      symlinkSync(fora, join(s.root, "atalho-fora"));
+      symlinkSync(".env", join(s.root, "atalho-env"));
+      symlinkSync("ok.txt", join(s.root, "atalho-ok"));
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [".env"], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      assert.equal(existsSync(join(wt, "atalho-fora")) || lexists(join(wt, "atalho-fora")), false);
+      assert.equal(lexists(join(wt, "atalho-env")), false);
+      assert.equal(lexists(join(wt, "atalho-ok")), true);
     } finally { s.cleanup(); }
   });
   it("worktreePatch exclui links", () => {

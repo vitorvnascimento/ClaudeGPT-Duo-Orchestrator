@@ -142,6 +142,9 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
   const errors = validate(loadSchema("delegation-request"), parsed);
   if (errors.length) return { ok: false, out: invalid("pedido fora do schema", errors) };
   const req = parsed as DelegationRequest;
+  if (req.needs?.includes("computer_use")) {
+    return { ok: false, out: invalid("computer use indisponível: a restrição de apps por tarefa ainda não é imposta pelo runtime") };
+  }
   if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
     return { ok: false, out: invalid(`delegar ao mesmo cliente (${req.brain}) exige "model" explícito (outro modelo da mesma conta); sem isso, faça você mesmo`) };
   }

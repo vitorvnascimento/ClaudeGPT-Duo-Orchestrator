@@ -82,7 +82,11 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
 /** Integra o patch de um worktree somente se a base não mudou. Nunca força nem descarta mudanças do usuário. */
 export function applyTask(projectRoot: string, taskId: string): { ok: boolean; message: string } {
   return withAdmission(projectRoot, () => {
-    if (activeSlots(projectRoot).some((slot) => slot.isolation === "in-place")) {
+    const slots = activeSlots(projectRoot);
+    if (slots.some((slot) => slot.exclusive)) {
+      return { ok: false, message: "um executor exclusivo está ativo; aguarde ele terminar para aplicar" };
+    }
+    if (slots.some((slot) => slot.isolation === "in-place")) {
       return { ok: false, message: "um executor in-place está ativo; aplique depois que ele terminar" };
     }
     return applyAdmitted(projectRoot, taskId);

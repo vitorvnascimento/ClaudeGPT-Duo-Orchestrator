@@ -8,8 +8,8 @@ import { linkWithRetry, readJson, removeWithRetry, renameWithRetry, withFileLock
 import type { TaskKind } from "./types.js";
 
 export type Isolation = "in-place" | "worktree";
-export type SlotInfo = LockInfo & { slot: number; isolation: Isolation; kind: TaskKind };
-export type AdmitRequest = { taskId: string; runId: string; kind: TaskKind; requested: Isolation; fixed: Isolation | null; gitReady: boolean };
+export type SlotInfo = LockInfo & { slot: number; isolation: Isolation; kind: TaskKind; exclusive?: boolean };
+export type AdmitRequest = { taskId: string; runId: string; kind: TaskKind; requested: Isolation; fixed: Isolation | null; gitReady: boolean; exclusive?: boolean };
 export type AdmitResult = { ok: true; isolation: Isolation; forced: boolean } | { ok: false; reason: string };
 const locksDir = (root: string) => join(duoDir(root), "locks");
 
@@ -82,6 +82,8 @@ export class ExecutorSlots {
         if (s ? !isPidAlive(s.pid) : Date.now() - statSync(join(dir, name)).mtimeMs > 10_000) removeWithRetry(join(dir, name));
       }
       const slots = activeSlots(this.projectRoot), holders = slots.map((s) => `${s.taskId}, pid ${s.pid}`).join("; ");
+      if (slots.some((s) => s.exclusive)) return { ok: false, reason: `outro executor exclusivo está ativo (${holders}); aguarde ele terminar` };
+      if (req.exclusive && slots.length) return { ok: false, reason: `executor exclusivo requer o projeto livre (${holders}); aguarde os executores terminarem` };
       if (slots.some((s) => s.isolation === "in-place")) return { ok: false, reason: `outro executor in-place está ativo (${holders}); aguarde ele terminar` };
       if (slots.length >= this.max) return { ok: false, reason: `limite de ${this.max} executores simultâneos atingido (${holders})` };
       if (req.fixed === "in-place" && slots.length) return { ok: false, reason: `cadeia fixa in-place requer o projeto livre (${holders}); aguarde os executores terminarem` };
@@ -89,7 +91,7 @@ export class ExecutorSlots {
       if (isolation === "worktree" && !req.gitReady) return { ok: false, reason: "execução paralela requer um repositório git com ao menos um commit" };
       const slot = Array.from({ length: this.max }, (_, i) => i).find((i) => !existsSync(join(dir, `slot-${i}.json`)));
       if (slot === undefined) return { ok: false, reason: "slots indisponíveis: registro de executor inválido; verifique .duo/locks/" };
-      const info: SlotInfo = { slot, pid: process.pid, taskId: req.taskId, runId: req.runId, nonce: randomBytes(16).toString("hex"), startedAt: new Date().toISOString(), isolation, kind: req.kind };
+      const info: SlotInfo = { slot, pid: process.pid, taskId: req.taskId, runId: req.runId, nonce: randomBytes(16).toString("hex"), startedAt: new Date().toISOString(), isolation, kind: req.kind, ...(req.exclusive ? { exclusive: true } : {}) };
       const path = join(dir, `slot-${slot}.json`);
       writeJsonExclusive(path, info);
       try {

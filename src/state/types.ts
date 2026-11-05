@@ -28,7 +28,8 @@ export type DelegationRequest = {
   /** Modelo do próprio cérebro, quando conhecido (evita delegar ao mesmo modelo). */
   brainModel?: string;
   /** Capacidades exigidas pela subtarefa (ex.: image_generation). */
-  needs?: ("code" | "image_generation")[];
+  needs?: ("code" | "image_generation" | "computer_use")[];
+  apps?: string[];
   isolation?: "in-place" | "worktree";
   scope: { allowedPaths: string[] };
   constraints?: string[];
@@ -44,6 +45,7 @@ export type ExecutorReport = {
   testsRun: { command: string; exitCode: number | null; passed: boolean }[];
   limitations: string[];
   blockedReason: string | null;
+  appsUsed?: string[];
 };
 
 export type AcceptanceResult = {
@@ -165,7 +167,8 @@ export type Task = {
   brainModel?: string | null;
   /** Extensões de arquivo do escopo (ex.: "ts", "py"): usadas para comparar tarefas no roteador. */
   tags: string[];
-  needs: ("code" | "image_generation")[];
+  needs: ("code" | "image_generation" | "computer_use")[];
+  apps?: string[];
   isolation: "in-place" | "worktree";
   scope: string[];
   constraints: string[];

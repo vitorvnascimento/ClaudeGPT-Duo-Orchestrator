@@ -22,7 +22,7 @@ import { runQuick } from "./process.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
-export type Capability = "code" | "image_generation";
+export type Capability = "code" | "image_generation" | "computer_use";
 
 export type ModelInfo = {
   provider: Provider;

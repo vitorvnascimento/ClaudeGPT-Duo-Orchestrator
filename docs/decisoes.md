@@ -179,12 +179,14 @@ O doctor acrescenta evidência apenas de filesystem: opt-in configurado, platafo
 
 Slots exclusivos preservam a reserva após a morte da ponte enquanto o executor auditado está vivo ou seu estado não pode ser verificado; o cancelamento preserva o PID filho até observar sua saída. A admissão continua cooperativa por projeto, e versões antigas do Duo não conhecem essa proteção de órfãos.
 
+Revisão cruzada P2: a ponte agora é persistida antes da publicação do slot, sob o guard de admissão e após limpar reservas antigas comprovadamente encerradas; após sua morte, `approved` (pré-spawn) e estados terminais com `child=null` deixam de reter o slot. `running` sem filho permanece ambíguo pela janela entre spawn e gravação do PID; `blocked` também pode vir de detecção de interrupção nessa janela. Não confundir PID vivo/EPERM com identidade do executor. Registros antigos divergentes e PID filho reutilizado têm recuperação administrativa por nonce: `duo doctor --release-slot <nonce> --confirm-executor-stopped`. Exige verificação independente de que executor e descendentes terminaram, confirma ESRCH da ponte e não envia sinais de encerramento. O guard de admissão serializa remoção e renovação do espelho. Não existe inferência automática de PID reutilizado; confirmação incorreta do operador pode quebrar exclusividade. Doctor mostra reservas no texto/JSON. A recusa incondicional de CU permanece.
+
 A proteção existente de slot exclusivo/apply é infraestrutura reutilizável de admissão: um executor CU exigiria o projeto livre e excluiria todos os outros executores e apply até a liberação. CU é recusado antes da execução hoje, portanto essas proteções não comprovam capacidade de UI nem imposição de apps.
 
 Fluxo futuro obrigatório de permissão, ainda não implementado: registrar tarefa bloqueada com o nome do app não aprovado; o cérebro pede ao usuário que aprove aquele app específico **sempre** no app do Codex; `duo delegate --resume taskId` continua a mesma sessão nativa somente após revalidar apps da tarefa e negações fixas. Aprovações nativas persistidas não poderão ampliar o acesso da tarefa. Retomada CU nativa, logs de ações, screenshots e operação do Finder **pelo Duo estão NOT_RUN / não implementados**, não são evidência entregue. A recusa atual não pode ser removida instalando plugin, habilitando opt-in ou aprovando um app.
 
 
-Validação integrada no macOS: `npm test` **696/696 passaram, 0 falhas, 0 skips**; `npm run typecheck` e verificação de whitespace do diff passaram. A delegação solicitada do Finder foi tentada com opt-in temporário e recusada antes de iniciar o executor; screenshot e permissão/retomada nativa seguem NOT_RUN. A config do projeto foi restaurada byte a byte.
+Validação integrada no macOS: `npm test` **707/707 passaram, 0 falhas, 0 skips** após a revisão P2 (antes: 696/696); `npm run typecheck` e verificação de whitespace do diff passaram. A delegação solicitada do Finder foi tentada com opt-in temporário e recusada antes de iniciar o executor; screenshot e permissão/retomada nativa seguem NOT_RUN. A config do projeto foi restaurada byte a byte.
 
 ## Referências consultadas (25/09/2026)
 

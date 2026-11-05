@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { applyTask, cancelRun } from "../src/orchestration/control.js";
-import { activeSlots, ExecutorSlots, type AdmitRequest } from "../src/state/slots.js";
+import { activeSlots, ExecutorSlots, releaseOrphanSlot, type AdmitRequest } from "../src/state/slots.js";
 import { readJson, writeJsonAtomic } from "../src/state/store.js";
 
 const roots: string[] = [];
@@ -66,6 +66,58 @@ function audit(bridge: number, child: number | null) {
   return { taskId: req().taskId, runId: req().runId, state: "running", pids: { bridge, child }, history: [],
     executor: "codex", kind: "implement", scope: [], acceptanceCriteria: [], tags: [], model: { requested: null }, invocations: 1 };
 }
+
+for (const state of ["approved", "succeeded", "failed", "cancelled"]) {
+  it(`crash da ponte em ${state} sem filho não bloqueia admissão ou apply`, () => {
+    const p = root(), bridge = deadPid();
+    orphanSlot(p, bridge);
+    writeJsonAtomic(auditPath(p), { ...audit(bridge, null), state });
+    assert.equal(activeSlots(p).length, 0);
+    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+    assert.equal(owner(p).admit(req()).ok, true);
+  });
+}
+
+for (const terminal of [false, true]) {
+  it(`processo da ponte cai ${terminal ? "após salvar terminal" : "entre admit e execute"} sem release`, () => {
+    const p = root(), slotModule = new URL("../src/state/slots.js", import.meta.url).href;
+    const storeModule = new URL("../src/state/store.js", import.meta.url).href;
+    const crash = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { ExecutorSlots } from ${JSON.stringify(slotModule)};
+      import { writeJsonAtomic } from ${JSON.stringify(storeModule)};
+      const task = ${JSON.stringify(audit(0, null))};
+      task.pids.bridge = process.pid; task.state = "approved";
+      writeJsonAtomic(${JSON.stringify(auditPath(p))}, task);
+      const slots = new ExecutorSlots(${JSON.stringify(p)}, 4);
+      if (!slots.admit(${JSON.stringify(req({ exclusive: true }))}).ok) process.exit(1);
+      if (${terminal}) { task.state = "succeeded"; writeJsonAtomic(${JSON.stringify(auditPath(p))}, task); }
+      process.exit(23);
+    `], { encoding: "utf8" });
+    assert.equal(crash.status, 23, crash.stderr);
+    assert.ok(readJson(join(p, ".duo/locks/slot-0.json")), "slot foi deixado pela ponte");
+    assert.equal(activeSlots(p).length, 0);
+    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+    assert.equal(owner(p).admit(req()).ok, true);
+  });
+}
+
+it("retomada limpa reserva anterior antes de gravar nova ponte e preserva janela de spawn ambígua", () => {
+  const p = root(), bridge = deadPid();
+  orphanSlot(p, bridge);
+  writeJsonAtomic(auditPath(p), { ...audit(bridge, deadPid()), state: "blocked" });
+  let prepared = false;
+  const resumed = owner(p);
+  assert.equal(resumed.admit(req({ exclusive: true }), () => {
+    assert.equal(activeSlots(p).length, 0);
+    writeJsonAtomic(auditPath(p), { ...audit(process.pid, null), state: "approved" });
+    prepared = true;
+  }).ok, true);
+  assert.equal(prepared, true);
+  resumed.release();
+  orphanSlot(p, bridge);
+  writeJsonAtomic(auditPath(p), audit(bridge, null));
+  assert.equal(owner(p).admit(req({ exclusive: true }), () => { assert.fail("não pode sobrescrever auditoria ambígua"); }).ok, false);
+});
 
 it("ponte morta mantém exclusividade enquanto filho auditado vive e libera após sua morte", async () => {
   const p = root(), bridge = deadPid();
@@ -127,6 +179,42 @@ it("cancelRun recupera reserva órfã registrando task cancelada e filho nulo", 
   } finally {
     if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
   }
+});
+
+it("recuperação explícita trata auditoria antiga, PID reutilizado e EPERM sem sinalizar processos", (t) => {
+  const p = root(), bridge = deadPid(), kill = process.kill;
+  const ambiguous = [
+    { ...audit(bridge + 1, null), state: "succeeded" },
+    audit(bridge, null),
+    audit(bridge, process.pid), // PID agora pertence a outro processo.
+  ];
+  for (const saved of ambiguous) {
+    orphanSlot(p, bridge);
+    writeJsonAtomic(auditPath(p), saved);
+    assert.equal(activeSlots(p).length, 1);
+    assert.equal(releaseOrphanSlot(p, "orphan", false).ok, false);
+    assert.equal(releaseOrphanSlot(p, "nonce-antigo", true).ok, false);
+    t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
+      assert.equal(signal, 0, "recuperação nunca encerra processos");
+      if (pid === process.pid) throw Object.assign(new Error("synthetic EPERM"), { code: "EPERM" });
+      return kill.call(process, pid, signal);
+    });
+    assert.equal(activeSlots(p).length, 1);
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+    t.mock.restoreAll();
+    assert.equal(activeSlots(p).length, 0);
+    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+  }
+  assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("recuperação recusa ponte viva ou inacessível mesmo com confirmação", (t) => {
+  const p = root();
+  orphanSlot(p, process.pid);
+  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
+  t.mock.method(process, "kill", () => { throw Object.assign(new Error("synthetic EPERM"), { code: "EPERM" }); });
+  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
+  assert.equal(activeSlots(p).length, 1);
 });
 
 it("cancelamento não libera a exclusividade se o executor resistir ao encerramento", { skip: process.platform === "win32" }, async (t) => {

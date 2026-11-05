@@ -15,7 +15,7 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { loadSchema, validate } from "../schema.js";
 import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
-import { activeSlots } from "../state/slots.js";
+import { activeSlots, releaseOrphanSlot } from "../state/slots.js";
 import { Store } from "../state/store.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
 import { loadCliLatest, cliUpdateWarnings } from "../adapters/cli-latest.js";
@@ -29,6 +29,8 @@ const HELP = `duo — ClaudeGPT - Duo Orchestrator by Fusic: ponte local entre C
 
 Uso:
   duo doctor [--json]                         diagnóstico sem inferência
+  duo doctor --release-slot <nonce> --confirm-executor-stopped
+                                              recupera reserva órfã após verificar que o executor terminou
   duo init [--brain claude|codex] [--apply] [--overwrite]
                                               gera config e skills do projeto (preview por padrão)
   duo delegate --request <arquivo.json> [--no-adaptive] executa um pedido do cérebro
@@ -55,11 +57,11 @@ Códigos de saída de delegate: 0 succeeded, 1 failed, 2 pedido inválido, 3 blo
 
 type Args = { _: string[]; flags: Record<string, string | true> };
 
-const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet", "no-adaptive"]);
+const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet", "no-adaptive", "confirm-executor-stopped"]);
 
 /** Opções aceitas por comando: uma opção desconhecida é erro (evita flags ignoradas em silêncio). */
 const COMMAND_FLAGS: Record<string, string[]> = {
-  doctor: [],
+  doctor: ["release-slot", "confirm-executor-stopped"],
   init: ["brain", "apply", "overwrite"],
   delegate: ["request", "resume", "timeout-sec", "no-adaptive"],
   models: ["refresh"],
@@ -178,6 +180,14 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "doctor": {
+      if (args._.length !== 1) throw new Error("duo doctor não aceita argumentos posicionais adicionais");
+      const nonce = str(args, "release-slot");
+      if (nonce !== undefined) {
+        const r = releaseOrphanSlot(projectRootOf(cwd), nonce, args.flags["confirm-executor-stopped"] === true);
+        print(r);
+        return r.ok ? 0 : 1;
+      }
+      if (args.flags["confirm-executor-stopped"] !== undefined) throw new Error("--confirm-executor-stopped requer --release-slot <nonce>");
       const r = await doctor(cwd);
       print(args.flags.json ? r : formatDoctor(r));
       return 0;

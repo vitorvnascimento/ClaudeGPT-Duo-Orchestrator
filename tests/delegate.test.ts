@@ -1252,6 +1252,23 @@ describe("integração paralela", () => {
   });
 });
 
+it("persiste a ponte antes de publicar o slot, inclusive antes de iniciar o executor", async (t) => {
+  const s = setup(), admit = ExecutorSlots.prototype.admit;
+  let checked = false;
+  t.mock.method(ExecutorSlots.prototype, "admit", function (this: ExecutorSlots, req: Parameters<typeof admit>[0], beforePublish: Parameters<typeof admit>[1]) {
+    return admit.call(this, req, () => {
+      beforePublish?.();
+      const saved = new Store(s.root).loadTask(req.runId, req.taskId)!;
+      assert.equal(saved.state, "approved");
+      assert.deepEqual(saved.pids, { bridge: process.pid, child: null });
+      checked = true;
+    });
+  });
+  const out = await run(s, baseRequest("codex", { kind: "review" }));
+  assert.equal(out.summary.state, "succeeded");
+  assert.equal(checked, true);
+});
+
 it("quatro executores verificam patches próprios no mesmo run com deriva externa", async () => {
   const s = setup();
   const seed = await run(s, baseRequest("codex", { kind: "review" }));

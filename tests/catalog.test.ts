@@ -201,7 +201,7 @@ describe("CLI: opções desconhecidas", () => {
     const s = fresh();
     const bad = cli(s, ["doctor", "--cwd", "/tmp"]);
     assert.equal(bad.status, 2);
-    assert.match(bad.stderr, /opção desconhecida para duo doctor: --cwd \(aceitas: --json, --help, --version\)/);
+    assert.match(bad.stderr, /opção desconhecida para duo doctor: --cwd \(aceitas: --release-slot, --confirm-executor-stopped, --json, --help, --version\)/);
     const typo = cli(s, ["recommend", "--kind", "implement", "--brain-modle", "x"]);
     assert.equal(typo.status, 2);
     assert.match(typo.stderr, /--brain-modle/);

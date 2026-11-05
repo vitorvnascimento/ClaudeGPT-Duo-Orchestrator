@@ -8,7 +8,7 @@ import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { cancelRun } from "../src/orchestration/control.js";
 import { duoCliCommand } from "../src/cli/init.js";
-import { ExecutorSlots } from "../src/state/slots.js";
+import { activeSlots, ExecutorSlots } from "../src/state/slots.js";
 import { Store, writeJsonAtomic } from "../src/state/store.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
@@ -152,6 +152,29 @@ describe("duo init", () => {
 });
 
 describe("doctor e report", () => {
+  it("doctor expõe nonce e recupera slot órfão apenas com confirmação literal", () => {
+    const s = sb = makeSandbox();
+    const bridge = spawnSync(process.execPath, ["-e", ""]).pid;
+    const path = join(s.root, ".duo/locks/slot-0.json");
+    writeJsonAtomic(path, { pid: bridge, taskId: "task-orphan-000000", runId: "run-orphan-000000", slot: 0,
+      isolation: "worktree", kind: "implement", exclusive: true, nonce: "nonce-de-recuperacao", startedAt: "" });
+    const report = cli(s, ["doctor", "--json"]);
+    assert.equal(report.status, 0, report.stderr);
+    assert.equal(JSON.parse(report.stdout).executorSlots[0].nonce, "nonce-de-recuperacao");
+    assert.match(cli(s, ["doctor"]).stdout, /--release-slot.*--confirm-executor-stopped/);
+    for (const flags of [[], ["--confirm-executor-stopped=false"], ["--confirm-executor-stopped", "false"]]) {
+      assert.notEqual(cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", ...flags]).status, 0);
+      assert.equal(activeSlots(s.root).length, 1);
+    }
+    const recovered = cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", "--confirm-executor-stopped"]);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(JSON.parse(recovered.stdout).ok, true);
+    assert.equal(existsSync(path), false);
+    assert.equal(activeSlots(s.root).length, 0);
+    assert.notEqual(cli(s, ["doctor", "--confirm-executor-stopped"]).status, 0);
+    assert.notEqual(cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", "--confirm-executor-stopped"]).status, 0);
+  });
+
   it("doctor diagnostica os dois executores sem invocar inferência", () => {
     sb = makeSandbox();
     const s = sb;

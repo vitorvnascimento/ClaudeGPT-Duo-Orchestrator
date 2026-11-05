@@ -563,10 +563,12 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!task.limitations.includes(note)) task.limitations.push(note);
       }
       transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação e política aprovadas; autenticação será conferida no plano efetivo");
-      store.saveTask(task);
       const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
       const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
-        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null, exclusive: task.needs.includes("computer_use") });
+        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null, exclusive: task.needs.includes("computer_use") }, () => {
+          task.pids = { bridge: process.pid, child: null };
+          store.saveTask(task);
+        });
       if (!acquired.ok) {
         blockTask(task, acquired.reason);
         store.saveTask(task);
@@ -813,7 +815,6 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (policyReason) return block(`política: ${policyReason}`);
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;
-  task.pids = { bridge: process.pid, child: null };
   store.saveTask(task);
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 

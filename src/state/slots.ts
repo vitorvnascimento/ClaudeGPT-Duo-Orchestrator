@@ -26,7 +26,7 @@ function slotActive(root: string, slot: SlotInfo): boolean {
   if (!task || task.runId !== slot.runId || task.taskId !== slot.taskId || task.pids?.bridge !== slot.pid ||
       !["planned", "approved", "running", "blocked", "succeeded", "failed", "cancelled"].includes(task.state as string)) return true;
   const child = task.pids.child;
-  if (child === null && task.state === "cancelled") return false;
+  if (child === null && ["approved", "succeeded", "failed", "cancelled"].includes(task.state as string)) return false;
   if (typeof child !== "number" || !Number.isSafeInteger(child) || child <= 0 || child > 2147483647) return true;
   try { process.kill(child, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
@@ -47,6 +47,28 @@ export function activeSlots(projectRoot: string): SlotInfo[] {
   const legacy = readJson<LockInfo & { slots?: boolean }>(join(duoDir(projectRoot), "lock.json"));
   if (legacy && !legacy.slots && isPidAlive(legacy.pid)) slots.push({ ...legacy, slot: -1, isolation: "in-place", kind: "implement" });
   return slots.sort((a, b) => a.slot - b.slot);
+}
+
+/** Recuperação manual: a confirmação atesta que o executor acabou; não inferimos identidade só de um PID. */
+export function releaseOrphanSlot(projectRoot: string, nonce: string, confirmed: boolean): { ok: boolean; message: string } {
+  return withAdmission(projectRoot, () => {
+    const dir = locksDir(projectRoot);
+    const matches = readdirSync(dir).filter((name) => /^slot-\d+\.json$/.test(name))
+      .map((name) => ({ path: join(dir, name), slot: readJson<SlotInfo>(join(dir, name)) }))
+      .filter(({ slot }) => slot?.exclusive === true && slot.nonce === nonce);
+    const slot = matches[0]?.slot;
+    if (!nonce || matches.length !== 1 || !slot) return { ok: false, message: "nonce não identifica uma única reserva exclusiva; consulte duo doctor --json" };
+    const path = matches[0]!.path;
+    if (!confirmed) return { ok: false, message: "verifique que o executor e seus descendentes terminaram; só então use --confirm-executor-stopped" };
+    if (!Number.isSafeInteger(slot.pid) || slot.pid <= 0 || slot.pid > 2147483647) return { ok: false, message: "PID da ponte inválido; não é possível confirmar sua saída" };
+    try { process.kill(slot.pid, 0); return { ok: false, message: "ponte ainda ativa; encerre-a antes de recuperar a reserva" }; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return { ok: false, message: "saída da ponte não confirmada; reserva preservada" };
+    }
+    removeWithRetry(path);
+    refreshMirror(projectRoot);
+    return { ok: true, message: `reserva exclusiva ${nonce} liberada por confirmação explícita; nenhum processo foi encerrado` };
+  });
 }
 
 function mtimeAge(path: string): number {
@@ -93,7 +115,7 @@ export class ExecutorSlots {
   private timer: ReturnType<typeof setInterval> | null = null;
   constructor(private readonly projectRoot: string, private readonly max: number) {}
 
-  admit(req: AdmitRequest): AdmitResult {
+  admit(req: AdmitRequest, beforePublish?: () => void): AdmitResult {
     return withAdmission(this.projectRoot, () => {
       const dir = locksDir(this.projectRoot);
       for (const name of readdirSync(dir).filter((n) => /^slot-\d+\.json$/.test(n))) {
@@ -112,6 +134,8 @@ export class ExecutorSlots {
       if (slot === undefined) return { ok: false, reason: "slots indisponíveis: registro de executor inválido; verifique .duo/locks/" };
       const info: SlotInfo = { slot, pid: process.pid, taskId: req.taskId, runId: req.runId, nonce: randomBytes(16).toString("hex"), startedAt: new Date().toISOString(), isolation, kind: req.kind, ...(req.exclusive ? { exclusive: true } : {}) };
       const path = join(dir, `slot-${slot}.json`);
+      // Limpa a reserva anterior antes de substituir a identidade da ponte numa retomada.
+      beforePublish?.();
       writeJsonExclusive(path, info);
       try {
         if (!refreshMirror(this.projectRoot)) {

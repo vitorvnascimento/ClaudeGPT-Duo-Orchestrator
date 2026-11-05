@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import childProcess = require("node:child_process");
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 const lexists = (p: string) => { try { lstatSync(p); return true; } catch { return false; } };
 import { tmpdir } from "node:os";
@@ -367,12 +369,35 @@ describe("snapshot de worktree", () => {
       symlinkSync(fora, join(s.root, "atalho-fora"));
       symlinkSync(".env", join(s.root, "atalho-env"));
       symlinkSync("ok.txt", join(s.root, "atalho-ok"));
+      symlinkSync(join(s.root, "ok.txt"), join(s.root, "atalho-absoluto"));
+      symlinkSync("src", join(s.root, "atalho-dir"));
       const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
       const snap = worktreeSnapshot(s.root, wt, { deny: [".env"], maxBytes: 1 << 20 });
       assert.equal(snap.ok, true, JSON.stringify(snap));
       assert.equal(existsSync(join(wt, "atalho-fora")) || lexists(join(wt, "atalho-fora")), false);
       assert.equal(lexists(join(wt, "atalho-env")), false);
       assert.equal(lexists(join(wt, "atalho-ok")), true);
+      assert.equal(lexists(join(wt, "atalho-absoluto")), false, "link absoluto voltaria ao projeto real");
+      assert.equal(lexists(join(wt, "atalho-dir")), false, "link de diretório pode esconder caminho negado");
+    } finally { s.cleanup(); }
+  });
+  it("arquivo negado que muda depois da enumeração nunca entra no snapshot", (t) => {
+    const s = makeSandbox();
+    try {
+      s.write("negado.txt", "limpo\n"); s.git("add", "negado.txt"); s.git("commit", "-qm", "negado limpo");
+      s.write("src/app.ts", "rascunho\n");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const original = childProcess.spawnSync;
+      t.mock.method(childProcess, "spawnSync", ((cmd: string, args: readonly string[], opts: object) => {
+        if (args[0] === "diff" && args[1] === "HEAD" && args.includes("--binary")) writeFileSync(join(s.root, "negado.txt"), "SEGREDO\n");
+        return original(cmd, args, opts as never);
+      }) as typeof childProcess.spawnSync);
+      syncBuiltinESMExports();
+      const snap = worktreeSnapshot(s.root, wt, { deny: ["negado.txt"], maxBytes: 1 << 20 });
+      t.mock.restoreAll(); syncBuiltinESMExports();
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      assert.equal(readFileSync(join(wt, "negado.txt"), "utf8"), "limpo\n");
+      if (snap.ok && snap.snapshot) assert.ok(!git(wt, ["show", `${snap.snapshot}:negado.txt`]).stdout.includes("SEGREDO"));
     } finally { s.cleanup(); }
   });
   it("worktreePatch exclui links", () => {

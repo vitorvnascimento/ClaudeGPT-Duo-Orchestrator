@@ -81,19 +81,19 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
       const stale = staleLock(path);
       if (stale) {
         const marker = `${path}.reclaim-${stale}`;
-        let fd: number | undefined;
-        try {
-          try { fd = openSync(marker, "wx", 0o600); }
-          catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-            // shortcut: a recuperação leva microssegundos; marcador com mais de 30 s é de um recuperador que morreu.
-            // Fechar de vez exigiria flock, que o Node não tem.
-            try { if (Date.now() - statSync(marker).mtimeMs > 30_000) rmSync(marker, { force: true }); }
-            catch (s) { if ((s as NodeJS.ErrnoException).code !== "ENOENT") throw s; }
-          }
-          if (fd !== undefined && staleLock(path) === stale) rmSync(path, { force: true });
-        } finally {
-          if (fd !== undefined) { closeSync(fd); rmSync(marker, { force: true }); }
+        let mine = false;
+        try { writeJsonExclusive(marker, { pid: process.pid }); mine = true; }
+        catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+          // Marcador sai só quando o recuperador dono dele morreu; um recuperador vivo (mesmo pausado) continua dono.
+          // shortcut: dois processos removendo o mesmo marcador morto ao mesmo tempo ainda podem ambos vencer; exige
+          // recuperador morto no meio da recuperação mais corrida tripla. Fechar de vez exigiria flock, que o Node não tem.
+          const owner = readJson<{ pid: number }>(marker);
+          if (owner && Number.isInteger(owner.pid) && !isPidAlive(owner.pid)) rmSync(marker, { force: true });
+        }
+        if (mine) {
+          try { if (staleLock(path) === stale) rmSync(path, { force: true }); }
+          finally { rmSync(marker, { force: true }); }
         }
       }
       if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}`);

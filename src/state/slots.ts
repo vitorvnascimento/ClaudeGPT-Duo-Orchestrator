@@ -1,6 +1,6 @@
 // Admissão cooperativa: o guard serializa a escolha do isolamento e a manutenção do espelho legado.
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, linkSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
@@ -34,27 +34,31 @@ function mtimeAge(path: string): number {
   try { return Date.now() - statSync(path).mtimeMs; } catch { return 0; }
 }
 
+/**
+ * Renova o espelho sem nunca sobrescrever um lock.json de outro dono: o atual é renomeado para um nome único
+ * (rename é atômico), conferido e, se for de um duo antigo vivo, devolvido com link exclusivo. O espelho novo
+ * nasce exclusivo; se um duo antigo pegar o lock nesse intervalo, ele vence e a função devolve false.
+ */
 function refreshMirror(root: string): boolean {
   const slots = activeSlots(root), path = join(duoDir(root), "lock.json");
   if (slots.some((s) => s.slot === -1)) return false;
-  const mirror = readJson<LockInfo & { slots?: boolean }>(path);
-  if (!slots[0]) {
-    if (mirror?.slots === true) rmSync(path, { force: true });
-    return true;
+  const taken = `${path}.troca-${process.pid}-${randomBytes(6).toString("hex")}`;
+  let had = false;
+  try { renameSync(path, taken); had = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (had) {
+    const prev = readJson<LockInfo & { slots?: boolean }>(taken);
+    const legacyLive = prev ? prev.slots !== true && isPidAlive(prev.pid) : mtimeAge(taken) <= 10_000;
+    if (legacyLive) {
+      try { linkSync(taken, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      rmSync(taken, { force: true });
+      return false;
+    }
+    rmSync(taken, { force: true });
   }
-  const next = { ...slots[0], slots: true };
-  if (mirror?.slots === true) { writeJsonAtomic(path, next); return true; }
-  try { writeJsonExclusive(path, next); return true; }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const holder = readJson<LockInfo & { slots?: boolean }>(path);
-    if (holder?.slots === true && isPidAlive(holder.pid)) { writeJsonAtomic(path, next); return true; }
-    const abandoned = holder ? !isPidAlive(holder.pid) : mtimeAge(path) > 10_000;
-    if (!abandoned) return false;
-    rmSync(path, { force: true });
-    try { writeJsonExclusive(path, next); return true; }
-    catch (retry) { if ((retry as NodeJS.ErrnoException).code === "EEXIST") return false; throw retry; }
-  }
+  if (!slots[0]) return true;
+  try { writeJsonExclusive(path, { ...slots[0], slots: true }); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
 }
 
 export class ExecutorSlots {

@@ -2,8 +2,8 @@
 // ou qualquer comando que descarte alterações do usuário.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
 
@@ -176,12 +176,19 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
     }
     if (copiedBytes > opts.maxBytes) return { ok: false, error: `snapshot de ${copiedBytes} bytes excede limits.maxSnapshotBytes (${opts.maxBytes})` };
     const excludes = [".duo", ...trackedFiles.filter((rel) => !allowed(rel))].map((rel) => `:(exclude,literal)${rel}`);
-    const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ".", ...excludes], {
-      cwd: root, encoding: "utf8", timeout: 60_000, maxBuffer: Math.max(4 * 1024 * 1024, opts.maxBytes * 4), windowsHide: true,
-    });
-    if (diff.status !== 0 || diff.error) return { ok: false, error: diff.error?.message ?? diff.stderr };
-    if (diff.stdout) {
-      const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: diff.stdout, encoding: "utf8", timeout: 60_000, windowsHide: true });
+    // Diff só da lista permitida já enumerada: um arquivo negado que mude depois da enumeração nunca entra.
+    const allowedTracked = trackedFiles.filter(allowed);
+    let patch = "";
+    for (let i = 0; i < allowedTracked.length; i += 200) {
+      const batch = allowedTracked.slice(i, i + 200).map((rel) => `:(literal)${rel}`);
+      const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ...batch], {
+        cwd: root, encoding: "utf8", timeout: 60_000, maxBuffer: Math.max(4 * 1024 * 1024, opts.maxBytes * 4), windowsHide: true,
+      });
+      if (diff.status !== 0 || diff.error) return { ok: false, error: diff.error?.message ?? diff.stderr };
+      patch += diff.stdout;
+    }
+    if (patch) {
+      const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
       if (applied.status !== 0 || applied.error) return { ok: false, error: applied.error?.message ?? applied.stderr };
     }
     for (const rel of newFiles) {
@@ -190,11 +197,20 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));
       if (parent.startsWith("..") || isAbsolute(parent)) return { ok: false, error: `snapshot fora da worktree: ${rel}` };
       if (lstatSync(src).isSymbolicLink()) {
-        // Link só entra se o alvo resolvido fica dentro do projeto e não é negado; senão vira porta para fora da cópia.
+        // Link só entra se for relativo, apontar para um arquivo (não diretório) dentro do projeto e não negado,
+        // e continuar dentro da cópia depois de criado; senão vira porta para fora dela (ou de volta ao projeto).
+        const raw = readlinkSync(src);
+        if (isAbsolute(raw)) continue;
         let target: string;
-        try { target = relative(realpathSync(root), realpathSync(src)); } catch { continue; }
+        try {
+          const real = realpathSync(src);
+          if (statSync(real).isDirectory()) continue;
+          target = relative(realpathSync(root), real);
+        } catch { continue; }
         if (target.startsWith("..") || isAbsolute(target) || !allowed(target.split(sep).join("/"))) continue;
-        symlinkSync(readlinkSync(src), dest);
+        symlinkSync(raw, dest);
+        const inWt = relative(realpathSync(wt), resolve(dirname(dest), raw));
+        if (inWt.startsWith("..") || isAbsolute(inWt)) { rmSync(dest, { force: true }); continue; }
       } else copyFileSync(src, dest);
     }
     const add = git(wt, ["add", "-A", "--", ".", ...excludes]);

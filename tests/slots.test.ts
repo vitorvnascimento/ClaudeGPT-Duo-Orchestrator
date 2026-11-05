@@ -250,10 +250,26 @@ it("release não lança com o guard ocupado e libera a própria vaga", () => {
   rmSync(join(p, ".duo/locks/admission.lock"), { force: true });
   assert.equal(activeSlots(p).length, 0);
 });
-it("marcador de recuperação abandonado há mais de 30 s não trava o guard", () => {
+
+it("recuperador vivo (mesmo pausado) mantém o marcador: outro processo não entra no guard", () => {
   const p = root(), lock = join(p, "guard.lock");
   writeJsonAtomic(lock, { pid: deadPid(), nonce: "morto" });
-  const marker = `${lock}.reclaim-morto`; writeFileSync(marker, "");
-  const old = new Date(Date.now() - 60_000); utimesSync(marker, old, old);
+  writeJsonAtomic(`${lock}.reclaim-morto`, { pid: process.pid });
+  assert.throws(() => withFileLock(lock, 300, () => "entrou"), /tempo esgotado/);
+  assert.equal(readJson<{ nonce: string }>(lock)?.nonce, "morto");
+});
+it("marcador de recuperador morto é removido e o guard é recuperado", () => {
+  const p = root(), lock = join(p, "guard.lock");
+  writeJsonAtomic(lock, { pid: deadPid(), nonce: "morto" });
+  writeJsonAtomic(`${lock}.reclaim-morto`, { pid: deadPid() });
   assert.equal(withFileLock(lock, 2000, () => "entrou"), "entrou");
+});
+it("renovação do espelho nunca sobrescreve lock.json legado vivo que apareceu depois", () => {
+  const p = root(), path = join(p, ".duo/lock.json");
+  const owner = slots(p, 4); assert.equal(owner.admit(req()).ok, true);
+  const legacy = { pid: process.pid, nonce: "legado", taskId: "task-legada-000000", runId: "run-legado-000000", startedAt: "" };
+  writeJsonAtomic(path, legacy);
+  assert.match(JSON.stringify(slots(p, 4).admit(req())), /in-place está ativo/);
+  owner.release();
+  assert.deepEqual(readJson(path), legacy);
 });

@@ -161,7 +161,7 @@ describe("política", () => {
   it("limita invocações por run e respeita a política econômica", () => {
     const cfg = structuredClone(DEFAULT_CONFIG);
     assert.equal(policyBlockReason(req(), cfg, run()), null);
-    assert.match(policyBlockReason(req(), cfg, run({ invocations: 2 })) ?? "", /limite de 2/);
+    assert.match(policyBlockReason(req(), cfg, run({ invocations: 8 })) ?? "", /limite de 8/);
     assert.match(policyBlockReason(req({ reason: "second_opinion", kind: "review" }), cfg, run()) ?? "", /economico/);
     cfg.policy = "qualidade";
     cfg.limits.qualityBudgetAuthorized = true;

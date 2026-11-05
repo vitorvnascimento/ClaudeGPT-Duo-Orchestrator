@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { duoDir } from "./paths.js";
 
 export type Provider = "claude" | "codex";
@@ -20,7 +21,8 @@ export type DuoConfig = {
   limits: {
     maxDelegationsPerRun: number;
     qualityBudgetAuthorized: boolean;
-    maxConcurrentExecutors: 1;
+    maxConcurrentExecutors: number;
+    worktreeLinks: string[];
     timeoutSec: number;
     maxPromptBytes: number;
     maxOutputBytes: number;
@@ -84,9 +86,10 @@ export const DEFAULT_CONFIG: DuoConfig = {
   policy: "economico",
   quotaPreference: "balance",
   limits: {
-    maxDelegationsPerRun: 2,
+    maxDelegationsPerRun: 8,
     qualityBudgetAuthorized: false,
-    maxConcurrentExecutors: 1,
+    maxConcurrentExecutors: 4,
+    worktreeLinks: ["node_modules"],
     timeoutSec: 600,
     maxPromptBytes: 60_000,
     maxOutputBytes: 20 * 1024 * 1024,
@@ -174,7 +177,10 @@ export function loadConfig(projectRoot: string): DuoConfig {
   if (!["economico", "equilibrado", "qualidade"].includes(cfg.policy)) problems.push("policy");
   if (!["balance", "preserve-codex", "preserve-claude"].includes(cfg.quotaPreference)) problems.push("quotaPreference");
   if (!Number.isInteger(cfg.limits.maxDelegationsPerRun) || cfg.limits.maxDelegationsPerRun < 1) problems.push("limits.maxDelegationsPerRun");
-  if (cfg.limits.maxConcurrentExecutors !== 1) problems.push("limits.maxConcurrentExecutors (o MVP só aceita 1)");
+  if (!Number.isInteger(cfg.limits.maxConcurrentExecutors) || cfg.limits.maxConcurrentExecutors < 1 || cfg.limits.maxConcurrentExecutors > 4) problems.push("limits.maxConcurrentExecutors (inteiro de 1 a 4)");
+  if (!Array.isArray(cfg.limits.worktreeLinks) || !cfg.limits.worktreeLinks.every((p) =>
+    typeof p === "string" && p !== "." && normalizeRel(p) === p && !p.includes("\\") && !p.split("/").includes("..") && !isDenied(p, cfg.scope.deny)
+  )) problems.push("limits.worktreeLinks (caminhos relativos POSIX, sem .. e fora de scope.deny)");
   for (const field of ["timeoutSec", "acceptanceTimeoutSec"] as const) {
     const value = cfg.limits[field];
     if (!Number.isInteger(value) || value < 1 || value > 86400) problems.push(`limits.${field} (inteiro de 1 a 86400 segundos)`);

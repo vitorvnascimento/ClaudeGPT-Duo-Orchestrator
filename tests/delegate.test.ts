@@ -622,8 +622,8 @@ describe("compatibilidade de versão, modelo e envelope de erro", () => {
 });
 
 describe("orçamento, cota e informação ausente", () => {
-  it("terceira invocação no mesmo run é bloqueada sem chamar o executor", async () => {
-    const s = setup();
+  it("terceira invocação no mesmo run com limite explícito 2 é bloqueada sem chamar o executor", async () => {
+    const s = setup({ limits: { maxDelegationsPerRun: 2 } });
     const first = await run(s, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
     const runId = first.summary.runId as string;
     await run(s, baseRequest("claude", { runId, objective: "Segunda subtarefa delimitada em src/app.ts." }), { FAKE_WRITE: APP_EDIT });

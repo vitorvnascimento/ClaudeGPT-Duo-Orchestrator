@@ -226,7 +226,7 @@ it("rodada 7 achado 1: tentativa da Chain ausente do run continua visível para 
 
 it("rodada 8 achados 2 e 3: troca de fornecedor na retomada não herda sessão nativa e o cooldown fica no fornecedor real", async () => {
   // 1ª execução: só um modelo Codex permitido; cota esgota e não há alternativa → blocked, com sessão Codex registrada.
-  s = makeSandbox({ routing: { adaptive: { maxAttempts: 3 }, include: ["codex:gpt-6.1-sol"] } });
+  s = makeSandbox({ limits: { maxDelegationsPerRun: 2 }, routing: { adaptive: { maxAttempts: 3 }, include: ["codex:gpt-6.1-sol"] } });
   const store = new Store(s.root);
   const env = (scenario: string) => ({ ...s.env, FAKE_SCENARIO: scenario, FAKE_ADAPTIVE_CATALOG: "1" });
   const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { adaptive: true, executor: "codex", complexity: "standard", isolation: "worktree" })), env: env("rate-limit"), authPaths: s.authPaths });

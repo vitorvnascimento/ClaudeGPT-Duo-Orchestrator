@@ -25,6 +25,22 @@ describe("limites numéricos da config", () => {
     assert.deepEqual(loadConfig(writeLimits({})), DEFAULT_CONFIG);
   });
 
+  it("maxConcurrentExecutors aceita 1..4 e recusa 0, 5 e 2.5", () => {
+    for (const value of [1, 2, 3, 4]) assert.equal(loadConfig(writeLimits({ maxConcurrentExecutors: value })).limits.maxConcurrentExecutors, value);
+    for (const value of [0, 5, 2.5]) assert.throws(() => loadConfig(writeLimits({ maxConcurrentExecutors: value })), /maxConcurrentExecutors/);
+  });
+
+  it("padrões: 4 executores simultâneos, 8 delegações por run, links node_modules", () => {
+    const { maxConcurrentExecutors, maxDelegationsPerRun, worktreeLinks } = DEFAULT_CONFIG.limits;
+    assert.deepEqual({ maxConcurrentExecutors, maxDelegationsPerRun, worktreeLinks }, { maxConcurrentExecutors: 4, maxDelegationsPerRun: 8, worktreeLinks: ["node_modules"] });
+  });
+
+  it("worktreeLinks recusa caminho absoluto, com .. ou negado", () => {
+    for (const value of ["/abs", "../x", "a/../b", ".env", "C:/abs", "a\\b", ".", "", ".duo", "node_modules/.env"]) {
+      assert.throws(() => loadConfig(writeLimits({ worktreeLinks: [value] })), /worktreeLinks/);
+    }
+  });
+
   const ranges = [
     { field: "timeoutSec", minimum: 1, maximum: 86400 },
     { field: "acceptanceTimeoutSec", minimum: 1, maximum: 86400 },

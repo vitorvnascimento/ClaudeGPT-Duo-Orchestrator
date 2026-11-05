@@ -215,7 +215,13 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
           target = relative(realpathSync(root), real);
         } catch { continue; }
         if (target.startsWith("..") || isAbsolute(target) || !allowed(target.split(sep).join("/"))) continue;
-        symlinkSync(raw, dest);
+        // Windows sem modo desenvolvedor exige admin para symlink: bloqueia com diagnóstico, nunca omite o link
+        // (a cópia ficaria diferente do projeto) nem copia o alvo no lugar.
+        try { symlinkSync(raw, dest); }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          return { ok: false, error: code === "EPERM" ? `criar o link simbólico ${rel} na worktree exige privilégio (no Windows: modo desenvolvedor ou administrador)` : (error as Error).message };
+        }
         const inWt = relative(realpathSync(wt), resolve(dirname(dest), raw));
         if (inWt.startsWith("..") || isAbsolute(inWt)) { rmSync(dest, { force: true }); continue; }
       } else copyFileSync(src, dest);

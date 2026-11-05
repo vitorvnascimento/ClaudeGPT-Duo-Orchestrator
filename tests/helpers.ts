@@ -62,6 +62,9 @@ export function makeSandbox(configPatch: Record<string, unknown> = {}): Sandbox 
   g("config", "user.email", "test@example.com");
   g("config", "user.name", "Test");
   g("config", "commit.gpgsign", "false");
+  // Git for Windows vem com core.autocrlf=true: fixa LF para os testes compararem conteúdo, não terminador.
+  // O comportamento com CRLF tem teste próprio, que liga autocrlf explicitamente.
+  g("config", "core.autocrlf", "false");
   writeFileSync(join(root, ".gitignore"), ".duo/\n");
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "app.ts"), "export const app = 1;\n");

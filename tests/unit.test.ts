@@ -361,7 +361,7 @@ describe("snapshot de worktree", () => {
       assert.deepEqual(worktreePatch(wt, snap.snapshot).files, ["forcado.log"]);
     } finally { s.cleanup(); }
   });
-  it("snapshot não copia link não rastreado que aponta para fora do projeto ou para arquivo negado", () => {
+  it("snapshot não copia link não rastreado que aponta para fora do projeto ou para arquivo negado", { skip: !CAN_SYMLINK && "symlink indisponível (Windows sem admin/modo desenvolvedor)" }, () => {
     const s = makeSandbox();
     try {
       const fora = join(s.tmp, "segredo-fora.txt"); writeFileSync(fora, "fora\n");
@@ -411,6 +411,27 @@ describe("snapshot de worktree", () => {
       const snap = worktreeSnapshot(s.root, wt, { deny: ["**/.env"], maxBytes: 1 << 20 });
       assert.equal(existsSync(join(wt, "config/.env")), false, JSON.stringify(snap));
       if (snap.ok && snap.snapshot) assert.equal(git(wt, ["ls-files", "config/.env"]).stdout.trim(), "");
+    } finally { s.cleanup(); }
+  });
+  it("snapshot, patch e apply funcionam com core.autocrlf=true (checkout em CRLF, como no Windows)", () => {
+    const s = makeSandbox();
+    try {
+      s.git("config", "core.autocrlf", "true");
+      s.write("texto.txt", "a\nb\nc\n"); s.git("add", "texto.txt"); s.git("commit", "-qm", "texto");
+      rmSync(join(s.root, "texto.txt")); s.git("checkout", "-q", "--", "texto.txt");
+      writeFileSync(join(s.root, "texto.txt"), "a\r\nB\r\nc\r\n");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      if (!snap.ok || !snap.snapshot) return;
+      assert.equal(readFileSync(join(wt, "texto.txt"), "utf8"), "a\r\nB\r\nc\r\n");
+      writeFileSync(join(wt, "texto.txt"), "a\r\nB\r\nc\r\nd\r\n");
+      const p = worktreePatch(wt, snap.snapshot);
+      assert.equal(p.ok, true); assert.deepEqual(p.files, ["texto.txt"]);
+      const patchFile = join(s.tmp, "x.patch"); writeFileSync(patchFile, p.patch);
+      assert.equal(git(s.root, ["apply", "--check", patchFile]).ok, true);
+      assert.equal(git(s.root, ["apply", patchFile]).ok, true);
+      assert.equal(readFileSync(join(s.root, "texto.txt"), "utf8"), "a\r\nB\r\nc\r\nd\r\n");
     } finally { s.cleanup(); }
   });
   it("worktreePatch exclui links", () => {

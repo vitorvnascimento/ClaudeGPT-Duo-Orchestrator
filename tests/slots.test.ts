@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { activeSlots, ExecutorSlots, type AdmitRequest } from "../src/state/slots.js";
-import { readJson, withFileLock, writeJsonAtomic } from "../src/state/store.js";
+import { readJson, renameWithRetry, withFileLock, writeJsonAtomic } from "../src/state/store.js";
 
 const roots: string[] = [];
 const owners: ExecutorSlots[] = [];
@@ -288,4 +288,13 @@ it("renovação com dono do espelho vivo nunca deixa lock.json ausente (sem rena
     assert.equal(renamedMirror, false);
     assert.equal(readJson<{ slots?: boolean }>(path)?.slots, true);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+it("rename do espelho que falha nunca apaga o lock.json de origem", (t) => {
+  const p = root(), path = join(p, ".duo/lock.json");
+  writeJsonAtomic(path, { pid: process.pid, nonce: "legado-vivo", taskId: "task-legada-000000", runId: "run-legado-000000", startedAt: "" });
+  t.mock.method(fs, "renameSync", () => { const e = new Error("falha simulada") as NodeJS.ErrnoException; e.code = "EXDEV"; throw e; });
+  syncBuiltinESMExports();
+  try { assert.throws(() => renameWithRetry(path, `${path}.troca-teste`)); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(readJson<{ nonce: string }>(path)?.nonce, "legado-vivo");
 });

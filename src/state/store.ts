@@ -19,22 +19,45 @@ export function writeJsonAtomic(path: string, value: unknown): void {
   } finally {
     closeSync(fd);
   }
-  renameWithRetry(tmp, path);
+  try { renameWithRetry(tmp, path); }
+  catch (e) { try { unlinkSync(tmp); } catch { /* já removido */ } throw e; }
 }
 
 // No Windows, rename sobre um arquivo aberto por outro processo (leitor do duo, antivírus, indexador) falha com
 // EPERM/EACCES/EBUSY por alguns milissegundos. Tenta de novo por até ~2 s; nos outros sistemas, falha na hora.
-function renameWithRetry(tmp: string, path: string): void {
+// Nunca apaga a origem ao falhar: ela pode ser um lock vivo de outro processo (o espelho lock.json, por exemplo).
+export function renameWithRetry(from: string, to: string): void {
   for (let attempt = 0; ; attempt++) {
     try {
-      renameSync(tmp, path);
+      renameSync(from, to);
       return;
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (process.platform !== "win32" || attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) {
-        try { unlinkSync(tmp); } catch { /* já removido */ }
-        throw e;
-      }
+      if (process.platform !== "win32" || attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + attempt * 5);
+    }
+  }
+}
+
+/** linkSync com o mesmo retry no Windows; EEXIST (disputa legítima) sai na hora. */
+export function linkWithRetry(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try { linkSync(from, to); return; }
+    catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + attempt * 5);
+    }
+  }
+}
+
+/** rmSync com o mesmo retry do rename no Windows (arquivo preso por leitor, antivírus ou indexador por alguns ms). */
+export function removeWithRetry(path: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try { rmSync(path, { force: true }); return; }
+    catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")) throw e;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + attempt * 5);
     }
   }
@@ -54,8 +77,8 @@ export function writeJsonExclusive(path: string, value: unknown): void {
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
   try {
     writeExclusive(tmp, `${JSON.stringify(value)}\n`);
-    linkSync(tmp, path);
-  } finally { rmSync(tmp, { force: true }); }
+    linkWithRetry(tmp, path);
+  } finally { try { removeWithRetry(tmp); } catch { /* temporário órfão: ignorado pelos leitores */ } }
 }
 
 function staleLock(path: string): string | null {
@@ -89,11 +112,11 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
           // shortcut: dois processos removendo o mesmo marcador morto ao mesmo tempo ainda podem ambos vencer; exige
           // recuperador morto no meio da recuperação mais corrida tripla. Fechar de vez exigiria flock, que o Node não tem.
           const owner = readJson<{ pid: number }>(marker);
-          if (owner && Number.isInteger(owner.pid) && !isPidAlive(owner.pid)) rmSync(marker, { force: true });
+          if (owner && Number.isInteger(owner.pid) && !isPidAlive(owner.pid)) removeWithRetry(marker);
         }
         if (mine) {
-          try { if (staleLock(path) === stale) rmSync(path, { force: true }); }
-          finally { rmSync(marker, { force: true }); }
+          try { if (staleLock(path) === stale) removeWithRetry(path); }
+          finally { removeWithRetry(marker); }
         }
       }
       if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}`);
@@ -102,7 +125,7 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
     }
     try { return fn(); }
     finally {
-      if (readJson<{ nonce: string }>(path)?.nonce === nonce) rmSync(path, { force: true });
+      if (readJson<{ nonce: string }>(path)?.nonce === nonce) removeWithRetry(path);
     }
   }
 }

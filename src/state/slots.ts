@@ -1,10 +1,10 @@
 // Admissão cooperativa: o guard serializa a escolha do isolamento e a manutenção do espelho legado.
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
-import { readJson, withFileLock, writeJsonAtomic, writeJsonExclusive, type LockInfo } from "./store.js";
+import { linkWithRetry, readJson, removeWithRetry, renameWithRetry, withFileLock, writeJsonAtomic, writeJsonExclusive, type LockInfo } from "./store.js";
 import type { TaskKind } from "./types.js";
 
 export type Isolation = "in-place" | "worktree";
@@ -52,17 +52,17 @@ function refreshMirror(root: string): boolean {
   // Daqui em diante o espelho está ausente, morto, ilegível ou legado: troca por rename e devolve o que não é nosso.
   const taken = `${path}.troca-${process.pid}-${randomBytes(6).toString("hex")}`;
   let had = false;
-  try { renameSync(path, taken); had = true; }
+  try { renameWithRetry(path, taken); had = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (had) {
     const prev = readJson<LockInfo & { slots?: boolean }>(taken);
     const legacyLive = prev ? prev.slots !== true && isPidAlive(prev.pid) : mtimeAge(taken) <= 10_000;
     if (legacyLive) {
-      try { linkSync(taken, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-      rmSync(taken, { force: true });
+      try { linkWithRetry(taken, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      removeWithRetry(taken);
       return false;
     }
-    rmSync(taken, { force: true });
+    removeWithRetry(taken);
   }
   if (!slots[0]) return true;
   try { writeJsonExclusive(path, { ...slots[0], slots: true }); return true; }
@@ -79,7 +79,7 @@ export class ExecutorSlots {
       const dir = locksDir(this.projectRoot);
       for (const name of readdirSync(dir).filter((n) => /^slot-\d+\.json$/.test(n))) {
         const s = readJson<SlotInfo>(join(dir, name));
-        if (s ? !isPidAlive(s.pid) : Date.now() - statSync(join(dir, name)).mtimeMs > 10_000) rmSync(join(dir, name), { force: true });
+        if (s ? !isPidAlive(s.pid) : Date.now() - statSync(join(dir, name)).mtimeMs > 10_000) removeWithRetry(join(dir, name));
       }
       const slots = activeSlots(this.projectRoot), holders = slots.map((s) => `${s.taskId}, pid ${s.pid}`).join("; ");
       if (slots.some((s) => s.isolation === "in-place")) return { ok: false, reason: `outro executor in-place está ativo (${holders}); aguarde ele terminar` };
@@ -94,10 +94,10 @@ export class ExecutorSlots {
       writeJsonExclusive(path, info);
       try {
         if (!refreshMirror(this.projectRoot)) {
-          rmSync(path, { force: true });
+          removeWithRetry(path);
           return { ok: false, reason: "outro executor in-place está ativo (lock.json legado); aguarde ele terminar" };
         }
-      } catch (error) { rmSync(path, { force: true }); throw error; }
+      } catch (error) { removeWithRetry(path); throw error; }
       this.own = info;
       this.timer = setInterval(() => {
         try { withAdmission(this.projectRoot, () => { if (this.intact()) refreshMirror(this.projectRoot); }); }
@@ -119,12 +119,12 @@ export class ExecutorSlots {
     const own = join(locksDir(this.projectRoot), `slot-${this.own.slot}.json`);
     try {
       withAdmission(this.projectRoot, () => {
-        if (this.intact()) rmSync(own, { force: true });
+        if (this.intact()) removeWithRetry(own);
         refreshMirror(this.projectRoot);
       });
     } catch {
       // Guard ocupado ou falha de I/O: libera só a própria vaga; o espelho é corrigido na próxima admissão.
-      try { if (this.intact()) rmSync(own, { force: true }); } catch { /* vaga vira stale quando o processo sair */ }
+      try { if (this.intact()) removeWithRetry(own); } catch { /* vaga vira stale quando o processo sair */ }
     }
     this.own = null;
   }

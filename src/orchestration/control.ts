@@ -20,7 +20,7 @@ export function refreshInterrupted(store: Store): { taskId: string; orphanChild:
       if (task.state !== "running") continue;
       if (task.pids.bridge && isPidAlive(task.pids.bridge)) continue;
       const orphan = task.pids.child && isPidAlive(task.pids.child) ? task.pids.child : null;
-      transition(task, "blocked", `interrompida: o processo da ponte não está mais ativo${orphan ? ` (executor órfão ainda ativo, pid ${orphan}; use duo cancel)` : ""}`);
+      transition(task, "blocked", `interrompida: o processo da ponte não está mais ativo${orphan ? ` (PID auditado ${orphan} ainda existe; verifique a identidade e a saída do processo antes de recuperar a reserva)` : ""}`);
       store.saveTask(task);
       const chain = store.chainForTask(task);
       const owner = chain.owner;
@@ -98,6 +98,7 @@ function applyAdmitted(projectRoot: string, taskId: string): { ok: boolean; mess
   const store = new Store(projectRoot);
   const task = store.findTask(taskId);
   if (!task) return { ok: false, message: `task não encontrada: ${taskId}` };
+  if (task.needs?.includes("computer_use")) return { ok: false, message: "tasks computer_use não produzem patches para aplicar; inspecione a worktree manualmente" };
   if (!task.worktree) return { ok: false, message: "task in-place: as mudanças já estão no working tree; não há patch a aplicar" };
   if (task.state !== "succeeded") return { ok: false, message: `só tasks succeeded podem ser integradas (estado: ${task.state})` };
   if (task.applied) return { ok: true, message: "patch já aplicado anteriormente; nada a fazer" };

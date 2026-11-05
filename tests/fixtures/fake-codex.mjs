@@ -151,9 +151,10 @@ const schemaPath = valueOf("--output-schema");
 log({
   cmd: "exec", pid: process.pid, model: valueOf("--model") ?? null, effort: args.find((a) => a.startsWith("model_reasoning_effort=")) ?? null, attempt: process.env.DUO_ATTEMPT ?? null, args, env: sensitiveEnvSeen(), depth: process.env.DUO_DEPTH ?? null, promptBytes: prompt.length,
   resume: resuming ? args.at(-2) : null, schemaExists: schemaPath ? existsSync(schemaPath) : false, sandbox: valueOf("--sandbox") ?? sandboxFromConfig,
+  rebindPrompt: prompt.includes("rebind each app with a direct literal cua.getApp"),
 });
 
-const thread = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const thread = scenario === "cu-session-mismatch" ? "0199a213-81c0-7800-8aa1-bbab2a035a54" : "0199a213-81c0-7800-8aa1-bbab2a035a53";
 const lastMsgPath = valueOf("--output-last-message");
 const usage = { input_tokens: 24763, cached_input_tokens: 24448, cache_write_input_tokens: 0, output_tokens: 122, reasoning_output_tokens: 64 };
 // Rollout da sessão, como o Codex real grava em $CODEX_HOME/sessions/AAAA/MM/DD/ (FAKE_NO_ROLLOUT desliga).
@@ -180,6 +181,49 @@ const finish = (rep) => {
 };
 
 switch (scenario) {
+  case "cu-success":
+  case "cu-session-mismatch":
+  case "cu-permission":
+  case "cu-permission-unlisted":
+  case "cu-unlisted":
+  case "cu-sensitive":
+  case "cu-unknown":
+  case "cu-mismatch":
+  case "cu-modified": {
+    emit({ type: "thread.started", thread_id: thread });
+    emit({ type: "turn.started" });
+    const app = scenario === "cu-sensitive" ? "Mail" : scenario === "cu-unlisted" || scenario === "cu-permission-unlisted" ? "Calculator" : "Finder";
+    const call = (id, code, result) => emit({ type: "item.completed", item: { id, type: "mcp_tool_call", server: "cua_repl", tool: "js", arguments: { code }, result } });
+    call("app", `let app = await cua.getApp("${app}");`, scenario.startsWith("cu-permission") ? { error: `Computer Use was not approved to use ${app}` } : { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
+    process.stderr.write("PRIVATE_STDERR_CANARY");
+    if (scenario.startsWith("cu-permission")) break;
+    call("action", scenario === "cu-unknown" ? 'await app.click(dynamicIndex);' : 'await app.typeText("PRIVATE_TYPED_CANARY");', { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
+    const jpeg = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAH/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAr/2Q==";
+    call("screenshot", "await app.getScreenshot();", { content: [{ type: "image", mimeType: "image/jpeg", data: jpeg }] });
+    emit({ type: "item.completed", item: { id: "cleanup", type: "mcp_tool_call", server: "cua_repl", tool: "js", arguments: { completion_summary: "PRIVATE_SUMMARY_CANARY" }, result: {} } });
+    if (scenario === "cu-modified") applyWrites();
+    finish({ ...report([]), summary: "PRIVATE_SUMMARY_CANARY", limitations: ["PRIVATE_LIMITATION_CANARY"], testsRun: [{ command: "PRIVATE_COMMAND_CANARY", exitCode: 0, passed: true }], appsUsed: scenario === "cu-mismatch" ? ["Calculator"] : [app] });
+    break;
+  }
+  case "cu-no-audit":
+  case "cu-rollout": {
+    emit({ type: "thread.started", thread_id: thread });
+    emit({ type: "turn.started" });
+    if (scenario === "cu-rollout" && process.env.CODEX_HOME) {
+      const d = new Date();
+      const dir = join(process.env.CODEX_HOME, "sessions", String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"));
+      mkdirSync(dir, { recursive: true });
+      const timestamp = d.toISOString();
+      const records = [
+        { type: "session_meta", timestamp, payload: { id: thread } },
+        { type: "response_item", timestamp, payload: { type: "function_call", name: "js", namespace: "mcp__cua_repl", call_id: "rollout-call", arguments: JSON.stringify({ code: 'let app = await cua.getApp("Finder");' }) } },
+        { type: "response_item", timestamp, payload: { type: "function_call_output", call_id: "rollout-call", output: JSON.stringify([{ type: "text", text: "PRIVATE_SCREEN_CANARY" }]) } },
+      ];
+      writeFileSync(join(dir, `rollout-test-${thread}.jsonl`), records.map(JSON.stringify).join("\n") + "\n");
+    }
+    finish({ ...report([]), appsUsed: ["Finder"] });
+    break;
+  }
   case "private-key":
     emitPrivateKey();
   case "success": {

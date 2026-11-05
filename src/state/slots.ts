@@ -4,6 +4,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
+import { processStartTime, startedAfterReservation } from "./process-identity.js";
 import { linkWithRetry, readJson, removeWithRetry, renameWithRetry, withFileLock, writeJsonAtomic, writeJsonExclusive, type LockInfo } from "./store.js";
 import type { TaskKind } from "./types.js";
 
@@ -13,23 +14,41 @@ export type AdmitRequest = { taskId: string; runId: string; kind: TaskKind; requ
 export type AdmitResult = { ok: true; isolation: Isolation; forced: boolean } | { ok: false; reason: string };
 const locksDir = (root: string) => join(duoDir(root), "locks");
 
+const validPid = (pid: unknown): pid is number => typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 && pid <= 2147483647;
+
+// Unknown and inaccessible are active: neither proves that the bridge or child exited.
+function pidState(pid: number): "alive" | "dead" | "unknown" {
+  try { process.kill(pid, 0); return "alive"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "unknown"; }
+}
+
+function bridgeGone(slot: SlotInfo): boolean {
+  if (!validPid(slot.pid)) return false;
+  const state = pidState(slot.pid);
+  if (state === "dead") return true;
+  if (state === "unknown") return false;
+  return typeof slot.startedAt === "string" && startedAfterReservation(slot.startedAt, processStartTime(slot.pid));
+}
+
 // A ponte pode morrer antes do executor. Uma auditoria ausente ou inconsistente não prova que ele terminou.
-function slotActive(root: string, slot: SlotInfo): boolean {
-  if (slot.exclusive === true && (!Number.isSafeInteger(slot.pid) || slot.pid <= 0 || slot.pid > 2147483647)) return true;
-  if (isPidAlive(slot.pid)) return true;
-  if (slot.exclusive !== true) return false;
+function childState(root: string, slot: SlotInfo): "stopped" | "active" | "unknown" {
   if (typeof slot.runId !== "string" || !/^run-[a-z0-9-]{6,64}$/.test(slot.runId) ||
-      typeof slot.taskId !== "string" || !/^task-[a-z0-9-]{6,64}$/.test(slot.taskId)) return true;
+      typeof slot.taskId !== "string" || !/^task-[a-z0-9-]{6,64}$/.test(slot.taskId)) return "unknown";
   const task = readJson<{ runId?: unknown; taskId?: unknown; state?: unknown; pids?: { bridge?: unknown; child?: unknown } }>(
     join(duoDir(root), "runs", slot.runId, "tasks", slot.taskId, "task.json"),
   );
   if (!task || task.runId !== slot.runId || task.taskId !== slot.taskId || task.pids?.bridge !== slot.pid ||
-      !["planned", "approved", "running", "blocked", "succeeded", "failed", "cancelled"].includes(task.state as string)) return true;
+      !["planned", "approved", "running", "blocked", "succeeded", "failed", "cancelled"].includes(task.state as string)) return "unknown";
   const child = task.pids.child;
-  if (child === null && ["approved", "succeeded", "failed", "cancelled"].includes(task.state as string)) return false;
-  if (typeof child !== "number" || !Number.isSafeInteger(child) || child <= 0 || child > 2147483647) return true;
-  try { process.kill(child, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+  if (child === null && ["approved", "succeeded", "failed", "cancelled"].includes(task.state as string)) return "stopped";
+  if (!validPid(child)) return "unknown";
+  const state = pidState(child);
+  return state === "dead" ? "stopped" : state === "alive" ? "active" : "unknown";
+}
+
+function slotActive(root: string, slot: SlotInfo): boolean {
+  if (slot.exclusive !== true) return isPidAlive(slot.pid);
+  return !bridgeGone(slot) || childState(root, slot) !== "stopped";
 }
 
 export function withAdmission<T>(projectRoot: string, fn: () => T): T {
@@ -49,7 +68,7 @@ export function activeSlots(projectRoot: string): SlotInfo[] {
   return slots.sort((a, b) => a.slot - b.slot);
 }
 
-/** Recuperação manual: a confirmação atesta que o executor acabou; não inferimos identidade só de um PID. */
+/** Recuperação manual também exige evidência auditada de que o filho terminou. */
 export function releaseOrphanSlot(projectRoot: string, nonce: string, confirmed: boolean): { ok: boolean; message: string } {
   return withAdmission(projectRoot, () => {
     const dir = locksDir(projectRoot);
@@ -60,11 +79,9 @@ export function releaseOrphanSlot(projectRoot: string, nonce: string, confirmed:
     if (!nonce || matches.length !== 1 || !slot) return { ok: false, message: "nonce não identifica uma única reserva exclusiva; consulte duo doctor --json" };
     const path = matches[0]!.path;
     if (!confirmed) return { ok: false, message: "verifique que o executor e seus descendentes terminaram; só então use --confirm-executor-stopped" };
-    if (!Number.isSafeInteger(slot.pid) || slot.pid <= 0 || slot.pid > 2147483647) return { ok: false, message: "PID da ponte inválido; não é possível confirmar sua saída" };
-    try { process.kill(slot.pid, 0); return { ok: false, message: "ponte ainda ativa; encerre-a antes de recuperar a reserva" }; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return { ok: false, message: "saída da ponte não confirmada; reserva preservada" };
-    }
+    if (!bridgeGone(slot)) return { ok: false, message: "saída da ponte não confirmada; reserva preservada" };
+    const child = childState(projectRoot, slot);
+    if (child !== "stopped") return { ok: false, message: child === "active" ? "filho auditado ainda ativo; reserva preservada" : "auditoria ou saída do filho não confirmada; reserva preservada" };
     removeWithRetry(path);
     refreshMirror(projectRoot);
     return { ok: true, message: `reserva exclusiva ${nonce} liberada por confirmação explícita; nenhum processo foi encerrado` };

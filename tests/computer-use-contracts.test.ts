@@ -79,11 +79,12 @@ describe("computer-use contracts", () => {
     assert.deepEqual(validate(schema, { ...cuRequest, apps: Array(20).fill("a".repeat(200)) }), []);
   });
 
-  it("rejects empty, oversized and mistyped request app lists and entries", () => {
+  it("accepts an empty intention list and rejects oversized or mistyped app lists and entries", () => {
     const schema = loadSchema("delegation-request");
-    for (const apps of [[], "Safari", null, [1], [null], [""], ["   "], ["a".repeat(201)], Array(21).fill("Safari")]) {
+    for (const apps of ["Safari", null, [1], [null], [""], ["   "], ["a".repeat(201)], Array(21).fill("Safari")]) {
       assert.ok(validate(schema, { ...request, needs: ["computer_use"], apps }).length > 0, JSON.stringify(apps));
     }
+    assert.deepEqual(validate(schema, { ...request, needs: ["computer_use"], apps: [] }), []);
   });
 
   it("keeps appsUsed optional in bridge reports and validates bounded entries", () => {

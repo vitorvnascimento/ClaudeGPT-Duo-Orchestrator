@@ -1,4 +1,5 @@
 import type { CodexRolloutEvidence } from "../adapters/codex-rollout.js";
+import type { ComputerUseEvidence } from "../adapters/computer-use-evidence.js";
 import type { Effort, Tier } from "../adapters/tiers.js";
 import type { Policy, Provider } from "../config.js";
 
@@ -84,6 +85,7 @@ export type TaskMetrics = {
 
 export type Verification = {
   filesChangedActual: string[];
+  filesChangedCount?: number;
   outOfScope: string[];
   deniedTouched: string[];
   claimsMismatch: string[];
@@ -180,6 +182,7 @@ export type Task = {
   /** Provas pós-execução registradas pelo próprio cliente (ex.: rollout do Codex) e origem das imagens. */
   evidence?: {
     codex?: CodexRolloutEvidence | null;
+    computerUse?: ComputerUseEvidence;
     images?: { path: string; sha256: string; generatedByExecutorTool: boolean }[];
   };
   effort?: { requested: string | null };
@@ -194,6 +197,7 @@ export type Task = {
   verification: Verification | null;
   metrics: TaskMetrics | null;
   outcome: string | null;
+  blockedReason?: { kind: "app_permission"; app: string };
   limitations: string[];
   retryOf?: string;
   accepted?: { at: string; accepted: boolean; note: string };

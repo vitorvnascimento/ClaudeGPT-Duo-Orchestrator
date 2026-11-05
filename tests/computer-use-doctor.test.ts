@@ -26,7 +26,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-it("reports default opt-out, missing plugins and unsupported per-task enforcement", () => {
+it("reports default opt-out and missing prerequisites with the native approval boundary", () => {
   const { env } = fixture();
   const report = computerUseDiagnostics({ enabled: false }, env, "darwin");
   assert.equal(report.configuredOptIn, false);
@@ -37,8 +37,10 @@ it("reports default opt-out, missing plugins and unsupported per-task enforcemen
   assert.equal(report.pluginPresent, false);
   assert.equal(report.runtimePresent, false);
   assert.equal(report.available, false);
-  assert.equal(report.appEnforcement, "unsupported");
-  assert.match(report.reason, /DISABLED.*per-task app enforcement is unsupported/);
+  assert.equal(report.appEnforcement, "codex-app-approvals");
+  assert.equal(report.appsEnforcement, "post-execution-detection");
+  assert.match(report.reason, /project opt-in required/);
+  assert.match(report.reason, /unified-computer-use runtime missing/);
 });
 
 it("distinguishes the old plugin from the actual runtime cache", () => {
@@ -48,22 +50,38 @@ it("distinguishes the old plugin from the actual runtime cache", () => {
   assert.equal(report.pluginPresent, true);
   assert.equal(report.runtimePresent, false);
   assert.equal(report.available, false);
+  assert.match(report.reason, /unified-computer-use runtime missing/);
   cache(codexHome, "unified-computer-use");
   report = computerUseDiagnostics({ enabled: true }, env, "darwin");
   assert.equal(report.configuredOptIn, true);
   assert.equal(report.pluginPresent, true);
   assert.equal(report.runtimePresent, true);
+  assert.equal(report.available, true);
+  assert.equal(report.appEnforcement, "codex-app-approvals");
+  assert.equal(report.appsEnforcement, "post-execution-detection");
+  assert.match(report.reason, /Local prerequisites present/);
+  assert.match(report.reason, /approval may still block/);
+  assert.match(report.reason, /AFTER-THE-FACT detection, not prevention/);
+  assert.match(report.reason, /does not verify.*any app approval or actual clicks/);
+});
+
+it("requires project opt-in even on macOS with both packages cached", () => {
+  const { codexHome, env } = fixture();
+  cache(codexHome, "computer-use");
+  cache(codexHome, "unified-computer-use");
+  const report = computerUseDiagnostics({ enabled: false }, env, "darwin");
   assert.equal(report.available, false);
-  assert.equal(report.appEnforcement, "unsupported");
+  assert.match(report.reason, /project opt-in required/);
 });
 
 it("reports runtime-only presence without claiming the old plugin is present", () => {
   const { codexHome, env } = fixture();
   cache(codexHome, "unified-computer-use");
-  const report = computerUseDiagnostics({ enabled: false }, env, "darwin");
+  const report = computerUseDiagnostics({ enabled: true }, env, "darwin");
   assert.equal(report.pluginPresent, false);
   assert.equal(report.runtimePresent, true);
-  assert.equal(report.available, false);
+  assert.equal(report.available, true);
+  assert.match(report.reason, /Local prerequisites present/);
 });
 
 it("keeps Linux and Windows unsupported even with opt-in and both caches", () => {
@@ -77,7 +95,8 @@ it("keeps Linux and Windows unsupported even with opt-in and both caches", () =>
     assert.equal(report.pluginPresent, true);
     assert.equal(report.runtimePresent, true);
     assert.equal(report.available, false);
-    assert.equal(report.appEnforcement, "unsupported");
+    assert.equal(report.appEnforcement, "codex-app-approvals");
+    assert.match(report.reason, /macOS required/);
   }
 });
 
@@ -89,7 +108,7 @@ it("honors CODEX_HOME instead of merging evidence from the default home", () => 
   const report = computerUseDiagnostics({ enabled: true }, { ...env, CODEX_HOME: customHome }, "darwin");
   assert.equal(report.pluginPresent, false);
   assert.equal(report.runtimePresent, true);
-  assert.equal(report.available, false);
+  assert.equal(report.available, true);
 });
 
 it("does not count empty cache directories, version files or missing manifests", () => {
@@ -115,7 +134,7 @@ it("discovers presence without launching subprocesses, UI, MCP or inference", ()
   const report = computerUseDiagnostics({ enabled: true }, env, "darwin");
   assert.equal(report.pluginPresent, true);
   assert.equal(report.runtimePresent, true);
-  assert.equal(report.available, false);
+  assert.equal(report.available, true);
   for (const spy of spies) assert.equal(spy.mock.callCount(), 0);
 });
 
@@ -138,12 +157,17 @@ it("includes loaded project opt-in and cache evidence in doctor JSON and text wi
     assert.equal(report.computerUse?.platform, process.platform);
     assert.equal(report.computerUse?.pluginPresent, true);
     assert.equal(report.computerUse?.runtimePresent, true);
-    assert.equal(report.computerUse?.available, false);
+    const available = enabled && process.platform === "darwin";
+    assert.equal(report.computerUse?.available, available);
+    // CU prerequisites must not bypass existing executor/auth readiness.
+    assert.deepEqual(report.ready, { claude: false, codex: false });
+    assert.deepEqual(report.executorSlots, []);
     const text = formatDoctor(report);
     assert.match(text, new RegExp(`configuredOptIn=${enabled}`));
     assert.match(text, /computer-use@openai-bundled: pluginPresent=true/);
     assert.match(text, /unified-computer-use@openai-bundled: runtimePresent=true/);
-    assert.match(text, /available=false \| per-task appEnforcement=unsupported/);
-    assert.match(text, /DISABLED/);
+    assert.match(text, new RegExp(`available=${available} \\(prerequisites only\\) \\| appEnforcement=codex-app-approvals`));
+    assert.match(text, /appsEnforcement=post-execution-detection/);
+    assert.match(text, /approval may still block/);
   }
 });

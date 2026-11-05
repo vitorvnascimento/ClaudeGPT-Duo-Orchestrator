@@ -21,8 +21,9 @@ export type ComputerUseDiagnostics = {
   runtime: "unified-computer-use@openai-bundled";
   pluginPresent: boolean;
   runtimePresent: boolean;
-  available: false;
-  appEnforcement: "unsupported";
+  available: boolean;
+  appEnforcement: "codex-app-approvals";
+  appsEnforcement: "post-execution-detection";
   reason: string;
 };
 
@@ -51,17 +52,25 @@ export function computerUseDiagnostics(
   platform: NodeJS.Platform = process.platform,
 ): ComputerUseDiagnostics {
   const codexHome = env.CODEX_HOME ?? join(env.HOME ?? env.USERPROFILE ?? homedir(), ".codex");
+  const macosSupported = platform === "darwin";
+  const pluginPresent = cachedPluginPresent(codexHome, "computer-use");
+  const runtimePresent = cachedPluginPresent(codexHome, "unified-computer-use");
+  const missing: string[] = [];
+  if (!macosSupported) missing.push("macOS required");
+  if (!config.enabled) missing.push("project opt-in required (computerUse.enabled=true)");
+  if (!runtimePresent) missing.push("unified-computer-use runtime missing from local cache");
   return {
     configuredOptIn: config.enabled,
     platform,
-    macosSupported: platform === "darwin",
+    macosSupported,
     plugin: "computer-use@openai-bundled",
     runtime: "unified-computer-use@openai-bundled",
-    pluginPresent: cachedPluginPresent(codexHome, "computer-use"),
-    runtimePresent: cachedPluginPresent(codexHome, "unified-computer-use"),
-    available: false,
-    appEnforcement: "unsupported",
-    reason: "DISABLED: per-task app enforcement is unsupported. Local cache presence does not prove activation, permissions or working computer use; all computer_use requests are rejected before execution.",
+    pluginPresent,
+    runtimePresent,
+    available: missing.length === 0,
+    appEnforcement: "codex-app-approvals",
+    appsEnforcement: "post-execution-detection",
+    reason: `${missing.length ? `Prerequisites missing: ${missing.join("; ")}.` : "Local prerequisites present."} Native boundary: Codex per-app approvals; approval may still block execution. Task apps are AFTER-THE-FACT detection, not prevention. Cache evidence does not verify activation, macOS permissions, any app approval or actual clicks; no UI or inference was invoked.`,
   };
 }
 
@@ -227,14 +236,14 @@ export function formatDoctor(r: DoctorReport): string {
   lines.push(`projeto: ${String(proj.root ?? "(fora de repositório Git)")} | config: ${String(proj.config)}`);
   for (const slot of r.executorSlots ?? []) {
     lines.push(`slot ${slot.slot}: ${slot.taskId}, ponte pid ${slot.pid}, exclusive=${slot.exclusive === true}, nonce=${slot.nonce}`);
-    if (slot.exclusive) lines.push("  Reserva órfã: verifique que ponte, executor e descendentes terminaram; então duo doctor --release-slot <nonce> --confirm-executor-stopped. Nunca use para contornar executor ativo.");
+    if (slot.exclusive) lines.push("  Reserva órfã: verifique que ponte, executor e descendentes terminaram; então duo doctor --release-slot <nonce> --confirm-executor-stopped. Recuperação compara nascimento da ponte com o slot e recusa filho auditado vivo; nunca mata PID não verificado.");
   }
   if (r.computerUse) {
     const cu = r.computerUse;
-    lines.push(`\n[computer use — DISABLED]\n  configuredOptIn=${cu.configuredOptIn} | platform=${cu.platform} | macosSupported=${cu.macosSupported}`);
-    lines.push(`  ${cu.plugin}: pluginPresent=${cu.pluginPresent} (local cache only)`);
+    lines.push(`\n[computer use — prerequisites]\n  configuredOptIn=${cu.configuredOptIn} | platform=${cu.platform} | macosSupported=${cu.macosSupported}`);
+    lines.push(`  ${cu.plugin}: pluginPresent=${cu.pluginPresent} (optional legacy package; local cache only)`);
     lines.push(`  ${cu.runtime}: runtimePresent=${cu.runtimePresent} (local cache only)`);
-    lines.push(`  available=${cu.available} | per-task appEnforcement=${cu.appEnforcement}`);
+    lines.push(`  available=${cu.available} (prerequisites only) | appEnforcement=${cu.appEnforcement} | appsEnforcement=${cu.appsEnforcement}`);
     lines.push(`  ${cu.reason}`);
   }
   for (const [p, info] of Object.entries(r.providers as Record<string, Record<string, unknown>>)) {

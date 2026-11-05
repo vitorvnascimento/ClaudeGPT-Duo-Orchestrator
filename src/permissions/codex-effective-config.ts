@@ -12,6 +12,10 @@ export type EffectiveCodexConfig = {
   chatgpt_base_url?: string;
   providers: Record<string, { baseUrl?: string; requiresOpenaiAuth?: boolean; wireApi?: string; officialInvalid?: boolean; keys: string[] }>;
   mcpServers: string[];
+  /** Plugin identifiers only; null means the participating sources could not be enumerated. */
+  pluginKeys: string[] | null;
+  /** All declared server names in participating layers, or null when enumeration failed. */
+  mcpKeys: string[] | null;
   preferredAuthMethod?: string;
   forcedLoginMethod?: string;
   networkAccess?: boolean;
@@ -26,7 +30,29 @@ function object(value: unknown): value is Record<string, unknown> {
 function normalize(result: unknown): EffectiveCodexConfig | null {
   if (!object(result) || !object(result.config)) return null;
   const c = result.config;
-  const out: EffectiveCodexConfig = { providers: Object.create(null) as EffectiveCodexConfig["providers"], mcpServers: [] };
+  const out: EffectiveCodexConfig = { providers: Object.create(null) as EffectiveCodexConfig["providers"], mcpServers: [], pluginKeys: null, mcpKeys: null };
+  const pluginKeys = new Set<string>();
+  const mcpKeys = new Set<string>();
+  let pluginsEnumerable = Array.isArray(result.layers);
+  let mcpEnumerable = Array.isArray(result.layers);
+  const collectMcp = (servers: unknown): void => {
+    if (servers == null) return;
+    if (!object(servers)) { mcpEnumerable = false; return; }
+    for (const [name, value] of Object.entries(servers)) {
+      if (!object(value) || (value.enabled != null && typeof value.enabled !== "boolean")) { mcpEnumerable = false; continue; }
+      mcpKeys.add(name);
+    }
+  };
+  const collectPlugins = (plugins: unknown): void => {
+    if (plugins == null) return;
+    if (!object(plugins)) { pluginsEnumerable = false; return; }
+    for (const [name, value] of Object.entries(plugins)) {
+      if (!object(value) || (value.enabled != null && typeof value.enabled !== "boolean")) { pluginsEnumerable = false; continue; }
+      if (name !== "_default") pluginKeys.add(name);
+    }
+  };
+  collectPlugins(c.plugins);
+  collectMcp(c.mcp_servers);
   // Codex serializes ModelProviderInfo defaults (including null credential fields).
   // Layers preserve explicit keys, including unknown ones omitted by that typed serialization.
   // Never retain their values; disabled project layers do not participate in the effective config.
@@ -37,6 +63,8 @@ function normalize(result: unknown): EffectiveCodexConfig | null {
     for (const layer of result.layers) {
       if (!object(layer) || !object(layer.config)) return null;
       if (layer.disabledReason != null) continue;
+      collectPlugins(layer.config.plugins);
+      collectMcp(layer.config.mcp_servers);
       const providers = layer.config.model_providers;
       if (providers == null) continue;
       if (!object(providers)) return null;
@@ -51,6 +79,8 @@ function normalize(result: unknown): EffectiveCodexConfig | null {
       }
     }
   }
+  if (pluginsEnumerable) out.pluginKeys = [...pluginKeys].sort();
+  if (mcpEnumerable) out.mcpKeys = [...mcpKeys].sort();
   for (const [from, to] of [
     ["model_provider", "model_provider"], ["openai_base_url", "openai_base_url"], ["chatgpt_base_url", "chatgpt_base_url"],
     ["preferred_auth_method", "preferredAuthMethod"], ["forced_login_method", "forcedLoginMethod"], ["model", "model"],

@@ -36,12 +36,13 @@ export class CodexAdapter implements ExecutorAdapter {
 
   plan(input: InvocationInput, effective?: EffectiveCodexConfig | null): InvocationPlan {
     const { caps, cfg } = input;
+    const computerUse = input.needs.includes("computer_use");
     const cuReason = computerUseBlockReason({ needs: input.needs, apps: input.apps, executor: "codex" }, cfg.computerUse?.enabled === true);
     if (cuReason) throw new Error(cuReason);
     const writes = isWriteKind(input.kind);
     const enforced: string[] = [];
-    const schemaPath = writeExecutorSchema(input.artifactsDir);
-    const lastMessagePath = caps.flags.outputLastMessage ? join(input.artifactsDir, "last-message.json") : null;
+    const schemaPath = writeExecutorSchema(input.artifactsDir, computerUse);
+    const lastMessagePath = !computerUse && caps.flags.outputLastMessage ? join(input.artifactsDir, "last-message.json") : null;
     const sandbox = writes ? "workspace-write" : "read-only";
     // `codex exec resume` (0.157.1) não aceita --sandbox/--cd: as opções vão depois do subcomando,
     // o sandbox via -c sandbox_mode e o diretório pelo cwd do processo.
@@ -62,7 +63,18 @@ export class CodexAdapter implements ExecutorAdapter {
       args.push("--ignore-user-config");
       enforced.push("ignore-user-config (MCPs/perfis do usuário não carregados)");
     }
-    if (cfg.executors.codex.disableUserExtensions) {
+    if (computerUse) {
+      if (!caps.flags.config || !caps.flags.enable || !caps.flags.disable) throw new Error("computer use exige --config, --enable e --disable");
+      if (!effective || effective.pluginKeys === null || effective.mcpKeys === null) throw new Error("computer use exige enumeração verificável de plugins e MCPs efetivos");
+      // Codex 0.166 splits dotted override keys even when quoted.
+      const safeName = (name: string) => /^[A-Za-z0-9_@-]{1,200}$/.test(name);
+      if (![...effective.pluginKeys, ...effective.mcpKeys].every(safeName)) throw new Error("identificador de plugin ou MCP não pode ser isolado com segurança");
+      args.push("--disable", "hooks", "--disable", "apps", "--enable", "plugins", "--config", "plugins._default.enabled=false");
+      for (const name of effective.pluginKeys) if (name !== "unified-computer-use@openai-bundled") args.push("--config", `plugins.${name}.enabled=false`);
+      args.push("--config", "plugins.unified-computer-use@openai-bundled.enabled=true");
+      for (const name of effective.mcpKeys) args.push("--config", `mcp_servers.${name}.enabled=false`);
+      enforced.push("somente o plugin unified-computer-use habilitado; hooks, conectores Apps e MCPs configurados desligados");
+    } else if (cfg.executors.codex.disableUserExtensions) {
       // Hooks de plugins do usuário (ex.: Ruflo) gravavam arquivos no projeto durante a delegação real.
       if (caps.flags.disable) {
         args.push("--disable", "hooks", "--disable", "plugins");

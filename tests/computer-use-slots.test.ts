@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,9 +8,11 @@ import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { applyTask, cancelRun } from "../src/orchestration/control.js";
 import { activeSlots, ExecutorSlots, releaseOrphanSlot, type AdmitRequest } from "../src/state/slots.js";
+import { processStartTime, startedAfterReservation } from "../src/state/process-identity.js";
 import { readJson, writeJsonAtomic } from "../src/state/store.js";
 
 const roots: string[] = [];
+const childProcess = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
 const owners: ExecutorSlots[] = [];
 const root = () => { const p = mkdtempSync(join(tmpdir(), "duo-exclusive-")); roots.push(p); return p; };
 const owner = (p: string) => { const s = new ExecutorSlots(p, 8); owners.push(s); return s; };
@@ -66,6 +69,44 @@ function audit(bridge: number, child: number | null) {
   return { taskId: req().taskId, runId: req().runId, state: "running", pids: { bridge, child }, history: [],
     executor: "codex", kind: "implement", scope: [], acceptanceCriteria: [], tags: [], model: { requested: null }, invocations: 1 };
 }
+
+it("comparação de início é conservadora com segundos e timestamps inválidos", () => {
+  const reservation = "2020-01-01T00:00:00.500Z";
+  assert.equal(startedAfterReservation(reservation, Date.parse("2020-01-01T00:00:00Z")), false);
+  assert.equal(startedAfterReservation(reservation, Date.parse("2020-01-01T00:00:01Z")), true);
+  assert.equal(startedAfterReservation("0", Date.now()), false);
+  assert.equal(startedAfterReservation(reservation, null), false);
+});
+
+it("lstart no macOS usa UTC, valida saída e trata falhas como desconhecidas", (t) => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  let stdout = "Wed Jan  1 00:00:02 2020\n";
+  t.mock.method(childProcess, "spawnSync", ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+    assert.equal(command, "/bin/ps");
+    assert.deepEqual(args, ["-p", "123", "-o", "lstart="]);
+    assert.equal(options.env.TZ, "UTC0");
+    assert.equal(options.env.LC_ALL, "C");
+    return { status: 0, stdout };
+  }) as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try {
+    assert.equal(processStartTime(123), Date.parse("2020-01-01T00:00:02Z"));
+    stdout = "garbage";
+    assert.equal(processStartTime(123), null);
+    stdout = "Wed Feb 31 00:00:02 2020";
+    assert.equal(processStartTime(123), null);
+    assert.equal(processStartTime(-1), null);
+  } finally { t.mock.restoreAll(); Object.defineProperty(process, "platform", platform); syncBuiltinESMExports(); }
+});
+
+it("metadados nativos identificam o processo atual no macOS", { skip: process.platform !== "darwin" }, (t) => {
+  const probe = spawnSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC0" } });
+  if (probe.error || probe.status !== 0) { t.skip(`ps indisponível: ${(probe.error as NodeJS.ErrnoException | undefined)?.code ?? probe.status}`); return; }
+  const started = processStartTime(process.pid);
+  assert.notEqual(started, null, `saída nativa inesperada: ${JSON.stringify(probe.stdout)}`);
+  assert.ok(started! <= Date.now());
+});
 
 for (const state of ["approved", "succeeded", "failed", "cancelled"]) {
   it(`crash da ponte em ${state} sem filho não bloqueia admissão ou apply`, () => {
@@ -181,12 +222,12 @@ it("cancelRun recupera reserva órfã registrando task cancelada e filho nulo", 
   }
 });
 
-it("recuperação explícita trata auditoria antiga, PID reutilizado e EPERM sem sinalizar processos", (t) => {
+it("recuperação explícita recusa auditoria ambígua e filho vivo ou inacessível", (t) => {
   const p = root(), bridge = deadPid(), kill = process.kill;
   const ambiguous = [
     { ...audit(bridge + 1, null), state: "succeeded" },
     audit(bridge, null),
-    audit(bridge, process.pid), // PID agora pertence a outro processo.
+    audit(bridge, process.pid),
   ];
   for (const saved of ambiguous) {
     orphanSlot(p, bridge);
@@ -200,12 +241,59 @@ it("recuperação explícita trata auditoria antiga, PID reutilizado e EPERM sem
       return kill.call(process, pid, signal);
     });
     assert.equal(activeSlots(p).length, 1);
-    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
     t.mock.restoreAll();
-    assert.equal(activeSlots(p).length, 0);
-    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+    assert.equal(activeSlots(p).length, 1);
   }
+  writeJsonAtomic(auditPath(p), { ...audit(bridge, null), state: "succeeded" });
+  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
   assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("recuperação recusa filho auditado vivo mesmo com confirmação", () => {
+  const p = root(), bridge = deadPid();
+  orphanSlot(p, bridge);
+  writeJsonAtomic(auditPath(p), audit(bridge, process.pid));
+  assert.match(releaseOrphanSlot(p, "orphan", true).message, /filho auditado ainda ativo/);
+  assert.equal(activeSlots(p).length, 1);
+});
+
+it("PID de ponte reutilizado não bloqueia com filho encerrado, mas ponte genuína bloqueia", (t) => {
+  const p = root(), bridge = process.pid;
+  const fakePs = (output: string) => {
+    t.mock.method(childProcess, "spawnSync", (() => ({ status: 0, stdout: output, error: undefined })) as unknown as typeof childProcess.spawnSync);
+    syncBuiltinESMExports();
+  };
+  t.mock.method(process, "kill", ((pid: number, signal?: string | number) => {
+    assert.equal(pid, bridge);
+    assert.equal(signal, 0);
+    return true;
+  }) as typeof process.kill);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  try {
+    orphanSlot(p, bridge);
+    writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "orphan", startedAt: "2020-01-01T00:00:00.500Z" });
+    writeJsonAtomic(auditPath(p), { ...audit(bridge, null), state: "succeeded" });
+    fakePs("Wed Jan  1 00:00:00 2020\n");
+    assert.equal(activeSlots(p).length, 1, "mesmo segundo pode ser a ponte original");
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    fakePs("Wed Jan  1 00:00:02 2020\n");
+    assert.equal(activeSlots(p).length, 0);
+    writeJsonAtomic(auditPath(p), audit(bridge, bridge));
+    assert.equal(activeSlots(p).length, 1);
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
+    writeJsonAtomic(auditPath(p), { ...audit(bridge, null), state: "succeeded" });
+    const replacement = owner(p);
+    assert.equal(replacement.admit(req()).ok, true, "admissão recupera a vaga sem encerrar o PID reutilizado");
+    assert.notEqual(readJson<{ nonce: string }>(join(p, ".duo/lock.json"))?.nonce, "orphan");
+    replacement.release();
+    writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "orphan", startedAt: "2020-01-01T00:00:00.500Z" });
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+    assert.equal(owner(p).admit(req()).ok, true);
+  } finally { t.mock.restoreAll(); Object.defineProperty(process, "platform", platform); syncBuiltinESMExports(); }
 });
 
 it("recuperação recusa ponte viva ou inacessível mesmo com confirmação", (t) => {

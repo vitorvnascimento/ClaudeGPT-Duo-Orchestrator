@@ -166,6 +166,10 @@ describe("doctor e report", () => {
       assert.notEqual(cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", ...flags]).status, 0);
       assert.equal(activeSlots(s.root).length, 1);
     }
+    assert.notEqual(cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", "--confirm-executor-stopped"]).status, 0);
+    writeJsonAtomic(join(s.root, ".duo/runs/run-orphan-000000/tasks/task-orphan-000000/task.json"), {
+      runId: "run-orphan-000000", taskId: "task-orphan-000000", state: "succeeded", pids: { bridge, child: null },
+    });
     const recovered = cli(s, ["doctor", "--release-slot", "nonce-de-recuperacao", "--confirm-executor-stopped"]);
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(JSON.parse(recovered.stdout).ok, true);

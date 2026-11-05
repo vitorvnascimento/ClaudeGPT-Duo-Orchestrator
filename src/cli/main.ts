@@ -307,7 +307,7 @@ async function main(argv: string[]): Promise<number> {
         cancelled: r.cancelled,
         invocations: r.invocations,
         nextStep: r.nextStep,
-        tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt, ...(t.selection ? { selection: t.selection } : {}) })),
+        tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt, ...(t.blockedReason ? { blockedReason: t.blockedReason } : {}), ...(t.selection ? { selection: t.selection } : {}) })),
       }));
       const slots = activeSlots(store.projectRoot);
       if (args.flags.json) print({ interrupted, runs: data, slots });

@@ -3,9 +3,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { isPidAlive, killPidTree } from "../adapters/process.js";
 import { loadConfig } from "../config.js";
-import { git, hashPath, headCommit } from "../git.js";
+import { captureState, git, hashPath, headCommit } from "../git.js";
 import { inScope, validateScope } from "../permissions/scope.js";
 import { canTransition, isTerminal, transition } from "../state/machine.js";
+import { activeSlots, withAdmission } from "../state/slots.js";
 import { Store } from "../state/store.js";
 import type { Task } from "../state/types.js";
 
@@ -80,6 +81,15 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
 
 /** Integra o patch de um worktree somente se a base não mudou. Nunca força nem descarta mudanças do usuário. */
 export function applyTask(projectRoot: string, taskId: string): { ok: boolean; message: string } {
+  return withAdmission(projectRoot, () => {
+    if (activeSlots(projectRoot).some((slot) => slot.isolation === "in-place")) {
+      return { ok: false, message: "um executor in-place está ativo; aplique depois que ele terminar" };
+    }
+    return applyAdmitted(projectRoot, taskId);
+  });
+}
+
+function applyAdmitted(projectRoot: string, taskId: string): { ok: boolean; message: string } {
   const store = new Store(projectRoot);
   const task = store.findTask(taskId);
   if (!task) return { ok: false, message: `task não encontrada: ${taskId}` };
@@ -94,15 +104,14 @@ export function applyTask(projectRoot: string, taskId: string): { ok: boolean; m
   const cfg = loadConfig(projectRoot);
   const scope = validateScope(projectRoot, task.scope, cfg.scope.deny, { allowWholeProject: false });
   if (!scope.ok) return { ok: false, message: `escopo inválido na integração: ${scope.errors.join("; ")}` };
-  const drift: string[] = [];
-  for (const [rel, h] of Object.entries(task.base?.hashes ?? {})) {
-    if (!inScope(rel, scope.entries)) continue;
-    if (hashPath(join(projectRoot, rel)) !== h) drift.push(rel);
-  }
-  for (const rel of task.verification?.filesChangedActual ?? []) {
-    if (!(rel in (task.base?.hashes ?? {})) && existsSync(join(projectRoot, rel))) drift.push(rel);
-  }
-  if (drift.length) return { ok: false, message: `arquivos do escopo mudaram desde a base: ${drift.join(", ")}. Rejeitado para não sobrescrever alterações.` };
+  const hashes = task.base?.hashes ?? {};
+  const patchFiles = task.verification?.filesChangedActual ?? [];
+  const drift = patchFiles.filter((rel) => hashPath(join(projectRoot, rel)) !== (hashes[rel] ?? null));
+  if (drift.length) return { ok: false, message: `arquivos do patch mudaram desde a base: ${drift.join(", ")}. Rejeitado para não sobrescrever alterações.` };
+  const current = captureState(projectRoot, scope.entries.map((entry) => entry.rel));
+  const otherDrift = [...new Set([...Object.keys(hashes), ...Object.keys(current.hashes)])]
+    .filter((rel) => inScope(rel, scope.entries) && !patchFiles.includes(rel) && hashPath(join(projectRoot, rel)) !== (hashes[rel] ?? null));
+  const warning = otherDrift.length ? ` Aviso: o projeto mudou fora do patch desde o snapshot: ${otherDrift.join(", ")}.` : "";
 
   const check = git(projectRoot, ["apply", "--check", patch]);
   if (!check.ok) return { ok: false, message: `git apply --check falhou: ${check.stderr.slice(0, 400)}` };
@@ -117,7 +126,7 @@ export function applyTask(projectRoot: string, taskId: string): { ok: boolean; m
   store.telemetry({ event: "task_applied", runId: task.runId, taskId });
   return {
     ok: true,
-    message: `patch aplicado ao working tree (sem commit). O worktree descartável continua em ${task.worktree}; remova com: git worktree remove "${task.worktree}"`,
+    message: `patch aplicado ao working tree (sem commit). O worktree descartável continua em ${task.worktree}; remova com: git worktree remove "${task.worktree}"${warning}`,
   };
 }
 

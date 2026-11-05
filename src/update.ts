@@ -30,7 +30,7 @@ type FetchLike = (url: string, init: { headers: Record<string, string>; signal: 
 }>;
 
 export function currentVersion(): string {
-  return (JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version: string }).version;
+  return (JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8").replace(/^\uFEFF/, "")) as { version: string }).version;
 }
 
 export function compareVersions(a: string, b: string): number {

@@ -32,7 +32,7 @@ export function schemaPath(name: string): string {
 export function loadSchema(name: string): JsonSchema {
   const hit = cache.get(name);
   if (hit) return hit;
-  const parsed = JSON.parse(readFileSync(schemaPath(name), "utf8")) as JsonSchema;
+  const parsed = JSON.parse(readFileSync(schemaPath(name), "utf8").replace(/^\uFEFF/, "")) as JsonSchema;
   cache.set(name, parsed);
   return parsed;
 }

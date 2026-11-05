@@ -61,6 +61,15 @@ describe("proxy local de loopback", () => {
     assert.match(allowed.warnings[0]!, /proxy local \(loopback\) autorizado por billing\.allowLoopbackProxy: http:\/\/127\.0\.0\.1:8787/);
   });
 
+  it("settings com BOM não ocultam conflito de credencial", () => {
+    const s = sandbox();
+    writeFileSync(s.claudeSettings, `\uFEFF${JSON.stringify({ env: { ANTHROPIC_API_KEY: "VALOR_PRIVADO" } })}`);
+    const result = claudeSettingsConflicts(s.paths, s.env);
+    assert.equal(result.conflicts.length, 1);
+    assert.match(result.conflicts[0]!, /ANTHROPIC_API_KEY/);
+    assert.doesNotMatch(JSON.stringify(result), /VALOR_PRIVADO/);
+  });
+
   it("aceita localhost e IPv6 nas settings somente com opt-in", () => {
     const s = sandbox();
     for (const url of ["https://localhost:8787/v1", "http://[::1]:8787/v1"]) {

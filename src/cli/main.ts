@@ -123,7 +123,7 @@ async function main(argv: string[]): Promise<number> {
   const cmd = args._[0];
   const cwd = process.cwd();
   if (args.flags.version) {
-    const pkg = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")) as { version: string };
+    const pkg = JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8").replace(/^\uFEFF/, "")) as { version: string };
     print(pkg.version);
     return 0;
   }
@@ -247,7 +247,7 @@ async function main(argv: string[]): Promise<number> {
       const requestPath = str(args, "request");
       let request: DelegationRequest | undefined;
       if (requestPath) {
-        const parsed: unknown = JSON.parse(readFileSync(resolve(cwd, requestPath), "utf8"));
+        const parsed: unknown = JSON.parse(readFileSync(resolve(cwd, requestPath), "utf8").replace(/^\uFEFF/, ""));
         const errors = validate(loadSchema("delegation-request"), parsed);
         if (errors.length) throw new Error(`pedido fora do schema: ${errors.join("; ")}`);
         request = parsed as DelegationRequest;

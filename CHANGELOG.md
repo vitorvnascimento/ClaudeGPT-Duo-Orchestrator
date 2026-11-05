@@ -6,6 +6,8 @@
 
 ### English
 
+- Windows: user-edited JSON files accept one leading UTF-8 BOM, including `.duo/config.json`, delegation/recommendation requests, package metadata, local schemas and Claude/MCP settings. JSON validation and BOM characters inside values are preserved.
+- Codex authentication: `config/read` and the TOML fallback recognize provider tables equivalent to OpenAI, including an inactive table without `base_url`. This requires literal `requires_openai_auth = true`, the Responses protocol, an absent or exact official inference URL, and no credential, routing or unknown fields. Existing loopback authorization remains separate.
 - Up to four concurrent executors per project (configurable 1..4, default 4), with atomic slot admission and a legacy lock mirror. Any in-place task remains exclusive; chain isolation survives resume and adaptive retries.
 - Worktrees include the brain's uncommitted tracked/untracked non-ignored state, excluding denied paths and `.duo/`, bounded by `maxSnapshotBytes`. Executor patches use that snapshot; shared dependency links default to `["node_modules"]` (directory junctions on Windows).
 - `duo apply` serializes integration and checks drift only in touched files; other in-scope changes warn. Integrate one patch at a time in the brain's order; rerun rejected tasks on the current base.
@@ -15,6 +17,8 @@
 
 ### Português
 
+- Windows: arquivos JSON editados pelo usuário aceitam um BOM UTF-8 inicial, incluindo `.duo/config.json`, pedidos de delegação/recomendação, metadados de pacote, schemas locais e settings Claude/MCP. A validação JSON e os caracteres BOM dentro de valores são preservados.
+- Autenticação Codex: `config/read` e o fallback TOML reconhecem tabelas de provedor equivalentes à OpenAI, inclusive uma tabela inativa sem `base_url`. Exige `requires_openai_auth = true` literal, protocolo Responses, URL de inferência ausente ou exatamente oficial e nenhum campo de credencial, roteamento ou desconhecido. A autorização existente de loopback continua separada.
 - Até quatro executores simultâneos por projeto (configurável 1..4, padrão 4), com admissão atômica por slots e espelho do lock legado. Qualquer tarefa in-place continua exclusiva; isolamento da cadeia é preservado em retomadas e retentativas adaptativas.
 - Worktrees incluem o estado não commitado rastreado/não rastreado não ignorado do cérebro, sem caminhos negados nem `.duo/`, limitado por `maxSnapshotBytes`. Patches usam esse snapshot; links de dependências têm padrão `["node_modules"]` (junctions de diretórios no Windows).
 - `duo apply` serializa a integração e confere deriva apenas nos arquivos tocados; mudanças nos demais arquivos do escopo geram aviso. Integre um patch por vez na ordem do cérebro; execute novamente tarefas rejeitadas sobre a base atual.

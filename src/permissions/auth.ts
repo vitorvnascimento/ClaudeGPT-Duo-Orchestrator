@@ -107,7 +107,7 @@ export function defaultAuthPaths(projectRoot: string, env: NodeJS.ProcessEnv = p
 
 function readJson(p: string): Record<string, unknown> | null {
   try {
-    const v = JSON.parse(readFileSync(p, "utf8"));
+    const v = JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
     return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null;
   } catch {
     return null;
@@ -355,6 +355,8 @@ function tomlHeader(line: string): { table: string; array: boolean } | null {
 type CodexProviderInspection = {
   baseUrl: string | undefined;
   requiresOpenaiAuth: boolean | undefined;
+  wireApi: string | undefined;
+  officialInvalid: boolean;
   credentialKeys: Set<string>;
   malformed: boolean;
   seenKeys: Set<string>;
@@ -403,8 +405,15 @@ function providerIsLoopbackAuthorized(info: CodexProviderInspection | undefined,
   return loopbackProxyOrigin(info.baseUrl);
 }
 
+function providerIsOfficial(info: { baseUrl?: string; requiresOpenaiAuth?: boolean; wireApi?: string; officialInvalid?: boolean }, unsafe: boolean): boolean {
+  return !unsafe && !info.officialInvalid && info.requiresOpenaiAuth === true
+    && (info.wireApi === undefined || info.wireApi === "responses")
+    && (info.baseUrl === undefined || isOfficialBaseUrl(info.baseUrl, "openai")
+      || info.baseUrl === "https://chatgpt.com/backend-api/codex" || info.baseUrl === "https://chatgpt.com/backend-api/codex/");
+}
+
 function emptyCodexProvider(): CodexProviderInspection {
-  return { baseUrl: undefined, requiresOpenaiAuth: undefined, credentialKeys: new Set<string>(), malformed: false, seenKeys: new Set<string>() };
+  return { baseUrl: undefined, requiresOpenaiAuth: undefined, wireApi: undefined, officialInvalid: false, credentialKeys: new Set<string>(), malformed: false, seenKeys: new Set<string>() };
 }
 
 function routingHeaderKind(table: string): "model_providers" | "profiles" | null {
@@ -542,7 +551,7 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
         continue;
       }
       const keyParts = key.split(".");
-      // Lista de permissão: um provider loopback só é aceito com chaves sabidamente inofensivas. Qualquer outra
+      // Lista de permissão: um provider oficial equivalente ou loopback só é aceito com chaves sabidamente inofensivas. Qualquer outra
       // (env_key, experimental_bearer_token, http_headers, env_http_headers, query_params, campos futuros) conta
       // como possível credencial. Guarda-se só o NOME da chave; o valor nunca é lido nem exibido.
       if (provider.tail !== "" || keyParts.length > 1 || !SAFE_PROVIDER_KEYS.has(key)) {
@@ -564,6 +573,11 @@ function parseCodexConfig(file: string): CodexConfigSnapshot {
         if (value === "true") info.requiresOpenaiAuth = true;
         else if (value === "false") info.requiresOpenaiAuth = false;
         else info.malformed = true;
+      }
+      else if (key === "wire_api") {
+        const value = tomlString(kv[2]!);
+        if (value === undefined) info.officialInvalid = true;
+        else info.wireApi = value;
       }
       continue;
     }
@@ -611,6 +625,8 @@ function mergeCodexProvider(...layers: Array<CodexProviderInspection | undefined
     if (!overlay) continue;
     if (overlay.baseUrl !== undefined) result.baseUrl = overlay.baseUrl;
     if (overlay.requiresOpenaiAuth !== undefined) result.requiresOpenaiAuth = overlay.requiresOpenaiAuth;
+    if (overlay.wireApi !== undefined) result.wireApi = overlay.wireApi;
+    result.officialInvalid = result.officialInvalid || overlay.officialInvalid;
     for (const key of overlay.credentialKeys) result.credentialKeys.add(key);
     result.malformed = result.malformed || overlay.malformed;
     for (const key of overlay.seenKeys) result.seenKeys.add(key);
@@ -656,7 +672,8 @@ function effectiveBaseRouteRisk(
   const providerInfo = mergeCodexProvider(system?.providers.get(selected), global?.providers.get(selected));
   const hasProviderTable = system?.providers.has(selected) === true || global?.providers.has(selected) === true;
   if (selected === "openai" && !hasProviderTable) return false;
-  return providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy) === null;
+  return !providerIsOfficial(providerInfo, providerInfo.malformed || providerInfo.credentialKeys.size > 0)
+    && providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy) === null;
 }
 
 function readCodexSnapshot(file: string | undefined, conflicts: string[]): CodexConfigSnapshot | undefined {
@@ -705,7 +722,7 @@ function validateStandaloneManagedCodexSnapshot(
   const selectedProvider = snapshot.rootModelProvider ?? "openai";
   const providerInfo = snapshot.providers.get(selectedProvider);
   const builtInOpenai = selectedProvider === "openai" && !providerInfo;
-  const origin = builtInOpenai ? "openai" : providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy);
+  const origin = builtInOpenai || (providerInfo && providerIsOfficial(providerInfo, providerInfo.malformed || providerInfo.credentialKeys.size > 0)) ? "openai" : providerIsLoopbackAuthorized(providerInfo, allowLoopbackProxy);
   if (origin) {
     if (origin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
   } else {
@@ -720,7 +737,7 @@ function validateStandaloneManagedCodexSnapshot(
     }
     const profileInfo = snapshot.providers.get(providerName);
     const profileBuiltInOpenai = providerName === "openai" && !profileInfo;
-    const profileOrigin = profileBuiltInOpenai ? "openai" : providerIsLoopbackAuthorized(profileInfo, allowLoopbackProxy);
+    const profileOrigin = profileBuiltInOpenai || (profileInfo && providerIsOfficial(profileInfo, profileInfo.malformed || profileInfo.credentialKeys.size > 0)) ? "openai" : providerIsLoopbackAuthorized(profileInfo, allowLoopbackProxy);
     if (profileOrigin) {
       if (profileOrigin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${profileOrigin}`);
     } else {
@@ -807,6 +824,7 @@ export function codexConflictsFromEffective(eff: EffectiveCodexConfig, allowLoop
   }
   for (const provider of Object.values(eff.providers)) {
     const unsafe = provider.keys.filter((key) => !SAFE_PROVIDER_KEYS.has(key));
+    if (providerIsOfficial(provider, unsafe.length > 0)) continue;
     const origin = allowLoopbackProxy && provider.requiresOpenaiAuth === true && unsafe.length === 0
       ? loopbackProxyOrigin(provider.baseUrl) : null;
     if (origin) warnings.push(`${source}: proxy local (loopback) autorizado por billing.allowLoopbackProxy`);
@@ -855,7 +873,7 @@ export function codexConfigConflicts(
       }
       const providerIsBuiltInOpenai = providerName === "openai" && !system?.providers.has("openai") && !global?.providers.has("openai") && !project?.providers.has("openai");
       const info = mergeCodexProvider(system?.providers.get(providerName), global?.providers.get(providerName), project?.providers.get(providerName));
-      const origin = providerIsBuiltInOpenai ? "openai" : providerIsLoopbackAuthorized(info, allowLoopbackProxy);
+      const origin = providerIsBuiltInOpenai || providerIsOfficial(info, info.malformed || info.credentialKeys.size > 0) ? "openai" : providerIsLoopbackAuthorized(info, allowLoopbackProxy);
       if (origin) {
         if (origin !== "openai") warnings.push(`${snapshot.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
       } else {
@@ -871,7 +889,7 @@ export function codexConfigConflicts(
   const validateSelectedProvider = effectiveSelectedProvider !== "openai" || system?.providers.has(effectiveSelectedProvider) === true || global?.providers.has(effectiveSelectedProvider) === true || project?.providers.has(effectiveSelectedProvider) === true;
   if (validateSelectedProvider) {
     const info = mergeCodexProvider(system?.providers.get(effectiveSelectedProvider), global?.providers.get(effectiveSelectedProvider), project?.providers.get(effectiveSelectedProvider));
-    const origin = providerIsLoopbackAuthorized(info, allowLoopbackProxy);
+    const origin = providerIsOfficial(info, info.malformed || info.credentialKeys.size > 0) ? "openai" : providerIsLoopbackAuthorized(info, allowLoopbackProxy);
     const source = project?.providers.has(effectiveSelectedProvider)
       ? project.file
       : global?.providers.has(effectiveSelectedProvider)
@@ -886,23 +904,21 @@ export function codexConfigConflicts(
                 ? system.file
                 : undefined;
     if (origin && source) {
-      warnings.push(`${source}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
+      if (origin !== "openai") warnings.push(`${source}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
     } else if (source) {
       const suffix = allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT;
       conflicts.push(`${source}: model_provider customizado (provedor diferente do padrão da assinatura)${suffix}`);
     }
   }
 
-  // Project overlays can alter a provider table even when the root selection is
-  // inherited or points elsewhere. Validate every project table against the
-  // combined global/project result; only a complete loopback provider is safe
-  // to leave as a warning.
+  // Overlays de projeto podem alterar tabelas inativas ou herdadas: valide cada uma contra as camadas combinadas.
+  // Provedor oficial equivalente é aceito; loopback completo e autorizado mantém o aviso.
   if (project) {
     for (const [name] of project.providers) {
       if (validateSelectedProvider && name === effectiveSelectedProvider) continue;
       const info = mergeCodexProvider(system?.providers.get(name), global?.providers.get(name), project.providers.get(name));
-      const origin = providerIsLoopbackAuthorized(info, allowLoopbackProxy);
-      if (origin) warnings.push(`${project.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`);
+      const origin = providerIsOfficial(info, info.malformed || info.credentialKeys.size > 0) ? "openai" : providerIsLoopbackAuthorized(info, allowLoopbackProxy);
+      if (origin) { if (origin !== "openai") warnings.push(`${project.file}: proxy local (loopback) autorizado por billing.allowLoopbackProxy: ${origin}`); }
       else {
         const suffix = allowLoopbackProxy ? "" : LOOPBACK_PROXY_HINT;
         conflicts.push(`${project.file}: tabela de provedor customizado não é suportada com segurança${suffix}`);

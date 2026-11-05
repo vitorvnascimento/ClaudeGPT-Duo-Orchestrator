@@ -10,7 +10,7 @@ export type EffectiveCodexConfig = {
   model_provider?: string;
   openai_base_url?: string;
   chatgpt_base_url?: string;
-  providers: Record<string, { baseUrl?: string; requiresOpenaiAuth?: boolean; keys: string[] }>;
+  providers: Record<string, { baseUrl?: string; requiresOpenaiAuth?: boolean; wireApi?: string; officialInvalid?: boolean; keys: string[] }>;
   mcpServers: string[];
   preferredAuthMethod?: string;
   forcedLoginMethod?: string;
@@ -31,6 +31,7 @@ function normalize(result: unknown): EffectiveCodexConfig | null {
   // Layers preserve explicit keys, including unknown ones omitted by that typed serialization.
   // Never retain their values; disabled project layers do not participate in the effective config.
   const providerKeys = new Map<string, Set<string>>();
+  const invalidOfficial = new Set<string>();
   if (result.layers != null) {
     if (!Array.isArray(result.layers)) return null;
     for (const layer of result.layers) {
@@ -43,6 +44,9 @@ function normalize(result: unknown): EffectiveCodexConfig | null {
         if (!object(provider)) return null;
         const keys = providerKeys.get(name) ?? new Set<string>();
         for (const key of Object.keys(provider)) keys.add(key);
+        if ((Object.hasOwn(provider, "base_url") && typeof provider.base_url !== "string")
+          || (Object.hasOwn(provider, "requires_openai_auth") && typeof provider.requires_openai_auth !== "boolean")
+          || (Object.hasOwn(provider, "wire_api") && typeof provider.wire_api !== "string")) invalidOfficial.add(name);
         providerKeys.set(name, keys);
       }
     }
@@ -70,6 +74,13 @@ function normalize(result: unknown): EffectiveCodexConfig | null {
     out.providers[name] = {
       ...(typeof provider.base_url === "string" ? { baseUrl: provider.base_url } : {}),
       ...(typeof provider.requires_openai_auth === "boolean" ? { requiresOpenaiAuth: provider.requires_openai_auth } : {}),
+      ...(typeof provider.wire_api === "string" ? { wireApi: provider.wire_api } : {}),
+      ...((invalidOfficial.has(name) || (provider.wire_api != null && typeof provider.wire_api !== "string")
+        || (explicit?.has("base_url") && typeof provider.base_url !== "string")
+        || (explicit?.has("requires_openai_auth") && typeof provider.requires_openai_auth !== "boolean")
+        || (explicit?.has("wire_api") && typeof provider.wire_api !== "string")
+        || (!explicit && ((Object.hasOwn(provider, "base_url") && provider.base_url == null)
+          || (Object.hasOwn(provider, "wire_api") && provider.wire_api == null)))) ? { officialInvalid: true } : {}),
       keys: [...keys].sort(),
     };
   }

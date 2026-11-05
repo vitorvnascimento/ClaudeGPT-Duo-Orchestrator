@@ -16,7 +16,7 @@ export type DoctorReport = Record<string, unknown> & { ready: Record<Provider, b
 
 function hookEvents(file: string): string[] {
   try {
-    const s = JSON.parse(readFileSync(file, "utf8")) as { hooks?: Record<string, unknown> };
+    const s = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, "")) as { hooks?: Record<string, unknown> };
     return Object.keys(s.hooks ?? {});
   } catch {
     return [];
@@ -25,7 +25,7 @@ function hookEvents(file: string): string[] {
 
 function mcpServers(file: string): string[] {
   try {
-    const s = JSON.parse(readFileSync(file, "utf8")) as { mcpServers?: Record<string, unknown> };
+    const s = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, "")) as { mcpServers?: Record<string, unknown> };
     return Object.keys(s.mcpServers ?? {});
   } catch {
     return [];

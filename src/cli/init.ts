@@ -39,7 +39,7 @@ function suggestedConfig(projectRoot: string, brain: Provider): DuoConfig {
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.defaultBrain = brain;
   try {
-    const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8").replace(/^\uFEFF/, "")) as { scripts?: Record<string, string> };
     if (pkg.scripts?.test) cfg.acceptance.allowedCommands.push(["npm", "test"]);
   } catch {
     /* sem package.json */

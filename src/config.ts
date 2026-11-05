@@ -167,7 +167,7 @@ export function loadConfig(projectRoot: string): DuoConfig {
   if (!existsSync(p)) return structuredClone(DEFAULT_CONFIG);
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(p, "utf8"));
+    raw = JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
   } catch (e) {
     throw new ConfigError(`config inválida em ${p}: ${(e as Error).message}`);
   }

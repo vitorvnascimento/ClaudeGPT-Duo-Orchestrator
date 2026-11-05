@@ -449,7 +449,7 @@ async function withUserModels(catalog: Catalog, cfg: DuoConfig, cwd: string, env
     if (model) configured.push({ provider: "codex", id: model });
   } catch { /* config inacessível */ }
   try {
-    const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR ?? join(paths.home, ".claude"), "settings.json"), "utf8")) as { model?: unknown } | null;
+    const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR ?? join(paths.home, ".claude"), "settings.json"), "utf8").replace(/^\uFEFF/, "")) as { model?: unknown } | null;
     if (typeof settings?.model === "string") configured.push({ provider: "claude", id: settings.model });
   } catch { /* JSON inválido ou ausente */ }
   for (const pc of Object.values(out.providers)) {

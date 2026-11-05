@@ -135,7 +135,7 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
   } catch (e) {
     return { ok: false, out: invalid(`pedido não é JSON válido: ${(e as Error).message}`) };
   }

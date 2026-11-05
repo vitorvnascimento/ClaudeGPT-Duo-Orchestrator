@@ -25,6 +25,32 @@ describe("limites numéricos da config", () => {
     assert.deepEqual(loadConfig(writeLimits({})), DEFAULT_CONFIG);
   });
 
+  it("config com BOM inicial é profundamente igual e preserva U+FEFF em strings", () => {
+    const dir = writeLimits({ timeoutSec: 42 });
+    const content = JSON.stringify({ limits: { timeoutSec: 42 }, routing: { priors: [{ executor: "codex", bonus: 0.1, note: "antes\uFEFFdepois" }] } });
+    writeFileSync(configPath(dir), content);
+    const expected = loadConfig(dir);
+    writeFileSync(configPath(dir), `\uFEFF${content}`);
+    assert.deepEqual(loadConfig(dir), expected);
+    assert.equal(loadConfig(dir).routing.priors[0]?.note, "antes\uFEFFdepois");
+  });
+
+  it("BOM não flexibiliza limites nem corrige JSON inválido", () => {
+    const dir = writeLimits({});
+    for (const content of [
+      '\uFEFF{"limits":{"timeoutSec":0}}',
+      '\uFEFF{"limits":{"maxPromptBytes":"10"}}',
+      '\uFEFF{"policy":"inválida"}',
+      '\uFEFF{"limits":',
+      '\uFEFF\uFEFF{}',
+      ' \uFEFF{}',
+      '{}\uFEFF',
+    ]) {
+      writeFileSync(configPath(dir), content);
+      assert.throws(() => loadConfig(dir), ConfigError);
+    }
+  });
+
   it("maxConcurrentExecutors aceita 1..4 e recusa 0, 5 e 2.5", () => {
     for (const value of [1, 2, 3, 4]) assert.equal(loadConfig(writeLimits({ maxConcurrentExecutors: value })).limits.maxConcurrentExecutors, value);
     for (const value of [0, 5, 2.5]) assert.throws(() => loadConfig(writeLimits({ maxConcurrentExecutors: value })), /maxConcurrentExecutors/);

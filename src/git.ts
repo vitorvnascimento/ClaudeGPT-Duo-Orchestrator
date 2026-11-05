@@ -1,8 +1,10 @@
 // Operações Git não destrutivas. Este módulo nunca executa reset, clean, stash, checkout de arquivos
 // ou qualquer comando que descarte alterações do usuário.
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
 
 export function git(cwd: string, args: string[], timeoutMs = 60_000) {
@@ -157,12 +159,76 @@ export function worktreeAdd(root: string, path: string, commit: string) {
   return git(root, ["worktree", "add", "--detach", path, commit], 120_000);
 }
 
+/** Inclui o estado não commitado sem tocar no índice do projeto e sem levar caminhos privados. */
+export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[]; maxBytes: number }): { ok: true; snapshot: string | null; copiedBytes: number } | { ok: false; error: string } {
+  const tracked = git(root, ["diff", "HEAD", "--name-only", "--no-renames", "-z"]);
+  const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!tracked.ok || !untracked.ok) return { ok: false, error: tracked.stderr || untracked.stderr };
+  const allowed = (rel: string) => rel !== ".duo" && !rel.startsWith(".duo/") && !isDenied(rel, opts.deny);
+  const trackedFiles = tracked.stdout.split("\0").filter(Boolean);
+  const newFiles = untracked.stdout.split("\0").filter((rel) => rel && allowed(rel));
+  let copiedBytes = 0;
+  try {
+    // Conta tudo antes de aplicar até mesmo o diff rastreado: limite excedido nunca deixa cópia parcial executável.
+    for (const rel of [...trackedFiles.filter(allowed), ...newFiles]) {
+      try { copiedBytes += lstatSync(join(root, rel)).size; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    if (copiedBytes > opts.maxBytes) return { ok: false, error: `snapshot de ${copiedBytes} bytes excede limits.maxSnapshotBytes (${opts.maxBytes})` };
+    const excludes = [".duo", ...trackedFiles.filter((rel) => !allowed(rel))].map((rel) => `:(exclude,literal)${rel}`);
+    const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ".", ...excludes], {
+      cwd: root, encoding: "utf8", timeout: 60_000, maxBuffer: Math.max(4 * 1024 * 1024, opts.maxBytes * 4), windowsHide: true,
+    });
+    if (diff.status !== 0 || diff.error) return { ok: false, error: diff.error?.message ?? diff.stderr };
+    if (diff.stdout) {
+      const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: diff.stdout, encoding: "utf8", timeout: 60_000, windowsHide: true });
+      if (applied.status !== 0 || applied.error) return { ok: false, error: applied.error?.message ?? applied.stderr };
+    }
+    for (const rel of newFiles) {
+      const src = join(root, rel), dest = join(wt, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));
+      if (parent.startsWith("..") || isAbsolute(parent)) return { ok: false, error: `snapshot fora da worktree: ${rel}` };
+      if (lstatSync(src).isSymbolicLink()) symlinkSync(readlinkSync(src), dest);
+      else copyFileSync(src, dest);
+    }
+    const add = git(wt, ["add", "-A", "--", ".", ...excludes]);
+    if (!add.ok) return { ok: false, error: add.stderr };
+    const changed = git(wt, ["diff", "--cached", "--name-only", "-z"]);
+    if (!changed.ok) return { ok: false, error: changed.stderr };
+    if (!changed.stdout) return { ok: true, snapshot: null, copiedBytes };
+    const commit = git(wt, ["-c", "user.name=duo", "-c", "user.email=duo@localhost", "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, "commit", "--no-verify", "-q", "-m", "duo: snapshot"]);
+    if (!commit.ok) return { ok: false, error: commit.stderr };
+    return { ok: true, snapshot: headCommit(wt), copiedBytes };
+  } catch (error) { return { ok: false, error: (error as Error).message }; }
+}
+
+export function linkIntoWorktree(root: string, wt: string, rels: string[]): { linked: string[]; failed: string[] } {
+  const linked: string[] = [], failed: string[] = [];
+  for (const rel of rels) {
+    if (!normalizeRel(rel) || rel === "." || rel === ".duo" || rel.startsWith(".duo/")) { failed.push(rel); continue; }
+    const src = join(root, rel), dest = join(wt, rel);
+    if (!existsSync(src) || existsSync(dest)) continue;
+    try {
+      const target = realpathSync(src), inside = relative(realpathSync(root), target);
+      if (inside.startsWith("..") || isAbsolute(inside)) throw new Error("link fora do projeto");
+      mkdirSync(dirname(dest), { recursive: true });
+      const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));
+      if (parent.startsWith("..") || isAbsolute(parent)) throw new Error("link fora da worktree");
+      symlinkSync(target, dest, process.platform === "win32" && lstatSync(target).isDirectory() ? "junction" : undefined);
+      linked.push(rel);
+    } catch { failed.push(rel); }
+  }
+  return { linked, failed };
+}
+
 /** Patch das mudanças do worktree descartável (o índice alterado é o do worktree, não o do usuário). */
-export function worktreePatch(wt: string, base: string): { ok: boolean; patch: string; files: string[]; error?: string } {
-  const add = git(wt, ["add", "-A"]);
+export function worktreePatch(wt: string, base: string, exclude: string[] = []): { ok: boolean; patch: string; files: string[]; error?: string } {
+  const paths = ["--", ".", ...exclude.map((rel) => `:(exclude,literal)${rel}`)];
+  const add = git(wt, ["add", "-A", ...paths]);
   if (!add.ok) return { ok: false, patch: "", files: [], error: add.stderr };
-  const names = git(wt, ["diff", "--cached", "--name-only", "-z", base]);
-  const patch = git(wt, ["diff", "--cached", "--binary", "--no-color", base]);
-  if (!patch.ok) return { ok: false, patch: "", files: [], error: patch.stderr };
+  const names = git(wt, ["diff", "--cached", "--name-only", "--no-renames", "-z", base, ...paths]);
+  const patch = git(wt, ["diff", "--cached", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", base, ...paths]);
+  if (!names.ok || !patch.ok) return { ok: false, patch: "", files: [], error: names.stderr || patch.stderr };
   return { ok: true, patch: patch.stdout, files: names.stdout.split("\0").filter(Boolean) };
 }

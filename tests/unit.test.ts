@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,6 +9,7 @@ import { CodexAdapter } from "../src/adapters/codex.js";
 import { LineSplitter } from "../src/adapters/process.js";
 import { sanitizeEventLine } from "../src/adapters/sanitize.js";
 import { classifyErrorText, type InvocationInput } from "../src/adapters/types.js";
+import { git, worktreeAdd, worktreeSnapshot, worktreePatch, linkIntoWorktree } from "../src/git.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { isAllowlisted } from "../src/orchestration/acceptance.js";
 import { policyBlockReason } from "../src/orchestration/policy.js";
@@ -19,7 +20,7 @@ import { loadSchema, validate } from "../src/schema.js";
 import { canTransition, transition, TransitionError } from "../src/state/machine.js";
 import { writeJsonAtomic } from "../src/state/store.js";
 import type { DelegationRequest, Run, Task } from "../src/state/types.js";
-import { baseRequest, CAN_SYMLINK } from "./helpers.js";
+import { baseRequest, CAN_SYMLINK, makeSandbox } from "./helpers.js";
 
 describe("schema", () => {
   it("aceita pedido válido e rejeita campos extras, enum inválido e tipos errados", () => {
@@ -287,5 +288,87 @@ describe("duo init: comando gravado nas skills", () => {
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
+  });
+});
+
+describe("snapshot de worktree", () => {
+  it("worktreeSnapshot leva modificação rastreada e arquivo novo; ignora .gitignore, negados e .duo/", () => {
+    const s = makeSandbox();
+    try {
+      s.write(".gitignore", "ignorado/\n");
+      s.write("protegido.txt", "original\n"); s.git("add", ".gitignore", "protegido.txt"); s.git("commit", "-qm", "base protegida");
+      const head = s.git("rev-parse", "HEAD").trim(), wt = join(s.tmp, "wt");
+      s.write("src/app.ts", "rascunho\n"); s.write("novo.txt", "novo\n");
+      s.write("protegido.txt", "não copiar\n"); s.write("privado.txt", "não copiar\n");
+      s.write("ignorado/cache", "ignorado"); s.write(".duo/estado", "privado");
+      assert.equal(worktreeAdd(s.root, wt, head).ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: ["protegido.txt", "privado.txt"], maxBytes: 1024 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      if (!snap.ok) return;
+      assert.ok(snap.snapshot);
+      assert.equal(git(wt, ["rev-parse", `${snap.snapshot}^`]).stdout.trim(), head);
+      assert.equal(readFileSync(join(wt, "src/app.ts"), "utf8"), "rascunho\n");
+      assert.equal(readFileSync(join(wt, "novo.txt"), "utf8"), "novo\n");
+      assert.equal(readFileSync(join(wt, "protegido.txt"), "utf8"), "original\n");
+      for (const rel of ["privado.txt", "ignorado/cache", ".duo/estado"]) assert.equal(existsSync(join(wt, rel)), false);
+      assert.equal(s.git("rev-parse", "HEAD").trim(), head);
+    } finally { s.cleanup(); }
+  });
+  it("worktreeSnapshot acima de maxBytes falha sem copiar", () => {
+    const s = makeSandbox();
+    try {
+      const wt = join(s.tmp, "wt");
+      worktreeAdd(s.root, wt, "HEAD");
+      s.write("src/app.ts", "rascunho"); s.write("build/grande", "x".repeat(4096));
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1024 });
+      assert.equal(snap.ok, false); assert.match(JSON.stringify(snap), /4096|4104/);
+      assert.equal(existsSync(join(wt, "build/grande")), false);
+      assert.equal(readFileSync(join(wt, "src/app.ts"), "utf8"), "export const app = 1;\n");
+    } finally { s.cleanup(); }
+  });
+  it("snapshot e patch ignoram cor forçada, noprefix e diff externo da config do usuário", () => {
+    const s = makeSandbox();
+    try {
+      s.git("config", "color.ui", "always"); s.git("config", "color.diff", "always");
+      s.git("config", "diff.noprefix", "true"); s.git("config", "diff.external", "/bin/false");
+      s.write("src/app.ts", "rascunho do cérebro\n");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      if (!snap.ok || !snap.snapshot) return;
+      assert.equal(readFileSync(join(wt, "src/app.ts"), "utf8"), "rascunho do cérebro\n");
+      writeFileSync(join(wt, "src/app.ts"), "rascunho do cérebro\nexecutor\n");
+      const p = worktreePatch(wt, snap.snapshot);
+      assert.equal(p.ok, true); assert.deepEqual(p.files, ["src/app.ts"]);
+      assert.ok(!p.patch.includes("\u001b["), "patch sem códigos ANSI");
+      assert.match(p.patch, /^diff --git a\/src\/app\.ts b\/src\/app\.ts/m);
+    } finally { s.cleanup(); }
+  });
+  it("arquivo novo forçado com git add -f que bate no .gitignore entra no snapshot e no patch", () => {
+    const s = makeSandbox();
+    try {
+      s.write(".gitignore", "*.log\n"); s.git("add", ".gitignore"); s.git("commit", "-qm", "ignora logs");
+      s.write("forcado.log", "v1\n"); s.git("add", "-f", "forcado.log");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      if (!snap.ok || !snap.snapshot) return;
+      assert.equal(git(wt, ["ls-files", "forcado.log"]).stdout.trim(), "forcado.log");
+      writeFileSync(join(wt, "forcado.log"), "v2\n");
+      assert.deepEqual(worktreePatch(wt, snap.snapshot).files, ["forcado.log"]);
+    } finally { s.cleanup(); }
+  });
+  it("worktreePatch exclui links", () => {
+    const s = makeSandbox();
+    try {
+      s.write("node_modules/pacote/index.js", "export {};\n");
+      const wt = join(s.tmp, "wt"); worktreeAdd(s.root, wt, "HEAD");
+      const links = linkIntoWorktree(s.root, wt, ["node_modules"]);
+      assert.deepEqual(links.failed, []); assert.deepEqual(links.linked, ["node_modules"]);
+      writeFileSync(join(wt, "src/app.ts"), "executor\n");
+      const p = worktreePatch(wt, "HEAD", links.linked);
+      assert.equal(p.ok, true); assert.deepEqual(p.files, ["src/app.ts"]);
+      assert.ok(!p.patch.includes("node_modules"));
+    } finally { s.cleanup(); }
   });
 });

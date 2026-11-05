@@ -172,7 +172,7 @@ export type Task = {
   acceptanceCriteria: string[];
   acceptanceCommands: { name: string; argv: string[] }[];
   requestHash: string;
-  base: { head: string | null; dirtyInScope: string[]; hashes: Record<string, string | null> } | null;
+  base: { head: string | null; snapshot: string | null; dirtyInScope: string[]; hashes: Record<string, string | null> } | null;
   model: { requested: string | null; reported: string | null; reportedSource: MetricSource; reportedVia?: string };
   /** Provas pós-execução registradas pelo próprio cliente (ex.: rollout do Codex) e origem das imagens. */
   evidence?: {
@@ -185,6 +185,7 @@ export type Task = {
   invocations: number;
   artifactsDir: string;
   worktree: string | null;
+  worktreeLinks?: string[];
   applied: boolean;
   executorReport: ExecutorReport | null;
   verification: Verification | null;

@@ -71,6 +71,7 @@ export function tryRecursiveDelegate() {
 export function removeLock() {
   const p = join(process.cwd(), ".duo", "lock.json");
   if (existsSync(p)) rmSync(p);
+  rmSync(join(process.cwd(), ".duo", "locks"), { recursive: true, force: true });
 }
 
 /** Escreve linhas em pedaços pequenos, quebrando no meio de caracteres multibyte. */

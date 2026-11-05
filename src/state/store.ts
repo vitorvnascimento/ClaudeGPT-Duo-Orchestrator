@@ -1,6 +1,6 @@
 // Estado local: Chain/Run versionados por CAS; auditorias em JSON/JSONL.
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { duoDir } from "../paths.js";
 import { isPidAlive } from "../adapters/process.js";
@@ -46,6 +46,74 @@ export function readJson<T>(path: string): T | null {
   } catch {
     return null;
   }
+}
+
+/** Publica um registro completo sem substituir um dono concorrente (EEXIST). */
+export function writeJsonExclusive(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+  try {
+    writeExclusive(tmp, `${JSON.stringify(value)}\n`);
+    linkSync(tmp, path);
+  } finally { rmSync(tmp, { force: true }); }
+}
+
+function staleLock(path: string): string | null {
+  try {
+    const stat = statSync(path);
+    const holder = readJson<{ pid: number; nonce: string }>(path);
+    if (holder && Number.isInteger(holder.pid) && holder.pid > 0 && typeof holder.nonce === "string" && /^[a-zA-Z0-9-]+$/.test(holder.nonce)) {
+      return isPidAlive(holder.pid) ? null : holder.nonce;
+    }
+    return Date.now() - stat.mtimeMs > 10_000 ? `ino-${stat.ino}` : null;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+}
+
+/** Guard curto entre processos; apenas um recuperador pode apagar cada geração morta. */
+export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T {
+  mkdirSync(dirname(path), { recursive: true });
+  const deadline = Date.now() + timeoutMs;
+  const nonce = randomBytes(16).toString("hex");
+  for (;;) {
+    try { writeJsonExclusive(path, { pid: process.pid, nonce }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const stale = staleLock(path);
+      if (stale) {
+        const marker = `${path}.reclaim-${stale}`;
+        let fd: number | undefined;
+        try {
+          try { fd = openSync(marker, "wx", 0o600); }
+          catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+            // shortcut: a recuperação leva microssegundos; marcador com mais de 30 s é de um recuperador que morreu.
+            // Fechar de vez exigiria flock, que o Node não tem.
+            try { if (Date.now() - statSync(marker).mtimeMs > 30_000) rmSync(marker, { force: true }); }
+            catch (s) { if ((s as NodeJS.ErrnoException).code !== "ENOENT") throw s; }
+          }
+          if (fd !== undefined && staleLock(path) === stale) rmSync(path, { force: true });
+        } finally {
+          if (fd !== undefined) { closeSync(fd); rmSync(marker, { force: true }); }
+        }
+      }
+      if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      continue;
+    }
+    try { return fn(); }
+    finally {
+      if (readJson<{ nonce: string }>(path)?.nonce === nonce) rmSync(path, { force: true });
+    }
+  }
+}
+
+/** Leitura, alteração e publicação protegidas pelo mesmo guard, sem perder entradas concorrentes. */
+export function updateJsonLocked<T>(path: string, change: (value: T | null) => T): T {
+  return withFileLock(`${path}.lock`, 2000, () => {
+    const value = change(readJson<T>(path));
+    writeJsonAtomic(path, value);
+    return value;
+  });
 }
 
 export function appendJsonl(path: string, value: unknown): void {
@@ -331,49 +399,3 @@ export class Store {
 }
 
 export type LockInfo = { pid: number; taskId: string; runId: string; nonce: string; startedAt: string };
-
-/**
- * Lock cooperativo de executor único por projeto. Não é barreira de segurança:
- * um processo com escrita em .duo/ pode removê-lo; por isso a ponte também confere o nonce ao final.
- */
-export class ExecutorLock {
-  readonly path: string;
-  private nonce: string | null = null;
-  constructor(projectRoot: string) {
-    this.path = join(duoDir(projectRoot), "lock.json");
-  }
-
-  current(): LockInfo | null {
-    return readJson<LockInfo>(this.path);
-  }
-
-  acquire(taskId: string, runId: string): { ok: true } | { ok: false; holder: LockInfo | null; stale: boolean } {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const holder = this.current();
-    if (holder && !isPidAlive(holder.pid)) {
-      rmSync(this.path, { force: true });
-    }
-    const nonce = randomBytes(8).toString("hex");
-    const info: LockInfo = { pid: process.pid, taskId, runId, nonce, startedAt: new Date().toISOString() };
-    try {
-      const fd = openSync(this.path, "wx", 0o600);
-      writeSync(fd, JSON.stringify(info));
-      closeSync(fd);
-    } catch {
-      const h = this.current();
-      return { ok: false, holder: h, stale: h ? !isPidAlive(h.pid) : false };
-    }
-    this.nonce = nonce;
-    return { ok: true };
-  }
-
-  /** true se o lock ainda é nosso (não foi removido ou trocado durante a execução). */
-  intact(): boolean {
-    return this.nonce !== null && this.current()?.nonce === this.nonce;
-  }
-
-  release(): void {
-    if (this.intact()) rmSync(this.path, { force: true });
-    this.nonce = null;
-  }
-}

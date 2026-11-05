@@ -2,12 +2,13 @@
 import { tierRank } from "../src/orchestration/complexity.js";
 import { strict as assert } from "node:assert";
 import { generateKeyPairSync } from "node:crypto";
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { applyTask, refreshInterrupted } from "../src/orchestration/control.js";
 import { ADAPTERS, delegate } from "../src/orchestration/delegate.js";
+import { activeSlots, ExecutorSlots } from "../src/state/slots.js";
 import { Store } from "../src/state/store.js";
 import type { InvocationInput } from "../src/adapters/types.js";
 import { loadConfig } from "../src/config.js";
@@ -770,11 +771,11 @@ describe("recursão e escopo", () => {
     assert.equal(call.sandbox, "read-only");
   });
 
-  it("executor que remove o lock de executor único → failed", async () => {
+  it("executor que remove o próprio slot → failed", async () => {
     const s = setup();
     const out = await run(s, baseRequest("codex"), { FAKE_SCENARIO: "remove-lock" });
     assert.equal(out.summary.state, "failed");
-    assert.match(String(out.summary.outcome), /lock/);
+    assert.match(String(out.summary.outcome), /lock|slot/);
   });
 
   it("lock mantido por outro processo vivo bloqueia um segundo executor", async () => {
@@ -1118,4 +1119,163 @@ describe("sandbox do Codex", () => {
     assert.equal(s.execCalls().length, 0);
     assert.equal(new Store(s.root).listRuns().length, 0, "nenhum run/task criado");
   });
+});
+
+
+describe("admissão paralela", () => {
+  function hold(s: Sandbox, isolation: "in-place" | "worktree") {
+    const slots = new ExecutorSlots(s.root, 4);
+    assert.equal(slots.admit({ taskId: "task-outra-000000", runId: "run-outro-000000", kind: "implement", requested: isolation, fixed: null, gitReady: true }).ok, true);
+    return slots;
+  }
+  it("com outro executor ativo, pedido in-place roda em worktree forçado", async () => {
+    const s = setup(), slots = hold(s, "worktree");
+    try {
+      const out = await run(s, baseRequest("claude"), { FAKE_WRITE: APP_EDIT });
+      assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+      const t = task(s, out.summary.taskId);
+      assert.ok(t.worktree); assert.equal(t.isolation, "worktree");
+      assert.ok(t.limitations.some((l) => l.includes("isolamento trocado para worktree")));
+      assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+    } finally { slots.release(); }
+  });
+  it("in-place ativo bloqueia segundo executor", async () => {
+    const s = setup(), slots = hold(s, "in-place");
+    try {
+      const out = await run(s, baseRequest("claude"));
+      assert.equal(out.exitCode, 3); assert.match(String(out.summary.outcome), /in-place está ativo/);
+      assert.equal(s.execCalls().length, 0);
+    } finally { slots.release(); }
+  });
+  it("retomada de cadeia in-place com outro ativo é bloqueada", async () => {
+    const s = setup();
+    const first = await run(s, baseRequest("claude"), { FAKE_SCENARIO: "rate-limit" });
+    const slots = hold(s, "worktree");
+    try {
+      // Libera apenas o gate de cota para testar a admissão da mesma cadeia.
+      saveQuota(new Store(s.root), "codex", { status: "ok", usedPercent: 0, resetsAt: null, observedAt: new Date().toISOString(), source: "manual", affectedModels: null });
+      const out = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), env: s.env, authPaths: s.authPaths });
+      assert.equal(out.exitCode, 3); assert.match(String(out.summary.outcome), /cadeia fixa in-place/);
+      assert.equal(s.execCalls().length, 1);
+    } finally { slots.release(); }
+  });
+  for (const noRepo of [false, true]) it(`sem ${noRepo ? "repositório" : "commit"} e outro ativo: bloqueado, nunca in-place`, async () => {
+    const s = setup(), slots = hold(s, "worktree");
+    rmSync(join(s.root, ".git"), { recursive: true, force: true });
+    if (!noRepo) s.git("init", "-q");
+    try {
+      const out = await run(s, baseRequest("claude"));
+      assert.equal(out.exitCode, 3);
+      assert.match(JSON.stringify(out.summary), /execução paralela requer um repositório git com ao menos um commit/);
+      assert.equal(s.execCalls().length, 0);
+    } finally { slots.release(); }
+  });
+});
+
+describe("snapshot e verificação da worktree", () => {
+  it("worktree com escopo sujo agora roda e o patch contém só o trabalho do executor", async () => {
+    const s = setup();
+    s.write("src/app.ts", "export const app = 1;\n// rascunho\n");
+    s.write("src/novo.ts", "export const novo = 1;\n");
+    const out = await run(s, baseRequest("claude", { isolation: "worktree", scope: { allowedPaths: ["src/"] } }),
+      { FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 1;\n// rascunho\nexport const nova = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.ok(t.base?.snapshot);
+    const patch = readFileSync(t.verification!.patchPath!, "utf8");
+    assert.match(patch, /\+export const nova/); assert.ok(!patch.includes("+// rascunho"));
+    assert.deepEqual(t.verification?.filesChangedActual, ["src/app.ts"]);
+    assert.equal(readFileSync(join(t.worktree!, "src/novo.ts"), "utf8"), "export const novo = 1;\n");
+  });
+  it("leitura em worktree que altera arquivo → violação", async () => {
+    const s = setup();
+    const out = await run(s, baseRequest("claude", { kind: "review", isolation: "worktree" }), { FAKE_WRITE: APP_EDIT });
+    assert.equal(out.summary.state, "failed"); assert.deepEqual(out.summary.outOfScope, ["src/app.ts"]);
+    assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+  });
+  it("snapshot grande bloqueia antes do executor sem copiar parcialmente", async () => {
+    const s = setup({ limits: { maxSnapshotBytes: 1024 } });
+    s.write("build/grande", "x".repeat(4096));
+    const out = await run(s, baseRequest("claude", { isolation: "worktree" }));
+    assert.equal(out.exitCode, 3); assert.match(JSON.stringify(out.summary), /4096/);
+    assert.equal(s.execCalls().length, 0);
+  });
+});
+
+describe("integração paralela", () => {
+  const request = () => baseRequest("claude", { isolation: "worktree", scope: { allowedPaths: ["src/"] } });
+  it("dois patches com escopo src/ que tocam arquivos diferentes aplicam em sequência", async () => {
+    const s = setup();
+    const a = await run(s, request(), { FAKE_WRITE: APP_EDIT });
+    const b = await run(s, request(), { FAKE_WRITE: JSON.stringify({ "src/util.ts": "export const util = 2;\n" }) });
+    assert.equal(a.summary.state, "succeeded"); assert.equal(b.summary.state, "succeeded");
+    assert.equal(applyTask(s.root, String(a.summary.taskId)).ok, true);
+    const applied = applyTask(s.root, String(b.summary.taskId));
+    assert.equal(applied.ok, true, applied.message); assert.match(applied.message, /aviso.*src\/app.ts/i);
+    assert.match(s.read("src/app.ts"), /nova/); assert.match(s.read("src/util.ts"), /util = 2/);
+  });
+  it("patch que toca arquivo alterado depois do snapshot é rejeitado com o arquivo listado", async () => {
+    const s = setup();
+    const out = await run(s, request(), { FAKE_WRITE: APP_EDIT });
+    s.write("src/app.ts", "trabalho posterior\n");
+    const applied = applyTask(s.root, String(out.summary.taskId));
+    assert.equal(applied.ok, false); assert.match(applied.message, /src\/app.ts/);
+    assert.equal(s.read("src/app.ts"), "trabalho posterior\n");
+  });
+  it("alteração em outro arquivo do escopo só gera aviso", async () => {
+    const s = setup();
+    const out = await run(s, request(), { FAKE_WRITE: APP_EDIT });
+    s.write("src/util.ts", "outro trabalho\n"); s.write("src/novo.ts", "criado depois\n");
+    const applied = applyTask(s.root, String(out.summary.taskId));
+    assert.equal(applied.ok, true, applied.message); assert.match(applied.message, /aviso.*src\/util.ts/i);
+    assert.match(applied.message, /src\/novo.ts/);
+    assert.equal(s.read("src/util.ts"), "outro trabalho\n");
+  });
+  it("apply recusado enquanto executor in-place está ativo", async () => {
+    const s = setup();
+    const out = await run(s, request(), { FAKE_WRITE: APP_EDIT });
+    const slots = new ExecutorSlots(s.root, 4);
+    slots.admit({ taskId: "task-outra-000000", runId: "run-outro-000000", kind: "review", requested: "in-place", fixed: null, gitReady: true });
+    try {
+      const applied = applyTask(s.root, String(out.summary.taskId));
+      assert.equal(applied.ok, false); assert.match(applied.message, /executor in-place está ativo/);
+      assert.equal(s.read("src/app.ts"), "export const app = 1;\n");
+    } finally { slots.release(); }
+  });
+  it("arquivo criado pelo patch que surgiu no projeto impede integração", async () => {
+    const s = setup();
+    const out = await run(s, request(), { FAKE_WRITE: JSON.stringify({ "src/novo.ts": "executor\n" }) });
+    s.write("src/novo.ts", "cérebro\n");
+    const applied = applyTask(s.root, String(out.summary.taskId));
+    assert.equal(applied.ok, false); assert.match(applied.message, /src\/novo.ts/);
+    assert.equal(s.read("src/novo.ts"), "cérebro\n");
+  });
+});
+
+it("quatro executores verificam patches próprios no mesmo run com deriva externa", async () => {
+  const s = setup();
+  const seed = await run(s, baseRequest("codex", { kind: "review" }));
+  const pending = Array.from({ length: 4 }, (_, i) => run(s, baseRequest("codex", {
+    runId: seed.summary.runId, taskKey: `paralelo-${i}`, isolation: "worktree", scope: { allowedPaths: ["src/"] },
+  }), { FAKE_CLAUDE_INIT_DELAY_MS: "2500", FAKE_WRITE: JSON.stringify({ [`src/parte-${i}.ts`]: `export const parte = ${i};\n` }) }));
+  let active = 0;
+  for (let i = 0; i < 200; i++) {
+    active = activeSlots(s.root).length;
+    if (active === 4) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  s.write("src/util.ts", "trabalho do cérebro durante execução\n");
+  const results = await Promise.all(pending);
+  assert.equal(active, 4);
+  for (const [i, out] of results.entries()) {
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.deepEqual(t.verification?.filesChangedActual, [`src/parte-${i}.ts`]);
+    assert.equal(t.verification?.staleBase, false);
+    assert.ok(t.limitations.some((l) => /fora do patch.*src\/util.ts/.test(l)));
+    assert.equal(applyTask(s.root, t.taskId).ok, true);
+  }
+  assert.equal(new Store(s.root).loadRun(String(seed.summary.runId))?.invocations, 5);
+  assert.equal(activeSlots(s.root).length, 0);
+  assert.equal(s.read("src/util.ts"), "trabalho do cérebro durante execução\n");
 });

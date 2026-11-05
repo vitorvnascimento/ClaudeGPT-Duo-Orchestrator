@@ -13,14 +13,15 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, ParsedOutcome } from "../adapters/types.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
-import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, headCommit, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
+import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { authBlockReason, checkAuth, childEnv, codexConfiguredModel, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import { inScope, isDenied, validateScope, type ScopeEntry } from "../permissions/scope.js";
 import { createStreamRedactor, redact, redactDeep } from "../redact.js";
 import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
-import { ExecutorLock, newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
+import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
+import { newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
@@ -228,6 +229,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     return invalid("duo delegate está rodando dentro do sandbox do Codex, onde o executor não inicia (rede, login e ~/.codex ficam indisponíveis). Peça aprovação para executar este comando fora do sandbox e rode de novo; nada foi executado nem contabilizado.", [], EXIT.blocked);
   }
   const top = repoRoot(opts.cwd);
+  if (!top && activeSlots(opts.cwd).length) return invalid("execução paralela requer um repositório git com ao menos um commit", [], EXIT.blocked);
   if (!top) return invalid("duo delegate requer um repositório Git (o estado base é registrado pelo Git)");
   const projectRoot = realpathSync(top);
   let cfg: DuoConfig;
@@ -379,8 +381,10 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       next.executor = prior.executor;
       next.model = { ...prior.model, reported: null, reportedSource: "unavailable" };
       next.effort = prior.effort;
+      next.isolation = prior.isolation;
       next.base = prior.base;
       next.worktree = prior.worktree;
+      next.worktreeLinks = prior.worktreeLinks;
       next.native = { ...prior.native };
       next.selection = { adaptive: true, chainId: chain.chainId, tier: policy.floor, complexitySignals: [],
         model: next.model.requested, effort: next.effort?.requested ?? null, reason: ["retomada da última tentativa"],
@@ -390,6 +394,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       appendAttempt(next, "resume", policy.floor);
       task = next;
     }
+    let fixedIsolation: Isolation | null = task.base || opts.resumeTaskId ? task.isolation : null;
     let catalog: Catalog | null = null;
     try {
       catalog = await loadCatalog(store, cfg, { env });
@@ -553,13 +558,22 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       }
       transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação e política aprovadas; autenticação será conferida no plano efetivo");
       store.saveTask(task);
-      const lock = new ExecutorLock(projectRoot);
-      const acquired = lock.acquire(task.taskId, run.runId);
+      const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
+      const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
+        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null });
       if (!acquired.ok) {
-        blockTask(task, `outro executor está ativo neste projeto (${acquired.holder?.taskId ?? "?"}, pid ${acquired.holder?.pid ?? "?"}); o MVP permite um executor por vez`);
+        blockTask(task, acquired.reason);
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
+      fixedIsolation = acquired.isolation;
+      task.isolation = acquired.isolation;
+      if (acquired.forced) {
+        const note = "isolamento trocado para worktree: outro executor está ativo; integre com duo apply";
+        task.limitations.push(note);
+        store.updateRun(run.runId, (fresh) => { fresh.decisions.push({ at: new Date().toISOString(), taskId: task.taskId, kind: "note", text: note }); });
+      }
+      store.saveTask(task);
       let out: DelegateOutcome;
       try {
         const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
@@ -630,6 +644,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         }
       }
       task = newTask(originalReq, run, store, cfg);
+      task.isolation = fixedIsolation ?? task.isolation;
       task.executor = retryExecutor;
       task.requestHash = chain.requestHash;
       task.model.requested = nextSelection.model;
@@ -659,7 +674,7 @@ type ExecCtx = {
   projectRoot: string;
   env: NodeJS.ProcessEnv;
   authPaths: AuthPaths;
-  lock: ExecutorLock;
+  lock: ExecutorSlots;
   resolved: Gates["resolved"];
   caps: Capabilities;
   entries: ScopeEntry[];
@@ -690,12 +705,11 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     const dirtyInScope = dirtyPaths(projectRoot).filter((p) => !p.startsWith(".duo/") && inScope(p, entries));
     if (worktreeMode) {
       if (!state.head) return block("isolation=worktree requer ao menos um commit");
-      if (dirtyInScope.length) return block(`isolation=worktree requer o escopo sem alterações não commitadas (${dirtyInScope.join(", ")}); use in-place ou faça commit`);
     } else if (isWriteKind(task.kind)) {
       const snap = snapshotFiles(projectRoot, state.scopeFiles, snapshotDir, cfg.limits.maxSnapshotBytes);
       if (snap.skipped.length) task.limitations.push(`snapshot excedeu o limite; diff exato indisponível para: ${snap.skipped.join(", ")}`);
     }
-    task.base = { head: state.head, dirtyInScope, hashes: state.hashes };
+    task.base = { head: state.head, snapshot: null, dirtyInScope, hashes: state.hashes };
   } else if (!worktreeMode) {
     alreadyModified = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((p) => !p.startsWith(".duo/"));
   }
@@ -706,8 +720,23 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!existsSync(wt)) {
       const r = worktreeAdd(projectRoot, wt, task.base.head as string);
       if (!r.ok) return block(`falha ao criar worktree: ${redact(r.stderr.slice(0, 300))}`);
+      const snapshot = worktreeSnapshot(projectRoot, wt, { deny: cfg.scope.deny, maxBytes: cfg.limits.maxSnapshotBytes });
+      const drift = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((rel) => !rel.startsWith(".duo/") && inScope(rel, entries));
+      if (!snapshot.ok || headCommit(projectRoot) !== task.base.head || drift.length) {
+        // Só descarta a cópia recém-criada; nenhum executor chegou a escrever nela.
+        const removed = git(projectRoot, ["worktree", "remove", "--force", wt]);
+        if (!removed.ok) task.limitations.push(`não foi possível remover snapshot incompleto: ${wt}`);
+        task.base = null;
+        return block(snapshot.ok ? `o projeto mudou durante o snapshot: ${drift.join(", ") || "HEAD"}; tente novamente` : `falha no snapshot da worktree: ${redact(snapshot.error)}`);
+      }
+      task.base.snapshot = snapshot.snapshot;
+      const links = linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks);
+      task.worktreeLinks = links.linked;
+      if (links.failed.length) task.limitations.push(`links indisponíveis na worktree: ${links.failed.join(", ")}`);
+    } else if (!task.worktree) {
+      return block(`worktree com snapshot incompleto: ${wt}; remova a cópia antes de retomar`);
     } else if (ctx.resuming) {
-      alreadyModified = worktreePatch(wt, task.base.head as string).files;
+      alreadyModified = worktreePatch(wt, (task.base.snapshot ?? task.base.head) as string, task.worktreeLinks).files;
     }
     task.worktree = wt;
     execCwd = realpathSync(wt);
@@ -946,7 +975,9 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (loggedBytes >= MAX_EVENT_LOG_BYTES) task.limitations.push("log de eventos truncado em 2 MiB (parsing continuou sobre o stream completo)");
   if (outcome.unknownTypes.length) task.limitations.push(`eventos desconhecidos ignorados: ${outcome.unknownTypes.join(", ")}`);
 
-  const verification = verify(ctx, execCwd, outcome, lockIntact);
+  let verification: Verification;
+  try { verification = verify(ctx, execCwd, outcome, lockIntact); }
+  catch (error) { return block((error as Error).message); }
   task.verification = verification;
   if (verification.images?.length) {
     const generated = new Set((codexEvidence?.generatedImages ?? []).map((g) => g.sha256));
@@ -1074,7 +1105,8 @@ function verify(ctx: ExecCtx, execCwd: string, outcome: ParsedOutcome, lockIntac
   let staleBase = false;
 
   if (task.worktree) {
-    const p = worktreePatch(execCwd, task.base?.head as string);
+    const p = worktreePatch(execCwd, (task.base?.snapshot ?? task.base?.head) as string, task.worktreeLinks);
+    if (!p.ok) throw new Error(`falha ao verificar patch da worktree: ${p.error}`);
     changed = p.files;
     if (p.patch) {
       patchPath = join(task.artifactsDir, "changes.patch");
@@ -1082,7 +1114,9 @@ function verify(ctx: ExecCtx, execCwd: string, outcome: ParsedOutcome, lockIntac
       diffPath = patchPath;
     }
     const mainChanged = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((x) => !x.startsWith(".duo/") && inScope(x, entries));
-    staleBase = headCommit(projectRoot) !== task.base?.head || mainChanged.length > 0;
+    staleBase = headCommit(projectRoot) !== task.base?.head || changed.some((rel) => hashPath(join(projectRoot, rel)) !== (task.base?.hashes[rel] ?? null));
+    const otherDrift = mainChanged.filter((rel) => !changed.includes(rel));
+    if (otherDrift.length) task.limitations.push(`o projeto mudou fora do patch desde o snapshot: ${otherDrift.join(", ")}`);
   } else {
     changed = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((x) => !x.startsWith(".duo/"));
     const inScopeChanged = changed.filter((x) => inScope(x, entries));
@@ -1138,7 +1172,7 @@ function decide(
   if (r.timedOut) return ["blocked", `timeout do executor; processo encerrado.${partial} Retome com duo delegate --resume ${task.taskId}.`];
   if (r.outputLimitExceeded) return ["failed", `saída do executor excedeu limits.maxOutputBytes; processo encerrado.${partial}`];
   if (r.spawnError) return ["failed", `falha ao iniciar o executor: ${r.spawnError}`];
-  if (!v.lockIntact) return ["failed", "o lock de executor único foi removido ou trocado durante a execução; resultado não integrado"];
+  if (!v.lockIntact) return ["failed", "o slot do executor foi removido ou trocado durante a execução; resultado não integrado"];
   if (violations.length) {
     return ["failed", `violação de escopo: ${violations.join(", ")}. As alterações não foram revertidas automaticamente; revise antes de integrar.`];
   }

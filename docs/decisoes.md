@@ -67,6 +67,23 @@ Treat a Codex provider as official-equivalent only with literal `requires_openai
 
 Provider defaults and inference URLs were checked through Context7 against [Codex ModelProviderInfo](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs).
 
+## Computer use: fail-closed foundation — 2026-11-05 (Unreleased)
+
+Keep computer use **DISABLED**: every `needs: ["computer_use"]` request is rejected before execution. `computerUse.enabled` defaults to `false`; the intended contract requires config opt-in, explicit task capability and `apps` (names or bundle IDs). The fixed deny contract is Mail, Messages, Keychain Access, 1Password, Bitwarden, System Settings/System Preferences, Terminal, iTerm and Codex/ChatGPT. The schema records intent, not enforcement.
+
+The locally observed native Codex 0.166.0 probe accepted default deny and Finder bundle-ID deny in `config/read`, yet the runtime returned Finder window state after persisted user approval. No image content was returned: this is not screenshot proof. Do not treat accepted native configuration as a security boundary. Activation requires a verified boundary before each action; a restricted intermediary is not implemented in this change.
+
+Doctor adds filesystem-only evidence: configured opt-in, platform/macOS support, `pluginPresent` for `computer-use@openai-bundled` and `runtimePresent` for the actual runtime `unified-computer-use@openai-bundled`, using the local versioned plugin cache under `CODEX_HOME` (default `~/.codex`). Presence does not prove activation or permission. Always return `available=false`, `appEnforcement=unsupported`; never invoke UI, inference or the runtime to discover it. Windows/Linux are unsupported.
+
+Exclusive slots preserve reservations after a dead bridge while the audited executor is alive or its state is unverifiable; cancellation keeps the child PID until exit is observed. Admission remains cooperative per project, and older Duo versions do not understand this orphan protection.
+
+The existing exclusive-slot/apply guard is reusable admission infrastructure: a CU executor would require an idle project and exclude all other executors and apply until release. CU is currently refused before execution, so these guards do not establish UI capability or app enforcement.
+
+Required future permission flow, still unimplemented: record a blocked task with the unapproved app name; have the brain ask the user to approve that specific app **always** in the Codex app; use `duo delegate --resume taskId` to continue the same native session only after revalidating task apps and fixed denies. Persisted native approvals must not widen task access. Native CU resume, action logs, screenshots and Finder operation **through Duo are NOT_RUN / unimplemented**, not delivered evidence. The current refusal cannot be removed by installing a plugin, enabling opt-in or approving an app.
+
+
+Integrated validation on macOS: `npm test` **696/696 passed, 0 failed, 0 skipped**; `npm run typecheck` and diff whitespace checks passed. The requested Finder delegation was attempted with temporary opt-in and refused before executor startup; screenshot and native permission/resume remain NOT_RUN. The project config was restored byte for byte.
+
 ## Consulted references (25/09/2026)
 
 The `developers.openai.com/codex/*` URLs redirected (308) to `learn.chatgpt.com/docs/*`.
@@ -151,6 +168,23 @@ Considere um provedor Codex equivalente ao oficial apenas com `requires_openai_a
 O `config/read` serializa campos null/default implícitos. Inspecione as camadas habilitadas para distingui-los das chaves declaradas, sem reter valores de credenciais; evidência ausente ou malformada não pode ocultar campo inseguro. O fallback TOML mantém a análise conservadora de camadas/confiança e recusa sintaxe que não consegue verificar. Testes cobrem as variações aceitas e recusadas nos dois leitores. A decisão é integrar todas estas correções na v0.4.0, publicada em 07/11/2026 após o gate da release.
 
 Defaults do provedor e URLs de inferência conferidos via Context7 em [Codex ModelProviderInfo](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs).
+
+## Computer use: fundação bloqueada por padrão — 2026-11-05 (Unreleased)
+
+Manter computer use **DESATIVADO**: todo pedido com `needs: ["computer_use"]` é recusado antes da execução. `computerUse.enabled` tem padrão `false`; o contrato pretendido exige opt-in na config, capacidade explícita na tarefa e `apps` (nomes ou bundle IDs). A negação fixa contratada inclui Mail, Messages, Keychain Access, 1Password, Bitwarden, System Settings/System Preferences, Terminal, iTerm e Codex/ChatGPT. O schema registra intenção, não imposição de acesso.
+
+O probe nativo observado localmente do Codex 0.166.0 aceitou negação por padrão e pelo bundle ID do Finder no `config/read`, mas o runtime retornou estado da janela do Finder após aprovação persistida do usuário. Nenhum conteúdo de imagem foi retornado: não é prova de screenshot. Não tratar configuração nativa aceita como fronteira de segurança. A ativação exige uma fronteira verificada antes de cada ação; um intermediário restrito não está implementado nesta mudança.
+
+O doctor acrescenta evidência apenas de filesystem: opt-in configurado, plataforma/suporte a macOS, `pluginPresent` para `computer-use@openai-bundled` e `runtimePresent` para o runtime real `unified-computer-use@openai-bundled`, usando o cache local versionado sob `CODEX_HOME` (padrão `~/.codex`). Presença não comprova ativação nem permissão. Sempre retornar `available=false`, `appEnforcement=unsupported`; nunca acionar UI, inferência ou o runtime para descobri-lo. Windows/Linux não têm suporte.
+
+Slots exclusivos preservam a reserva após a morte da ponte enquanto o executor auditado está vivo ou seu estado não pode ser verificado; o cancelamento preserva o PID filho até observar sua saída. A admissão continua cooperativa por projeto, e versões antigas do Duo não conhecem essa proteção de órfãos.
+
+A proteção existente de slot exclusivo/apply é infraestrutura reutilizável de admissão: um executor CU exigiria o projeto livre e excluiria todos os outros executores e apply até a liberação. CU é recusado antes da execução hoje, portanto essas proteções não comprovam capacidade de UI nem imposição de apps.
+
+Fluxo futuro obrigatório de permissão, ainda não implementado: registrar tarefa bloqueada com o nome do app não aprovado; o cérebro pede ao usuário que aprove aquele app específico **sempre** no app do Codex; `duo delegate --resume taskId` continua a mesma sessão nativa somente após revalidar apps da tarefa e negações fixas. Aprovações nativas persistidas não poderão ampliar o acesso da tarefa. Retomada CU nativa, logs de ações, screenshots e operação do Finder **pelo Duo estão NOT_RUN / não implementados**, não são evidência entregue. A recusa atual não pode ser removida instalando plugin, habilitando opt-in ou aprovando um app.
+
+
+Validação integrada no macOS: `npm test` **696/696 passaram, 0 falhas, 0 skips**; `npm run typecheck` e verificação de whitespace do diff passaram. A delegação solicitada do Finder foi tentada com opt-in temporário e recusada antes de iniciar o executor; screenshot e permissão/retomada nativa seguem NOT_RUN. A config do projeto foi restaurada byte a byte.
 
 ## Referências consultadas (25/09/2026)
 

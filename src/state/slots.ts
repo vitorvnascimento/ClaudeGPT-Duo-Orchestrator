@@ -13,6 +13,25 @@ export type AdmitRequest = { taskId: string; runId: string; kind: TaskKind; requ
 export type AdmitResult = { ok: true; isolation: Isolation; forced: boolean } | { ok: false; reason: string };
 const locksDir = (root: string) => join(duoDir(root), "locks");
 
+// A ponte pode morrer antes do executor. Uma auditoria ausente ou inconsistente não prova que ele terminou.
+function slotActive(root: string, slot: SlotInfo): boolean {
+  if (slot.exclusive === true && (!Number.isSafeInteger(slot.pid) || slot.pid <= 0 || slot.pid > 2147483647)) return true;
+  if (isPidAlive(slot.pid)) return true;
+  if (slot.exclusive !== true) return false;
+  if (typeof slot.runId !== "string" || !/^run-[a-z0-9-]{6,64}$/.test(slot.runId) ||
+      typeof slot.taskId !== "string" || !/^task-[a-z0-9-]{6,64}$/.test(slot.taskId)) return true;
+  const task = readJson<{ runId?: unknown; taskId?: unknown; state?: unknown; pids?: { bridge?: unknown; child?: unknown } }>(
+    join(duoDir(root), "runs", slot.runId, "tasks", slot.taskId, "task.json"),
+  );
+  if (!task || task.runId !== slot.runId || task.taskId !== slot.taskId || task.pids?.bridge !== slot.pid ||
+      !["planned", "approved", "running", "blocked", "succeeded", "failed", "cancelled"].includes(task.state as string)) return true;
+  const child = task.pids.child;
+  if (child === null && task.state === "cancelled") return false;
+  if (typeof child !== "number" || !Number.isSafeInteger(child) || child <= 0 || child > 2147483647) return true;
+  try { process.kill(child, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
+
 export function withAdmission<T>(projectRoot: string, fn: () => T): T {
   return withFileLock(join(locksDir(projectRoot), "admission.lock"), 5000, fn);
 }
@@ -23,7 +42,7 @@ export function activeSlots(projectRoot: string): SlotInfo[] {
     .filter((name) => /^slot-\d+\.json$/.test(name))
     .flatMap((name) => {
       const s = readJson<SlotInfo>(join(dir, name));
-      return s && isPidAlive(s.pid) ? [s] : [];
+      return s && slotActive(projectRoot, s) ? [s] : [];
     });
   const legacy = readJson<LockInfo & { slots?: boolean }>(join(duoDir(projectRoot), "lock.json"));
   if (legacy && !legacy.slots && isPidAlive(legacy.pid)) slots.push({ ...legacy, slot: -1, isolation: "in-place", kind: "implement" });
@@ -79,7 +98,7 @@ export class ExecutorSlots {
       const dir = locksDir(this.projectRoot);
       for (const name of readdirSync(dir).filter((n) => /^slot-\d+\.json$/.test(n))) {
         const s = readJson<SlotInfo>(join(dir, name));
-        if (s ? !isPidAlive(s.pid) : Date.now() - statSync(join(dir, name)).mtimeMs > 10_000) removeWithRetry(join(dir, name));
+        if (s ? !slotActive(this.projectRoot, s) : Date.now() - statSync(join(dir, name)).mtimeMs > 10_000) removeWithRetry(join(dir, name));
       }
       const slots = activeSlots(this.projectRoot), holders = slots.map((s) => `${s.taskId}, pid ${s.pid}`).join("; ");
       if (slots.some((s) => s.exclusive)) return { ok: false, reason: `outro executor exclusivo está ativo (${holders}); aguarde ele terminar` };

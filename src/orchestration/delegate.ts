@@ -15,6 +15,7 @@ import type { ExecutorAdapter, ParsedOutcome } from "../adapters/types.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
+import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { authBlockReason, checkAuth, childEnv, codexConfiguredModel, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import { inScope, isDenied, validateScope, type ScopeEntry } from "../permissions/scope.js";
 import { createStreamRedactor, redact, redactDeep } from "../redact.js";
@@ -96,6 +97,7 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     brainModel: req.brainModel ?? null,
     tags: [],
     needs: req.needs ?? [],
+    ...(req.apps !== undefined ? { apps: [...req.apps] } : {}),
     isolation: req.isolation ?? "in-place",
     scope: req.scope.allowedPaths,
     constraints: req.constraints ?? [],
@@ -124,7 +126,7 @@ function newRun(req: DelegationRequest, cfg: DuoConfig): Run {
   return { runId: newId("run"), brain: req.brain, policy: cfg.policy, createdAt: now, updatedAt: now, cancelled: false, invocations: 0, taskIds: [], decisions: [], nextStep: null };
 }
 
-function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean, cfg: DuoConfig): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
   const p = resolve(cwd, requestPath);
   let raw: string;
   try {
@@ -142,9 +144,8 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
   const errors = validate(loadSchema("delegation-request"), parsed);
   if (errors.length) return { ok: false, out: invalid("pedido fora do schema", errors) };
   const req = parsed as DelegationRequest;
-  if (req.needs?.includes("computer_use")) {
-    return { ok: false, out: invalid("computer use indisponível: a restrição de apps por tarefa ainda não é imposta pelo runtime") };
-  }
+  const cuReason = computerUseBlockReason(req, cfg.computerUse.enabled);
+  if (cuReason) return { ok: false, out: invalid(cuReason) };
   if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
     return { ok: false, out: invalid(`delegar ao mesmo cliente (${req.brain}) exige "model" explícito (outro modelo da mesma conta); sem isso, faça você mesmo`) };
   }
@@ -275,6 +276,8 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const saved = readJson<DelegationRequest>(chain.originalRequestPath);
     if (!saved) return invalid("request.json da cadeia não encontrado");
     req = saved;
+    const cuReason = computerUseBlockReason(req, cfg.computerUse.enabled) ?? computerUseBlockReason(task, cfg.computerUse.enabled);
+    if (cuReason) return invalid(cuReason, [], EXIT.blocked);
     if (task.pids.child && isPidAlive(task.pids.child)) {
       return invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`);
     }
@@ -303,7 +306,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     resuming = task.base !== null;
   } else {
     if (!opts.requestPath) return invalid("informe --request <arquivo.json> ou --resume <taskId>");
-    const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false);
+    const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false, cfg);
     if (!parsed.ok) return parsed.out;
     req = parsed.req;
     const existing = req.runId ? store.loadRun(req.runId) : null;
@@ -563,7 +566,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       store.saveTask(task);
       const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
       const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
-        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null });
+        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null, exclusive: task.needs.includes("computer_use") });
       if (!acquired.ok) {
         blockTask(task, acquired.reason);
         store.saveTask(task);
@@ -779,6 +782,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     denyGlobs: cfg.scope.deny,
     acceptanceArgv: task.acceptanceCommands.map((c) => c.argv),
     needs: task.needs,
+    ...(task.apps !== undefined ? { apps: task.apps } : {}),
     model: task.model.requested,
     effort: req.effort,
     resumeSessionId: ctx.resuming ? task.native.sessionId : null,

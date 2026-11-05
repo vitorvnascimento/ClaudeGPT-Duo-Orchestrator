@@ -1,5 +1,5 @@
 // Diagnóstico sem inferência: versões, help, status e schema locais; versões publicadas consultadas anonimamente.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
@@ -12,7 +12,57 @@ import { cliUpdateWarnings, loadCliLatest, type FetchLike } from "../adapters/cl
 import { Store } from "../state/store.js";
 import { authBlockReason, BILLING_ENV, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 
-export type DoctorReport = Record<string, unknown> & { ready: Record<Provider, boolean> };
+export type ComputerUseDiagnostics = {
+  configuredOptIn: boolean;
+  platform: NodeJS.Platform;
+  macosSupported: boolean;
+  plugin: "computer-use@openai-bundled";
+  runtime: "unified-computer-use@openai-bundled";
+  pluginPresent: boolean;
+  runtimePresent: boolean;
+  available: false;
+  appEnforcement: "unsupported";
+  reason: string;
+};
+
+export type DoctorReport = Record<string, unknown> & { ready: Record<Provider, boolean>; computerUse?: ComputerUseDiagnostics };
+
+// Cache evidence only: never load a plugin, MCP, CLI, config contents or UI.
+function cachedPluginPresent(codexHome: string, name: string): boolean {
+  const dir = join(codexHome, "plugins", "cache", "openai-bundled", name);
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((entry) => {
+      if (!entry.isDirectory()) return false;
+      try {
+        return statSync(join(dir, entry.name, ".codex-plugin", "plugin.json")).isFile();
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function computerUseDiagnostics(
+  config: DuoConfig["computerUse"],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ComputerUseDiagnostics {
+  const codexHome = env.CODEX_HOME ?? join(env.HOME ?? env.USERPROFILE ?? homedir(), ".codex");
+  return {
+    configuredOptIn: config.enabled,
+    platform,
+    macosSupported: platform === "darwin",
+    plugin: "computer-use@openai-bundled",
+    runtime: "unified-computer-use@openai-bundled",
+    pluginPresent: cachedPluginPresent(codexHome, "computer-use"),
+    runtimePresent: cachedPluginPresent(codexHome, "unified-computer-use"),
+    available: false,
+    appEnforcement: "unsupported",
+    reason: "DISABLED: per-task app enforcement is unsupported. Local cache presence does not prove activation, permissions or working computer use; all computer_use requests are rejected before execution.",
+  };
+}
 
 function hookEvents(file: string): string[] {
   try {
@@ -151,6 +201,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     system: { platform: process.platform, arch: process.arch, node: process.version, git: gitVersion.stdout.trim() || "não encontrado" },
     project: { root: root ?? null, isGitRepo: root !== null, config: configError ?? (existsSync(configPath(projectRoot)) ? "ok" : "padrão (sem .duo/config.json)"), duoIgnored: ignored },
     providers,
+    computerUse: computerUseDiagnostics(effectiveCfg.computerUse, env),
     directions: {
       "claude→codex (Claude cérebro, Codex executor)": ready.codex ? "pronto" : "bloqueado (ver providers.codex.blockers)",
       "codex→claude (Codex cérebro, Claude executor)": ready.claude ? "pronto" : "bloqueado (ver providers.claude.blockers)",
@@ -172,6 +223,14 @@ export function formatDoctor(r: DoctorReport): string {
   lines.push(`duo doctor — ${sys.platform}/${sys.arch} node ${sys.node} | ${sys.git}`);
   const proj = r.project as Record<string, unknown>;
   lines.push(`projeto: ${String(proj.root ?? "(fora de repositório Git)")} | config: ${String(proj.config)}`);
+  if (r.computerUse) {
+    const cu = r.computerUse;
+    lines.push(`\n[computer use — DISABLED]\n  configuredOptIn=${cu.configuredOptIn} | platform=${cu.platform} | macosSupported=${cu.macosSupported}`);
+    lines.push(`  ${cu.plugin}: pluginPresent=${cu.pluginPresent} (local cache only)`);
+    lines.push(`  ${cu.runtime}: runtimePresent=${cu.runtimePresent} (local cache only)`);
+    lines.push(`  available=${cu.available} | per-task appEnforcement=${cu.appEnforcement}`);
+    lines.push(`  ${cu.reason}`);
+  }
   for (const [p, info] of Object.entries(r.providers as Record<string, Record<string, unknown>>)) {
     lines.push(`\n[${p}]`);
     if (!info.installed) {

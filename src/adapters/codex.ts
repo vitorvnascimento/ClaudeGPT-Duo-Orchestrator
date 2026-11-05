@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EffectiveCodexConfig } from "../permissions/codex-effective-config.js";
+import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { codexMcpServerNames } from "../permissions/auth.js";
 import { loadSchema, validate } from "../schema.js";
 import { isWriteKind, type ExecutorReport } from "../state/types.js";
@@ -35,6 +36,8 @@ export class CodexAdapter implements ExecutorAdapter {
 
   plan(input: InvocationInput, effective?: EffectiveCodexConfig | null): InvocationPlan {
     const { caps, cfg } = input;
+    const cuReason = computerUseBlockReason({ needs: input.needs, apps: input.apps, executor: "codex" }, cfg.computerUse?.enabled === true);
+    if (cuReason) throw new Error(cuReason);
     const writes = isWriteKind(input.kind);
     const enforced: string[] = [];
     const schemaPath = writeExecutorSchema(input.artifactsDir);

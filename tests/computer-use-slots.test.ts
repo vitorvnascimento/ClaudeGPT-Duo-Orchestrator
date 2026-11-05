@@ -1,13 +1,13 @@
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
-import { applyTask } from "../src/orchestration/control.js";
+import { applyTask, cancelRun } from "../src/orchestration/control.js";
 import { activeSlots, ExecutorSlots, type AdmitRequest } from "../src/state/slots.js";
-import { readJson } from "../src/state/store.js";
+import { readJson, writeJsonAtomic } from "../src/state/store.js";
 
 const roots: string[] = [];
 const owners: ExecutorSlots[] = [];
@@ -55,6 +55,104 @@ it("apply é recusado durante worktree exclusivo e volta a prosseguir após rele
   assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
   assert.equal(owner(p).admit(req()).ok, true);
   assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+});
+
+const auditPath = (p: string) => join(p, ".duo/runs", req().runId, "tasks", req().taskId, "task.json");
+const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid as number;
+function orphanSlot(p: string, bridge: number): void {
+  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "orphan", startedAt: "" });
+}
+function audit(bridge: number, child: number | null) {
+  return { taskId: req().taskId, runId: req().runId, state: "running", pids: { bridge, child }, history: [],
+    executor: "codex", kind: "implement", scope: [], acceptanceCriteria: [], tags: [], model: { requested: null }, invocations: 1 };
+}
+
+it("ponte morta mantém exclusividade enquanto filho auditado vive e libera após sua morte", async () => {
+  const p = root(), bridge = deadPid();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    assert.ok(child.pid);
+    orphanSlot(p, bridge);
+    writeJsonAtomic(auditPath(p), audit(bridge, child.pid));
+    assert.equal(activeSlots(p).length, 1);
+    for (const exclusive of [false, true]) assert.match(JSON.stringify(owner(p).admit(req({ exclusive }))), /exclusivo.*aguarde/);
+    assert.match(applyTask(p, "inexistente").message, /exclusivo.*aguarde/);
+    const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+    assert.equal(activeSlots(p).length, 0);
+    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+    assert.equal(owner(p).admit(req()).ok, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+});
+
+it("auditoria ausente, inválida ou divergente mantém reserva exclusiva fechada", () => {
+  const p = root(), bridge = deadPid(), path = auditPath(p);
+  orphanSlot(p, bridge);
+  const invalid = [null, {}, { ...audit(bridge, deadPid()), taskId: "task-outra-000000" },
+    { ...audit(bridge, deadPid()), runId: "run-outra-000000" }, { ...audit(bridge + 1, deadPid()) },
+    { ...audit(bridge, null) }, { ...audit(bridge, deadPid()), state: "invalido" }, { ...audit(bridge, -1) }];
+  for (const value of invalid) {
+    if (value) writeJsonAtomic(path, value);
+    assert.equal(activeSlots(p).length, 1);
+    assert.match(JSON.stringify(owner(p).admit(req())), /exclusivo.*aguarde/);
+    assert.match(applyTask(p, "inexistente").message, /exclusivo.*aguarde/);
+  }
+  writeFileSync(path, "{incompleto");
+  assert.equal(activeSlots(p).length, 1);
+  assert.equal(owner(p).admit(req()).ok, false);
+  orphanSlot(p, bridge);
+  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), runId: "../../fora", taskId: "../../fora", slot: 0, isolation: "worktree", exclusive: true, pid: bridge });
+  assert.equal(activeSlots(p).length, 1);
+  assert.equal(owner(p).admit(req()).ok, false);
+});
+
+it("cancelRun recupera reserva órfã registrando task cancelada e filho nulo", async () => {
+  const p = root(), bridge = deadPid();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    assert.ok(child.pid);
+    orphanSlot(p, bridge);
+    writeJsonAtomic(auditPath(p), audit(bridge, child.pid));
+    writeJsonAtomic(join(p, ".duo/runs", req().runId, "run.json"), { runId: req().runId, taskIds: [req().taskId], cancelled: false, invocations: 1, decisions: [], createdAt: "", updatedAt: "" });
+    assert.equal(owner(p).admit(req()).ok, false);
+    const exited = once(child, "exit");
+    assert.equal((await cancelRun(p, req().runId, 0)).ok, true);
+    await exited;
+    const saved = readJson<{ state: string; pids: { child: number | null } }>(auditPath(p));
+    assert.equal(saved?.state, "cancelled");
+    assert.ok(saved?.pids.child === null || saved?.pids.child === child.pid);
+    assert.equal(activeSlots(p).length, 0);
+    assert.equal(owner(p).admit(req()).ok, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+});
+
+it("cancelamento não libera a exclusividade se o executor resistir ao encerramento", { skip: process.platform === "win32" }, async (t) => {
+  const p = root(), bridge = deadPid();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  const kill = process.kill;
+  try {
+    assert.ok(child.pid);
+    orphanSlot(p, bridge);
+    writeJsonAtomic(auditPath(p), audit(bridge, child.pid));
+    writeJsonAtomic(join(p, ".duo/runs", req().runId, "run.json"), { runId: req().runId, taskIds: [req().taskId], cancelled: false, invocations: 1, decisions: [], createdAt: "", updatedAt: "" });
+    t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
+      if (Math.abs(pid) === child.pid && signal !== 0) throw new Error("synthetic kill failure");
+      return kill.call(process, pid, signal);
+    });
+    await cancelRun(p, req().runId, 0);
+    assert.equal(readJson<{ pids: { child: number } }>(auditPath(p))?.pids.child, child.pid);
+    assert.equal(activeSlots(p).length, 1);
+    assert.equal(owner(p).admit(req()).ok, false);
+    assert.match(applyTask(p, "inexistente").message, /exclusivo/);
+  } finally {
+    t.mock.restoreAll();
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+  assert.equal(activeSlots(p).length, 0);
+  assert.equal(owner(p).admit(req()).ok, true);
 });
 
 it("admissões concorrentes nunca sobrepõem slot exclusivo e outros slots", async () => {

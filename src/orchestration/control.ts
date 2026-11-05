@@ -70,7 +70,8 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
     const fresh = store.loadTask(run.runId, task.taskId) as Task;
     if (!isTerminal(fresh.state) && canTransition(fresh.state, "cancelled")) {
       transition(fresh, "cancelled", "cancelado pelo usuário (duo cancel)");
-      fresh.pids.child = null;
+      // Não descarte a evidência de um executor que ainda sobrevive ao cancelamento.
+      if (fresh.pids.child && !isPidAlive(fresh.pids.child)) fresh.pids.child = null;
       store.saveTask(fresh);
     }
     if (fresh.state === "cancelled") cancelled.push(fresh.taskId);

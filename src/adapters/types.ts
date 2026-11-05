@@ -16,6 +16,7 @@ export type InvocationInput = {
   acceptanceArgv: string[][];
   /** Capacidades exigidas (ex.: image_generation habilita a ferramenta no Codex). */
   needs: string[];
+  apps?: string[];
   model: string | null;
   effort?: DelegationRequest["effort"] | null;
   resumeSessionId: string | null;

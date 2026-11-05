@@ -370,6 +370,22 @@ Each worktree starts with HEAD plus the brain's tracked and untracked non-ignore
 
 The brain applies successful patches one at a time in its chosen order. A changed HEAD or a changed/created file touched by the patch rejects integration; other in-scope drift produces a warning. A rejected apply requires a fresh task on the new base. Nothing is merged or committed automatically. `duo status` shows active slots; `lock.json` remains a compatibility mirror while slots are occupied. Each slot owner refreshes the mirror every 5 seconds and stops its timer on release. After the mirrored owner dies, an older duo can reclaim it during the residual window of up to 5 seconds (longer if the event loop or guard is busy); avoid mixing versions during parallel runs. Inherited dependency links denied by `scope.deny` are silently omitted; explicitly configured denied links remain errors.
 
+## Computer use — DISABLED foundation (Unreleased)
+
+**Computer use is unavailable through Duo.** Every request containing `needs: ["computer_use"]` is rejected before execution, including requests with opt-in, cached plugins and prior native app approval. The current foundation provides config/schema contracts, exclusive slot admission and an apply guard; it does not provide a working UI executor.
+
+The opt-in contract is `"computerUse": { "enabled": true }` in `.duo/config.json` (default `false`), plus explicit `"needs": ["computer_use"]` and `"apps": ["Safari", "com.apple.TextEdit"]` in the task request. `apps` accepts app names or bundle IDs. These fields declare intent; they do not enforce an app boundary. The fixed deny contract covers **Mail, Messages, Keychain Access, 1Password, Bitwarden, System Settings/System Preferences, Terminal, iTerm and Codex/ChatGPT**. No app list or native setting currently makes a CU task admissible.
+
+`duo doctor` reports configured opt-in, platform/macOS support and separate local cache presence for `computer-use@openai-bundled` and the actual runtime, `unified-computer-use@openai-bundled`. This discovery only inspects cache directories/manifests, honoring `CODEX_HOME`; it does not activate plugins, invoke UI or run inference. A missing cache is reported absent; cached does not mean enabled, approved or functional. Even on macOS with both present, it reports `available=false` and per-task `appEnforcement=unsupported`. Windows/Linux support is not implemented.
+
+The security boundary remains unsupported: in the reported Codex CLI 0.166.0 probe, `config/read` accepted `computer_use.default_app_access="deny"` and a Finder bundle-ID deny, but the native runtime still returned Finder window state after existing user approval. This was **not screenshot evidence**: no image content was returned. Accepted native configuration is not proof of app enforcement. The decision remains a verifiable broker boundary or a blocked foundation; this change does not promise or implement a custom broker.
+
+Exclusive admission is infrastructure only: an exclusive slot requires an otherwise idle project, blocks all other executor admissions (including worktrees), and prevents `duo apply` until release. Current CU requests are refused before an executor starts; the slot foundation does not enable them.
+
+**Required future permission flow (unimplemented):** a permitted task encounters an unapproved app → Duo records a blocked task naming that app → the brain asks the user to approve that specific app **“always” in the Codex app** → `duo delegate --resume taskId` resumes the same task/native session after rechecking its app boundary. Native approval must never bypass the task app list or fixed denies. Approval alone cannot unblock today's unsupported enforcement.
+
+**NOT_RUN / unimplemented through Duo:** CU permission blocking/resume with a native session, action logs, screenshot capture/verification and a Finder UI demonstration. These are future acceptance requirements, not delivered features. Native probes and offline contract/doctor tests do not establish Duo UI operation.
+
 ## Local state
 
 ```text
@@ -813,6 +829,22 @@ Qualquer tarefa in-place é exclusiva e bloqueia novas admissões e `duo apply`.
 Cada worktree começa com HEAD mais as alterações rastreadas e não rastreadas não ignoradas do cérebro, excluindo caminhos negados e `.duo/`. `limits.maxSnapshotBytes` limita esse snapshot. O commit local do snapshot fica destacado e nunca recebe push; o patch contém apenas as mudanças posteriores do executor. Links de dependências compartilhadas ficam fora do patch e das raízes de escrita do executor. Instale dependências fora dessas execuções.
 
 O cérebro aplica os patches aprovados um por vez, na ordem escolhida. HEAD diferente ou mudança/criação em arquivo tocado pelo patch impede a integração; mudanças em outros arquivos do escopo geram aviso. Apply rejeitado exige uma tarefa nova sobre a base atual. Nada é mesclado ou commitado automaticamente. `duo status` mostra os slots ativos; `lock.json` permanece como espelho de compatibilidade enquanto houver slots ocupados. Cada dono de slot renova o espelho a cada 5 segundos e para o timer no release. Após a morte do dono espelhado, um duo antigo pode recuperá-lo na janela residual de até 5 segundos (maior se o event loop ou o guard estiver ocupado); evite misturar versões durante execuções paralelas. Links herdados negados por `scope.deny` são omitidos em silêncio; links negados configurados explicitamente continuam sendo erro.
+
+## Computer use — fundação DESATIVADA (Unreleased)
+
+**Computer use está indisponível pelo Duo.** Todo pedido com `needs: ["computer_use"]` é recusado antes da execução, inclusive com opt-in, plugins em cache e aprovação nativa prévia do app. A fundação atual fornece contratos de config/schema, admissão exclusiva por slot e proteção do apply; não fornece um executor de UI funcional.
+
+O contrato de opt-in é `"computerUse": { "enabled": true }` em `.duo/config.json` (padrão `false`), mais `"needs": ["computer_use"]` explícito e `"apps": ["Safari", "com.apple.TextEdit"]` no pedido da tarefa. `apps` aceita nomes de apps ou bundle IDs. Os campos declaram intenção; não impõem a fronteira de apps. A negação fixa contratada cobre **Mail, Messages, Keychain Access, 1Password, Bitwarden, System Settings/System Preferences, Terminal, iTerm e Codex/ChatGPT**. Nenhuma lista de apps ou configuração nativa torna uma tarefa CU admissível hoje.
+
+`duo doctor` informa opt-in configurado, plataforma/suporte a macOS e presença separada no cache local de `computer-use@openai-bundled` e do runtime real, `unified-computer-use@openai-bundled`. Essa descoberta só inspeciona diretórios/manifests do cache, respeitando `CODEX_HOME`; não ativa plugins, aciona UI ou faz inferência. Cache ausente é informado como ausente; presença não significa ativação, aprovação ou funcionamento. Mesmo no macOS com ambos presentes, informa `available=false` e `appEnforcement=unsupported` por tarefa. Suporte a Windows/Linux não está implementado.
+
+A fronteira de segurança segue sem suporte: no probe relatado da CLI Codex 0.166.0, `config/read` aceitou `computer_use.default_app_access="deny"` e uma negação pelo bundle ID do Finder, mas o runtime nativo ainda retornou estado da janela do Finder após aprovação prévia do usuário. Isso **não foi prova de screenshot**: nenhum conteúdo de imagem foi retornado. Aceitar configuração nativa não comprova imposição de acesso por app. A decisão continua entre uma fronteira verificável por broker ou a fundação bloqueada; esta mudança não promete nem implementa um broker próprio.
+
+Admissão exclusiva é apenas infraestrutura: um slot exclusivo exige o projeto livre, impede todas as outras admissões de executores (inclusive worktrees) e barra `duo apply` até a liberação. Pedidos CU atuais são recusados antes de iniciar um executor; a fundação de slots não os habilita.
+
+**Fluxo futuro obrigatório de permissão (não implementado):** uma tarefa permitida encontra um app não aprovado → Duo registra a tarefa bloqueada com o nome do app → o cérebro pede ao usuário que aprove aquele app específico **“sempre” no app do Codex** → `duo delegate --resume taskId` retoma a mesma tarefa/sessão nativa após reconferir sua fronteira de apps. Aprovação nativa nunca poderá contornar a lista da tarefa nem as negações fixas. Aprovação isolada não desbloqueia a imposição sem suporte de hoje.
+
+**NOT_RUN / não implementados pelo Duo:** bloqueio por permissão/retomada CU com sessão nativa, logs de ações, captura/verificação de screenshots e demonstração de UI com Finder. São requisitos futuros de aceite, não funcionalidades entregues. Probes nativos e testes offline de contrato/doctor não comprovam operação de UI pelo Duo.
 
 ## Estado local
 

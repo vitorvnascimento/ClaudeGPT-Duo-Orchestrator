@@ -15,6 +15,7 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { loadSchema, validate } from "../schema.js";
 import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
+import { activeSlots } from "../state/slots.js";
 import { Store } from "../state/store.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
 import { loadCliLatest, cliUpdateWarnings } from "../adapters/cli-latest.js";
@@ -298,8 +299,13 @@ async function main(argv: string[]): Promise<number> {
         nextStep: r.nextStep,
         tasks: store.listTasks(r).map((t) => ({ taskId: t.taskId, executor: t.executor, kind: t.kind, state: t.state, outcome: t.outcome, updatedAt: t.updatedAt, ...(t.selection ? { selection: t.selection } : {}) })),
       }));
-      if (args.flags.json) print({ interrupted, runs: data });
+      const slots = activeSlots(store.projectRoot);
+      if (args.flags.json) print({ interrupted, runs: data, slots });
       else {
+        for (const slot of slots) {
+          const executor = store.findTask(slot.taskId)?.executor ?? "?";
+          print(`executor ativo: ${slot.taskId} ${executor}/${slot.kind} ${slot.isolation} pid ${slot.pid} desde ${slot.startedAt}`);
+        }
         if (!data.length) print("nenhum run registrado neste projeto");
         for (const r of data) {
           print(`${r.runId} cérebro=${r.brain} política=${r.policy} invocações=${r.invocations}${r.cancelled ? " CANCELADO" : ""}`);

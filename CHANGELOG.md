@@ -2,6 +2,26 @@
 
 **English** · [Português](#português)
 
+## Unreleased
+
+### English
+
+- Up to four concurrent executors per project (configurable 1..4, default 4), with atomic slot admission and a legacy lock mirror. Any in-place task remains exclusive; chain isolation survives resume and adaptive retries.
+- Worktrees include the brain's uncommitted tracked/untracked non-ignored state, excluding denied paths and `.duo/`, bounded by `maxSnapshotBytes`. Executor patches use that snapshot; shared dependency links default to `["node_modules"]` (directory junctions on Windows).
+- `duo apply` serializes integration and checks drift only in touched files; other in-scope changes warn. Integrate one patch at a time in the brain's order; rerun rejected tasks on the current base.
+- Guarded quota/capacity updates and active slots in text/JSON status. Parallel requests share an existing `runId`; the default budget is eight delegations per run, including retries.
+
+- Review fixes: exclusive reclaim markers, complete lock/slot publication, stale unreadable records after 10 seconds, exclusive legacy mirror creation and 5-second refresh (a residual compatibility window remains). All quota/capacity updates are guarded, including `saveQuota`; inherited denied dependency links no longer break older configs.
+
+### Português
+
+- Até quatro executores simultâneos por projeto (configurável 1..4, padrão 4), com admissão atômica por slots e espelho do lock legado. Qualquer tarefa in-place continua exclusiva; isolamento da cadeia é preservado em retomadas e retentativas adaptativas.
+- Worktrees incluem o estado não commitado rastreado/não rastreado não ignorado do cérebro, sem caminhos negados nem `.duo/`, limitado por `maxSnapshotBytes`. Patches usam esse snapshot; links de dependências têm padrão `["node_modules"]` (junctions de diretórios no Windows).
+- `duo apply` serializa a integração e confere deriva apenas nos arquivos tocados; mudanças nos demais arquivos do escopo geram aviso. Integre um patch por vez na ordem do cérebro; execute novamente tarefas rejeitadas sobre a base atual.
+- Atualizações protegidas de cota/capacidade e slots ativos no status textual/JSON. Pedidos paralelos usam o mesmo `runId` existente; o orçamento padrão é de oito delegações por run, incluindo retentativas.
+
+- Correções da revisão: marcadores exclusivos de recuperação, publicação completa de locks/slots, registros ilegíveis velhos após 10 segundos, criação exclusiva do espelho legado e renovação a cada 5 segundos (permanece uma janela residual de compatibilidade). Toda atualização de cota/capacidade usa guard, inclusive `saveQuota`; links herdados negados não quebram mais configs antigas.
+
 ## 0.3.1 — 2026-10-30
 
 ### English

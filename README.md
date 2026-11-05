@@ -26,7 +26,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
 | A local bridge calling the official `codex exec` and `claude -p` | A gateway reusing tokens to call private endpoints |
 | Individual use, each client with its own official login | A service offering subscription login to third parties |
 | A `subscription-only` profile that blocks API, gateway and cloud access | A disguised paid API or automatic billing fallback |
-| One brain per task and one active executor at a time | An autonomous swarm or a third planning AI |
+| One brain per task and up to four isolated executors per project | An autonomous swarm or a third planning AI |
 
 ## Requirements
 
@@ -140,7 +140,7 @@ When the brain requests permission to run `duo delegate`, approve that command. 
 
 Tips:
 - In Codex with many installed skills, it may not find the skill on its own ("Exceeded skills context budget"). Invoke `$duo-delegate` explicitly.
-- Do not edit scoped files while the executor runs: the bridge detects the change and fails the task.
+- Do not edit scoped files during in-place execution. With worktrees, edits to files touched by the patch invalidate the base; other in-scope edits produce a warning.
 - For HTML pages opened directly from disk in Safari, images in folders above the page do not load. Keep the HTML at the root and images in subfolders.
 
 ## Windows (untested)
@@ -167,7 +167,7 @@ The code was written to be portable (`taskkill /T /F` to terminate processes), b
 | `duo status [--run-id]` | Runs and tasks. Detects interruptions (bridge no longer running) and marks tasks `blocked`. |
 | `duo report [--run-id] [--json]` | Deterministic report with the source of each number. |
 | `duo cancel --run-id <id>` | Terminates bridge and executor (process tree) and marks `cancelled`. |
-| `duo apply --task-id <id>` | Integrates a `worktree` task's patch, only if the base has not changed. |
+| `duo apply --task-id <id>` | Integrates a `worktree` task's patch, only if HEAD and the files touched by the patch have not changed. |
 | `duo accept --task-id <id> [--reject] --note "..."` | Records the brain's decision (accepted tasks enter the metric). |
 | `duo handoff --to <cliente>` | Handoff document to switch brains. |
 | `duo quota show` / `duo quota set …` / `duo quota refresh` | Observed account state, manual records and Codex reading through app-server. |
@@ -255,15 +255,34 @@ Validated with real CLIs (E2E T12/T13): with history favoring Claude, the Claude
 ## How delegation is verified
 
 1. **Request**: validated against the schema. The executor may be the same client with another model, but not the brain's own model; the brain is fixed within a run.
-2. **Policy** (`economico` by default): delegation reason compatible with policy, up to **2 invocations per run** (including correction) and quota preference.
+2. **Policy** (`economico` by default): delegation reason compatible with policy, up to **8 invocations per run** (including retries) and quota preference.
 3. **Scope**: relative paths only, no `..`, no symlinks, outside the denylist (`.env`, keys, `.git`, `.duo`…).
 4. **Compatibility**: required flags must appear in the installed version's `--help`.
 5. **Authentication**: API/gateway variables are removed from the executor environment, settings such as `apiKeyHelper` or custom providers block execution (except explicitly authorized loopback proxies), and the effective method must be confirmed as subscription authentication by official status.
-6. **Lock**: one active executor per project.
+6. **Slots**: up to four worktree executors; any in-place task is exclusive.
 7. **Execution**: prompt through stdin, separate arguments, no shell, with timeout, output limit and process-tree termination.
 8. **Independent verification**: actually changed files (by hash), scope violations, diff of the executor's delta only, discrepancies between what the executor declared and did, changed base and acceptance commands executed by the bridge.
 
 A model's "completed" with a failing test becomes `failed`. Nothing is automatically reverted: the bridge never uses `reset --hard`, `clean` or `stash`.
+
+## Parallel executors
+
+Set `isolation: "worktree"` on every parallel request and use the same existing `runId` for the orchestration, with a distinct `taskKey` for each task. After the first delegation creates the run, prepare the requests with its returned `runId` and dispatch them in the background:
+
+```sh
+duo delegate --request .duo/requests/a.json > .duo/a-result.json &
+duo delegate --request .duo/requests/b.json > .duo/b-result.json &
+wait
+duo status --json
+duo apply --task-id <task-a>
+duo apply --task-id <task-b>
+```
+
+`limits.maxConcurrentExecutors` accepts 1..4 (default 4), with no queue. `limits.maxDelegationsPerRun` defaults to 8 and also bounds parallel dispatches and retries in the shared run. An in-place task of any kind is exclusive and blocks both admission and `duo apply`. An in-place request arriving while worktrees are active is forced into a worktree; isolation then stays fixed for the chain, including resume and adaptive retries. Without a git commit, parallel execution is blocked.
+
+Each worktree starts with HEAD plus the brain's tracked and untracked non-ignored changes, excluding denied paths and `.duo/`. `limits.maxSnapshotBytes` bounds this snapshot. The local snapshot commit is detached and never pushed; the executor patch contains only its subsequent changes. Shared dependency links are excluded from the patch and are not executor writable roots. Keep dependency installation outside these runs.
+
+The brain applies successful patches one at a time in its chosen order. A changed HEAD or a changed/created file touched by the patch rejects integration; other in-scope drift produces a warning. A rejected apply requires a fresh task on the new base. Nothing is merged or committed automatically. `duo status` shows active slots; `lock.json` remains a compatibility mirror while slots are occupied. Each slot owner refreshes the mirror every 5 seconds and stops its timer on release. After the mirrored owner dies, an older duo can reclaim it during the residual window of up to 5 seconds (longer if the event loop or guard is busy); avoid mixing versions during parallel runs. Inherited dependency links denied by `scope.deny` are silently omitted; explicitly configured denied links remain errors.
 
 ## Local state
 
@@ -272,7 +291,7 @@ A model's "completed" with a failing test becomes `failed`. Nothing is automatic
   config.json
   runs/<runId>/run.json
   runs/<runId>/tasks/<taskId>/{task.json, request.json, prompt.txt, invocation.json, events.jsonl, stderr.txt, changes.diff|changes.patch, snapshot/}
-  telemetry.jsonl   quota.json   quota-state.json   lock.json   handoffs/   backups/   worktrees/
+  telemetry.jsonl   quota.json   quota-state.json   lock.json   locks/   handoffs/   backups/   worktrees/
 ```
 
 Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in Codex and `thinking` in Claude) is not recorded.
@@ -303,7 +322,7 @@ Details in [docs/compatibilidade.md](docs/compatibilidade.md).
 - There is no official interface to verify whether credits or extra usage are active in accounts; this is why explicit acknowledgment exists.
 - Files ignored by Git and outside scope (e.g. `node_modules/`) are excluded from change detection.
 - Acceptance commands run without API/gateway variables in the environment (the same cleanup as the executor); tests depending on them will fail.
-- In `worktree` mode, acceptance commands run in the worktree, where untracked dependencies (e.g. `node_modules`) may be absent.
+- Worktree acceptance uses that worktree. `limits.worktreeLinks` defaults to `["node_modules"]`; missing dependencies or failed links may require local setup. Windows directory links use junctions; failures are reported as limitations.
 - With Codex as brain in headless mode, execution of `duo delegate` outside the sandbox was approved by the automatic reviewer (`--approve-for-me`). In interactive VS Code, you approve it.
 
 ## Documentation
@@ -330,7 +349,7 @@ Issues and pull requests are welcome. Before submitting: `npm ci && npm test` (a
 
 ## Possible future developments
 
-A dedicated VS Code panel, an optional Codex App Server adapter (sessions, approvals, limits) after validating maturity, brain recommendation before starting, and parallelism with multiple worktrees. None of these should introduce custom subscription login.
+A dedicated VS Code panel, an optional Codex App Server adapter (sessions, approvals, limits) after validating maturity, brain recommendation before starting. None of these should introduce custom subscription login.
 
 ---
 
@@ -361,7 +380,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
 | Uma ponte local que chama `codex exec` e `claude -p` oficiais | Um gateway que reutiliza tokens para chamar endpoints privados |
 | Uso individual, cada cliente com seu próprio login oficial | Um serviço que oferece login de assinaturas a terceiros |
 | Perfil `subscription-only`, que bloqueia API, gateway e nuvem | Uma API paga disfarçada ou fallback automático de cobrança |
-| Um cérebro por tarefa e um executor ativo por vez | Um enxame autônomo ou uma terceira IA planejadora |
+| Um cérebro por tarefa e até quatro executores isolados por projeto | Um enxame autônomo ou uma terceira IA planejadora |
 
 ## Requisitos
 
@@ -475,7 +494,7 @@ Quando o cérebro pedir permissão para rodar `duo delegate`, aprove esse comand
 
 Dicas:
 - No Codex com muitas skills instaladas, ele pode não achar a skill sozinho ("Exceeded skills context budget"). Invoque `$duo-delegate` explicitamente.
-- Não edite os arquivos do escopo enquanto o executor roda: a ponte detecta a mudança e reprova a tarefa.
+- Não edite os arquivos do escopo durante execução in-place. Em worktrees, mudanças em arquivos tocados pelo patch invalidam a base; nos demais arquivos do escopo, geram aviso.
 - Em páginas HTML abertas direto do disco no Safari, imagens em pastas acima da página não carregam. Deixe o HTML na raiz e as imagens em subpastas.
 
 ## Windows (não testado)
@@ -502,7 +521,7 @@ O código foi escrito para ser portável (`taskkill /T /F` para encerrar process
 | `duo status [--run-id]` | Runs e tasks. Detecta interrupções (ponte morta) e marca como `blocked`. |
 | `duo report [--run-id] [--json]` | Relatório determinístico com a origem de cada número. |
 | `duo cancel --run-id <id>` | Encerra ponte e executor (árvore de processos) e marca `cancelled`. |
-| `duo apply --task-id <id>` | Integra o patch de uma task `worktree`, só se a base não mudou. |
+| `duo apply --task-id <id>` | Integra o patch de uma task `worktree`, só se HEAD e os arquivos tocados pelo patch não mudaram. |
 | `duo accept --task-id <id> [--reject] --note "..."` | Registra a decisão do cérebro (tarefas aceitas entram na métrica). |
 | `duo handoff --to <cliente>` | Documento de handoff para trocar o cérebro. |
 | `duo quota show` / `duo quota set …` / `duo quota refresh` | Estado observado por conta, registro manual e leitura do Codex via app-server. |
@@ -592,15 +611,34 @@ Validado com as CLIs reais (E2E T12/T13): com histórico favorável ao Claude, o
 ## Como uma delegação é verificada
 
 1. **Pedido**: validado pelo schema. O executor pode ser o mesmo cliente com outro modelo, mas não o próprio modelo do cérebro; o cérebro é fixo dentro de um run.
-2. **Política** (`economico` por padrão): motivo da delegação compatível com a política, até **2 invocações por run** (incluindo correção) e preferência de cota.
+2. **Política** (`economico` por padrão): motivo da delegação compatível com a política, até **8 invocações por run** (incluindo retentativas) e preferência de cota.
 3. **Escopo**: só caminhos relativos, sem `..`, sem symlinks, fora da lista de negação (`.env`, chaves, `.git`, `.duo`…).
 4. **Compatibilidade**: flags obrigatórias precisam aparecer no `--help` da versão instalada.
 5. **Autenticação**: variáveis de API/gateway são removidas do ambiente do executor, configurações como `apiKeyHelper` ou provedores customizados bloqueiam a execução (exceto proxy loopback explicitamente autorizado), e o método efetivo precisa ser confirmado como assinatura pelo status oficial.
-6. **Lock**: um executor ativo por projeto.
+6. **Slots**: até quatro executores em worktrees; qualquer tarefa in-place é exclusiva.
 7. **Execução**: prompt pela stdin, argumentos separados, sem shell, com timeout, limite de saída e encerramento da árvore de processos.
 8. **Verificação independente**: arquivos realmente alterados (por hash), violações de escopo, diff apenas do delta do executor, divergência entre o que o executor declarou e o que fez, base alterada e comandos de aceite executados pela ponte.
 
 Um "completed" do modelo com teste falhando vira `failed`. Nada é revertido automaticamente: a ponte nunca usa `reset --hard`, `clean` ou `stash`.
+
+## Executores paralelos
+
+Use `isolation: "worktree"` em todo pedido paralelo, o mesmo `runId` existente para a orquestração e um `taskKey` diferente por tarefa. Depois que a primeira delegação criar o run, prepare os pedidos com o `runId` retornado e dispare-os em segundo plano:
+
+```sh
+duo delegate --request .duo/requests/a.json > .duo/a-result.json &
+duo delegate --request .duo/requests/b.json > .duo/b-result.json &
+wait
+duo status --json
+duo apply --task-id <task-a>
+duo apply --task-id <task-b>
+```
+
+`limits.maxConcurrentExecutors` aceita 1..4 (padrão 4), sem fila. `limits.maxDelegationsPerRun` tem padrão 8 e também limita os disparos paralelos e as retentativas no mesmo run. Qualquer tarefa in-place é exclusiva e bloqueia novas admissões e `duo apply`. Um pedido in-place que chega enquanto worktrees estão ativas é convertido em worktree; o isolamento fica fixo na cadeia, inclusive em retomadas e retentativas adaptativas. Sem commit Git, a execução paralela é bloqueada.
+
+Cada worktree começa com HEAD mais as alterações rastreadas e não rastreadas não ignoradas do cérebro, excluindo caminhos negados e `.duo/`. `limits.maxSnapshotBytes` limita esse snapshot. O commit local do snapshot fica destacado e nunca recebe push; o patch contém apenas as mudanças posteriores do executor. Links de dependências compartilhadas ficam fora do patch e das raízes de escrita do executor. Instale dependências fora dessas execuções.
+
+O cérebro aplica os patches aprovados um por vez, na ordem escolhida. HEAD diferente ou mudança/criação em arquivo tocado pelo patch impede a integração; mudanças em outros arquivos do escopo geram aviso. Apply rejeitado exige uma tarefa nova sobre a base atual. Nada é mesclado ou commitado automaticamente. `duo status` mostra os slots ativos; `lock.json` permanece como espelho de compatibilidade enquanto houver slots ocupados. Cada dono de slot renova o espelho a cada 5 segundos e para o timer no release. Após a morte do dono espelhado, um duo antigo pode recuperá-lo na janela residual de até 5 segundos (maior se o event loop ou o guard estiver ocupado); evite misturar versões durante execuções paralelas. Links herdados negados por `scope.deny` são omitidos em silêncio; links negados configurados explicitamente continuam sendo erro.
 
 ## Estado local
 
@@ -609,7 +647,7 @@ Um "completed" do modelo com teste falhando vira `failed`. Nada é revertido aut
   config.json
   runs/<runId>/run.json
   runs/<runId>/tasks/<taskId>/{task.json, request.json, prompt.txt, invocation.json, events.jsonl, stderr.txt, changes.diff|changes.patch, snapshot/}
-  telemetry.jsonl   quota.json   quota-state.json   lock.json   handoffs/   backups/   worktrees/
+  telemetry.jsonl   quota.json   quota-state.json   lock.json   locks/   handoffs/   backups/   worktrees/
 ```
 
 Todo arquivo persistido passa por redação de segredos. O texto de raciocínio (`reasoning` do Codex e `thinking` do Claude) não é gravado.
@@ -640,7 +678,7 @@ Detalhes em [docs/compatibilidade.md](docs/compatibilidade.md).
 - Não há interface oficial para verificar se créditos ou uso extra estão ativos nas contas; por isso existe a confirmação explícita.
 - Arquivos ignorados pelo Git e fora do escopo (ex.: `node_modules/`) não entram na detecção de mudanças.
 - Comandos de aceite rodam sem as variáveis de API/gateway no ambiente (mesma limpeza do executor); testes que dependem delas vão falhar.
-- Em modo `worktree`, os comandos de aceite rodam no worktree, onde dependências não versionadas (ex.: `node_modules`) podem estar ausentes.
+- O aceite roda na própria worktree. `limits.worktreeLinks` tem padrão `["node_modules"]`; dependências ausentes ou links indisponíveis podem exigir preparação local. No Windows, diretórios usam junctions; falhas são registradas como limitações.
 - Com o Codex como cérebro em modo headless, a execução de `duo delegate` fora do sandbox foi aprovada pelo revisor automático (`--approve-for-me`). No VS Code interativo, quem aprova é você.
 
 ## Documentação
@@ -667,4 +705,4 @@ Issues e pull requests são bem-vindos. Antes de enviar: `npm ci && npm test` (t
 
 ## Evoluções possíveis
 
-Painel próprio no VS Code, adaptador opcional para o Codex App Server (sessões, aprovações, limites) após validar maturidade, recomendação de cérebro antes de começar, e paralelismo com múltiplos worktrees. Nada disso deve introduzir login próprio de assinatura.
+Painel próprio no VS Code, adaptador opcional para o Codex App Server (sessões, aprovações, limites) após validar maturidade, recomendação de cérebro antes de começar. Nada disso deve introduzir login próprio de assinatura.

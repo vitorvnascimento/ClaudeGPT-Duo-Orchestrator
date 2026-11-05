@@ -8,6 +8,7 @@ import { afterEach, describe, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { cancelRun } from "../src/orchestration/control.js";
 import { duoCliCommand } from "../src/cli/init.js";
+import { ExecutorSlots } from "../src/state/slots.js";
 import { Store, writeJsonAtomic } from "../src/state/store.js";
 import { baseRequest, CLI, makeSandbox, type Sandbox } from "./helpers.js";
 
@@ -251,4 +252,19 @@ describe("duo recommend", () => {
     const text = cli(s, ["recommend", "--kind", "review", "--paths", "src/", "--risk", "high"]);
     assert.match(text.stdout, /Recomendação:/);
   });
+});
+
+it("status --json lista slots ativos", () => {
+  sb = makeSandbox(); const s = sb, slots = new ExecutorSlots(s.root, 4);
+  slots.admit({ taskId: "task-status-000000", runId: "run-status-000000", kind: "review", requested: "worktree", fixed: null, gitReady: true });
+  try {
+    const result = cli(s, ["status", "--json"]);
+    assert.equal(result.status, 0, result.stderr);
+    const data = JSON.parse(result.stdout);
+    assert.equal(data.slots.length, 1);
+    assert.equal(data.slots[0].taskId, "task-status-000000");
+    assert.equal(data.slots[0].isolation, "worktree");
+    assert.match(cli(s, ["status"]).stdout, /executor ativo: task-status-000000 .*review worktree pid/);
+  } finally { slots.release(); }
+  assert.deepEqual(JSON.parse(cli(s, ["status", "--json"]).stdout).slots, []);
 });

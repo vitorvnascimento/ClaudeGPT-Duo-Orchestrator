@@ -5,10 +5,10 @@
 //   node tests/e2e/quality-test.mjs --dry-run (só plano e invariantes; não cria repos nem chama CLIs)
 // Cada critério só pontua se TODAS as suas verificações passarem. As provas de que o GPT executou vêm do
 // próprio Codex (rollout da sessão, IDs de resposta do servidor, imagem gerada pela ferramenta), não do que a IA diz.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,7 @@ const LOOPBACK_PROVIDER = (() => {
   return null;
 })();
 const okProvider = (p) => p === "openai" || (LOOPBACK_PROVIDER !== null && p === LOOPBACK_PROVIDER);
-const POINTS = { Q1: 12, Q2: 12, Q3: 8, Q4: 8, Q5: 8, Q6: 8, Q7: 8, Q8: 8, Q9: 3, Q10: 3, Q11: 6, Q12: 6, Q13: 5, Q14: 5 };
+const POINTS = { Q1: 10, Q2: 10, Q3: 6, Q4: 6, Q5: 8, Q6: 8, Q7: 8, Q8: 8, Q9: 3, Q10: 3, Q11: 6, Q12: 6, Q13: 5, Q14: 5, Q15: 8 };
 assert.equal(Object.values(POINTS).reduce((sum, points) => sum + points, 0), 100);
 if (!DRY_RUN && (!argv.includes("--confirm-quota") || !opt("--base"))) {
   console.error("Consome cota real do Claude e do Codex. Rode com --confirm-quota --base <dir>.");
@@ -141,6 +141,31 @@ function rolloutOf(threadId) {
     responseIds: resp,
     usedImageTool: calls.some((c) => /tools\.image_gen__imagegen\s*\(/.test(c)),
   };
+}
+
+/** Intervalo real da sessão do Codex, lido do rollout (primeiro e último registro), sem usar a ponte. */
+function rolloutSpan(threadId) {
+  const ro = rolloutOf(threadId);
+  if (!ro) return null;
+  const stamps = readFileSync(ro.file, "utf8").split("\n").filter(Boolean).map((l) => Date.parse(JSON.parse(l).timestamp)).filter(Number.isFinite);
+  return stamps.length ? { ...ro, start: Math.min(...stamps), end: Math.max(...stamps) } : null;
+}
+
+/** `duo` assíncrono, para várias delegações ao mesmo tempo (Q15). */
+function duoAsync(repo, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { cwd: repo, env: cleanEnv() });
+    let stdout = "";
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", () => {});
+    const timer = setTimeout(() => child.kill("SIGTERM"), 15 * 60_000);
+    child.on("close", (exit) => {
+      clearTimeout(timer);
+      let out = null;
+      try { out = JSON.parse(stdout); } catch { /* saída inválida vira verificação reprovada */ }
+      resolve({ exit, out, task: out?.taskFile && existsSync(out.taskFile) ? JSON.parse(readFileSync(out.taskFile, "utf8")) : null });
+    });
+  });
 }
 
 function generatedImages(threadId) {
@@ -417,8 +442,8 @@ const CRITERIA = {
     const passed = list.filter((s) => s.ok ?? s.passed ?? s.pass).length;
     return {
       points: POINTS.Q8,
-      title: "Bateria E2E real completa (T1–T15 + A1)",
-      checks: [check("todos os 16 cenários aprovados", list.length === 16 && passed === 16, { arquivo: BATTERY, aprovados: passed, total: list.length })],
+      title: "Bateria E2E real completa (T1–T15 + A1 + P1)",
+      checks: [check("todos os 17 cenários aprovados, inclusive o paralelismo P1", list.length === 17 && passed === 17 && list.some((s) => s.id === "P1"), { arquivo: BATTERY, aprovados: passed, total: list.length })],
     };
   },
 
@@ -606,6 +631,65 @@ const CRITERIA = {
     }
     checks.push(privacyCheck("após limpeza"));
     return { points: POINTS.Q14, title: "Cota nativa, privacidade, exclusão do Codex esgotado e limpeza", checks };
+  },
+  async Q15() {
+    const parts = ["a", "b", "c", "d"];
+    const files = {};
+    for (const x of parts) {
+      files[`src/${x}.js`] = `export const nome${x.toUpperCase()} = "${x}";\n`;
+      files[`tests/${x}.test.js`] = `import { strict as assert } from "node:assert";\nimport { test } from "node:test";\nimport { f${x} } from "../src/${x}.js";\ntest("f${x}", () => assert.equal(f${x}(), "${x}"));\n`;
+    }
+    const repo = makeRepo("Q15", files);
+    shared.repos.push(repo);
+    const cfgPath = join(repo, ".duo", "config.json"), cfg = readJson(cfgPath);
+    cfg.limits = { ...(cfg.limits ?? {}), maxConcurrentExecutors: 4, maxDelegationsPerRun: 8 };
+    cfg.acceptance.allowedCommands.push(...parts.map((x) => ["node", "--test", `tests/${x}.test.js`]));
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    const brainEdit = "// nota do cérebro, ainda não commitada\n";
+    writeFileSync(join(repo, "NOTAS.md"), brainEdit);
+    const seed = delegate(repo, { kind: "review", objective: "Leia src/a.js e diga em uma frase o que ele exporta. Não altere nada.", scope: { allowedPaths: ["src/a.js"] }, acceptance: { criteria: ["nada alterado"] } }, "seed");
+    const runId = seed.out?.runId;
+    const reqFile = (name, req) => {
+      const file = join(repo, ".duo", `${name}.json`);
+      writeFileSync(file, JSON.stringify({ version: 1, brain: "claude", brainModel: "claude-opus-5-5", executor: "codex", risk: "low", reason: "clear_benefit", rationale: "teste de qualidade: paralelismo", isolation: "worktree", runId, taskKey: name, ...req }, null, 2));
+      return file;
+    };
+    const jobs = parts.map((x) => duoAsync(repo, ["delegate", "--request", reqFile(`par-${x}`, {
+      kind: "implement",
+      objective: `Em src/${x}.js, adicione a função exportada f${x}() que devolve a string "${x}". Mantenha o export existente. Não altere outros arquivos.`,
+      scope: { allowedPaths: [`src/${x}.js`] },
+      acceptance: { criteria: [`node --test tests/${x}.test.js passa`], commands: [{ name: "teste", argv: ["node", "--test", `tests/${x}.test.js`] }] },
+    })]));
+    let slotsAtFifth = 0;
+    for (const deadline = Date.now() + 180_000; Date.now() < deadline; await new Promise((r) => setTimeout(r, 300))) {
+      slotsAtFifth = (duo(repo, ["status", "--json"]).out?.slots ?? []).length;
+      if (slotsAtFifth === 4) break;
+    }
+    const fifth = slotsAtFifth === 4 ? duo(repo, ["delegate", "--request", reqFile("par-quinta", { kind: "review", objective: "Leia src/a.js. Não altere nada.", scope: { allowedPaths: ["src/a.js"] }, acceptance: { criteria: ["nada alterado"] } })]) : null;
+    const done = await Promise.all(jobs);
+    const spans = done.map((d) => rolloutSpan(d.task?.native?.sessionId));
+    let overlap = 0;
+    for (const a of spans) if (a) overlap = Math.max(overlap, spans.filter((b) => b && b.start < a.end && a.start < b.end).length);
+    const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+    const applies = done.map((d) => duo(repo, ["apply", "--task-id", d.out?.taskId ?? "-"]));
+    const changed = git(repo, "status", "--porcelain").split("\n").filter(Boolean).map((l) => l.slice(3)).filter((p) => !p.startsWith(".duo")).sort();
+    const testsPass = spawnSync("node", ["--test", ...parts.map((x) => `tests/${x}.test.js`)], { cwd: repo, encoding: "utf8" }).status === 0;
+    const status = duo(repo, ["status", "--json"]).out;
+    return {
+      points: POINTS.Q15,
+      title: "Paralelismo: 4 executores Codex reais ao mesmo tempo, patches verificados e aplicados, 5º recusado",
+      checks: [
+        check("ponte: run compartilhado criado", Boolean(runId), seed.out?.outcome),
+        check("ponte: as 4 tarefas succeeded, cada uma em worktree", done.every((d) => d.out?.state === "succeeded" && d.task?.isolation === "worktree" && d.task?.worktree), done.map((d) => `${d.out?.state}/${d.task?.isolation}`)),
+        check("ponte: 5º pedido recusado pelo limite com as 4 vagas ocupadas, sem executor", slotsAtFifth === 4 && fifth?.exit === 3 && /limite de 4/.test(fifth?.out?.outcome ?? ""), { slotsAtFifth, exit: fifth?.exit, outcome: fifth?.out?.outcome }),
+        check("independente: 4 rollouts do Codex desta execução (openai, codex_exec, cwd = worktree da tarefa)", spans.every((sp, i) => sp && okProvider(sp.provider) && sp.originator === "codex_exec" && real(sp.cwd) === real(done[i].task?.worktree)), spans.map((sp) => sp && { id: sp.id, cwd: sp.cwd, provider: sp.provider })),
+        check("independente: ≥ 2 sessões do Codex se sobrepõem no tempo (rollouts)", overlap >= 2, { overlap, spans: spans.map((sp) => sp && { start: new Date(sp.start).toISOString(), end: new Date(sp.end).toISOString() }) }),
+        check("ponte: cada patch traz só o arquivo da própria tarefa", done.every((d, i) => JSON.stringify(d.out?.filesChanged) === JSON.stringify([`src/${parts[i]}.js`])), done.map((d) => d.out?.filesChanged)),
+        check("ponte: os 4 applies em sequência ok", applies.every((a) => a.exit === 0), applies.map((a) => a.out?.message ?? a.stderr).map(short)),
+        check("independente: git mostra só os 4 arquivos + a nota do cérebro, e os testes passam", JSON.stringify(changed) === JSON.stringify(["NOTAS.md", ...parts.map((x) => `src/${x}.js`)]) && testsPass && readFileSync(join(repo, "NOTAS.md"), "utf8") === brainEdit, { changed, testsPass }),
+        check("independente: nenhuma vaga nem espelho lock.json sobrando", (status?.slots ?? []).length === 0 && !existsSync(join(repo, ".duo", "lock.json")), status?.slots),
+      ],
+    };
   },
 };
 

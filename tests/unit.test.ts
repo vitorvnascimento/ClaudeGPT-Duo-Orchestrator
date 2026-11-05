@@ -14,6 +14,7 @@ import { sanitizeEventLine } from "../src/adapters/sanitize.js";
 import { classifyErrorText, type InvocationInput } from "../src/adapters/types.js";
 import { git, worktreeAdd, worktreeSnapshot, worktreePatch, linkIntoWorktree } from "../src/git.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
+import { packageRoot } from "../src/paths.js";
 import { isAllowlisted } from "../src/orchestration/acceptance.js";
 import { policyBlockReason } from "../src/orchestration/policy.js";
 import { childEnv, classifyClaudeStatus, classifyCodexStatus } from "../src/permissions/auth.js";
@@ -290,6 +291,21 @@ describe("duo init: comando gravado nas skills", () => {
       assert.equal(duoCliCommand({ PATH: bin }), "duo");
     } finally {
       rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("skills distribuídas", () => {
+  it("frontmatter YAML das skills é válido: valor sem aspas não contém ': ' nem ' #'", () => {
+    for (const brain of ["claude", "codex"]) {
+      const text = readFileSync(join(packageRoot(), "skills", brain, "duo-delegate", "SKILL.md"), "utf8");
+      const fm = (text.split("\n---")[0] ?? "").replace(/^---\n/, "");
+      for (const line of fm.split("\n").filter(Boolean)) {
+        const m = /^([A-Za-z-]+):\s(.*)$/.exec(line);
+        assert.ok(m, `linha de frontmatter inválida em ${brain}: ${line.slice(0, 60)}`);
+        const key = m?.[1] ?? "", value = m?.[2] ?? "";
+        if (!/^["']/.test(value)) assert.ok(!/: | #/.test(value), `${brain}/${key}: valor sem aspas com ': ' ou ' #' quebra o YAML`);
+      }
     }
   });
 });

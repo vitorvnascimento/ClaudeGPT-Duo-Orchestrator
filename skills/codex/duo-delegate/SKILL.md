@@ -1,6 +1,6 @@
 ---
 name: duo-delegate
-description: Coordenar Codex (cérebro) e Claude Code para executar tarefas com a melhor qualidade e eficiência. Descobre os modelos disponíveis nas contas conectadas e escolhe, por evidência e sem preferência de marca, o melhor modelo para cada subtarefa (ex.: Opus 5.5 para código, GPT-6-Astra para arte), seja você, outro modelo do mesmo fornecedor ou o Claude ou por uma ferramenta determinística, e delega pela ponte local duo com verificação independente. Use quando o usuário pedir para usar as duas IAs, delegar ou consultar o Claude, ou quando uma subtarefa delimitada se beneficiaria do outro agente.
+description: "Coordenar Codex (cérebro) e Claude Code para executar tarefas com a melhor qualidade e eficiência. Descobre os modelos disponíveis nas contas conectadas e escolhe, por evidência e sem preferência de marca, o melhor modelo para cada subtarefa (ex.: Opus 5.5 para código, GPT-6-Astra para arte), seja você, outro modelo do mesmo fornecedor ou o Claude ou por uma ferramenta determinística, e delega pela ponte local duo com verificação independente. Use quando o usuário pedir para usar as duas IAs, delegar ou consultar o Claude, ou quando uma subtarefa delimitada se beneficiaria do outro agente."
 ---
 
 # duo-delegate — cérebro: Codex · outro agente: Claude Code

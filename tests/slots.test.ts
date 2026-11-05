@@ -273,3 +273,19 @@ it("renovação do espelho nunca sobrescreve lock.json legado vivo que apareceu 
   owner.release();
   assert.deepEqual(readJson(path), legacy);
 });
+it("renovação com dono do espelho vivo nunca deixa lock.json ausente (sem rename)", (t) => {
+  const p = root(), path = join(p, ".duo/lock.json"), rename = fs.renameSync;
+  const owner = slots(p, 4); assert.equal(owner.admit(req()).ok, true);
+  let renamedMirror = false;
+  t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
+    if (String(args[0]) === path) renamedMirror = true;
+    return rename(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const second = slots(p, 4); assert.equal(second.admit(req()).ok, true);
+    second.release();
+    assert.equal(renamedMirror, false);
+    assert.equal(readJson<{ slots?: boolean }>(path)?.slots, true);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});

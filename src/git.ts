@@ -181,13 +181,20 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
     let patch = "";
     for (let i = 0; i < allowedTracked.length; i += 200) {
       const batch = allowedTracked.slice(i, i + 200).map((rel) => `:(literal)${rel}`);
-      const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ...batch], {
+      const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ...batch, ...excludes], {
         cwd: root, encoding: "utf8", timeout: 60_000, maxBuffer: Math.max(4 * 1024 * 1024, opts.maxBytes * 4), windowsHide: true,
       });
       if (diff.status !== 0 || diff.error) return { ok: false, error: diff.error?.message ?? diff.stderr };
       patch += diff.stdout;
     }
     if (patch) {
+      // Pathspec literal ainda casa descendentes (ex.: `config` virou diretório com `config/.env` negado):
+      // confere cada caminho que o patch traz antes de aplicar qualquer coisa.
+      const listed = spawnSync("git", ["apply", "--numstat", "-z", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
+      if (listed.status !== 0 || listed.error) return { ok: false, error: listed.error?.message ?? listed.stderr };
+      const emitted = listed.stdout.split("\0").filter(Boolean).map((entry) => entry.split("\t").slice(2).join("\t"));
+      const forbidden = emitted.filter((rel) => !allowed(rel));
+      if (forbidden.length) return { ok: false, error: `snapshot recusado: o diff traria caminhos negados ou de .duo/ (${forbidden.length})` };
       const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
       if (applied.status !== 0 || applied.error) return { ok: false, error: applied.error?.message ?? applied.stderr };
     }

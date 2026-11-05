@@ -42,6 +42,14 @@ function mtimeAge(path: string): number {
 function refreshMirror(root: string): boolean {
   const slots = activeSlots(root), path = join(duoDir(root), "lock.json");
   if (slots.some((s) => s.slot === -1)) return false;
+  const current = readJson<LockInfo & { slots?: boolean }>(path);
+  if (current?.slots === true && isPidAlive(current.pid) && slots[0]) {
+    // Dono gravado vivo: duo antigo não mexe neste lock, então nunca se abre intervalo sem lock aqui.
+    if (slots.some((s) => s.nonce === current.nonce)) return true;
+    writeJsonAtomic(path, { ...slots[0], slots: true });
+    return true;
+  }
+  // Daqui em diante o espelho está ausente, morto, ilegível ou legado: troca por rename e devolve o que não é nosso.
   const taken = `${path}.troca-${process.pid}-${randomBytes(6).toString("hex")}`;
   let had = false;
   try { renameSync(path, taken); had = true; }

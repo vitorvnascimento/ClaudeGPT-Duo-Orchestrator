@@ -400,6 +400,19 @@ describe("snapshot de worktree", () => {
       if (snap.ok && snap.snapshot) assert.ok(!git(wt, ["show", `${snap.snapshot}:negado.txt`]).stdout.includes("SEGREDO"));
     } finally { s.cleanup(); }
   });
+  it("arquivo commitado que virou diretório com segredo negado não leva o segredo ao snapshot", () => {
+    const s = makeSandbox();
+    try {
+      s.write("config", "valor\n"); s.git("add", "config"); s.git("commit", "-qm", "config arquivo");
+      s.git("rm", "-q", "--cached", "config"); rmSync(join(s.root, "config"));
+      s.write("config/.env", "SEGREDO=1\n"); s.write("config/app.json", "{}\n");
+      s.git("add", "-f", "config/.env", "config/app.json");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: ["**/.env"], maxBytes: 1 << 20 });
+      assert.equal(existsSync(join(wt, "config/.env")), false, JSON.stringify(snap));
+      if (snap.ok && snap.snapshot) assert.equal(git(wt, ["ls-files", "config/.env"]).stdout.trim(), "");
+    } finally { s.cleanup(); }
+  });
   it("worktreePatch exclui links", () => {
     const s = makeSandbox();
     try {

@@ -31,6 +31,6 @@ vscode
 
 All topics use lowercase letters and hyphens, with at most 50 characters each; 12 proposed topics. / Todos usam letras minúsculas e hífens, com até 50 caracteres cada; 12 tópicos propostos.
 
-The parallel workflow describes v0.4.0 in preparation; its Claude validation gate remains pending. **v0.3.1 remains the latest public release.** These proposals do not announce a completed gate or a v0.4.0 release.
+**v0.4.0 is the latest public release**, with the macOS release gate at 100/100 (quality) and 17/17 (real E2E).
 
-O fluxo paralelo descreve a v0.4.0 em preparação; seu gate de validação Claude continua pendente. **v0.3.1 continua sendo a última release pública.** As propostas não anunciam gate concluído nem publicação da v0.4.0.
+**v0.4.0 é a última release pública**, com o gate da release no macOS em 100/100 (qualidade) e 17/17 (E2E real).

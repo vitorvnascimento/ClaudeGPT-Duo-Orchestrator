@@ -17,7 +17,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
                                   effective model gpt-6-astra (from Codex's own session log)
 ```
 
-> **Status (November 5, 2026):** **v0.3.1 is the latest public release**; **v0.4.0 is in preparation, with the Claude validation gate still pending**. The integrated macOS offline suite passed **672/672**, with **0 failures**. Q9 scored **3/3** for this offline check only, not 100/100 for the full release gate. The user reported **646 passed, 0 failed, 12 skipped (658 total)** on Windows; real E2E has not run there, and Linux remains untested. Historical v0.3.1 evidence includes real E2E **16/16** and quality **100/100** ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)); it does not complete the v0.4.0 gate. The parallel workflow below describes the development tree, not a published v0.4.0 package.
+> **Status (November 7, 2026):** **v0.4.0 is the latest public release.** Its macOS release gate passed: real quality test **100/100**, real E2E battery **17/17** (including four real Codex executors at once) and offline suite **680/680**, with independent Claude and Codex adversarial reviews leaving no blocker ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). On Windows the offline suite passed (**646 passed, 0 failed, 12 skipped**) on an earlier v0.4.0 build; real E2E has not run there, and Linux remains untested.
 
 ## What the project is and is not
 
@@ -387,11 +387,11 @@ Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in 
 | Item | Status |
 | --- | --- |
 | Public release | **v0.3.1**, latest published package; download links above point to it |
-| v0.4.0 | **In preparation, not published**; Claude validation gate pending because quota is unavailable |
+| v0.4.0 | **Published (2026-11-07)**; macOS gate: quality 100/100, real E2E 17/17 |
 | Integrated macOS offline suite | **672/672 passed, 0 failed** on November 5, 2026; Q9 **3/3** confirms only this offline check |
 | Historical real `duo doctor` | Claude 2.1.114 and Codex 0.157.1 authenticated by subscription, with all required flags present; not a current compatibility check |
 | Historical v0.3.1 real E2E suite ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** in a complete run from scratch with Opus 5.5 (previously 13/13 and 11/11): read-only review in both directions, impossible acceptance, out-of-scope temptation, timeout + resume (Codex and Claude), cancellation, worktree + apply, blocked recursion, evidence-based routing in both directions, **real art with GPT-6-Astra** and **tasks with different models per part** (Opus 5.5 for code + GPT-6-Astra for art), with Claude or Codex as brain; not validation of v0.4.0 |
-| Historical native brain using the skill | **Validated in headless mode**: `claude -p "/duo-delegate …"` → Codex and `codex exec "$duo-delegate …"` → Claude, both `succeeded`; the v0.4.0 Claude gate remains pending |
+| Historical native brain using the skill | **Validated in headless mode**: `claude -p "/duo-delegate …"` → Codex and `codex exec "$duo-delegate …"` → Claude, both `succeeded`; also covered by the v0.4.0 gate (T10, T11, Q7) |
 | Historical v0.3.1 real-executor quota/scope-violation scenarios | **Not exercised in that validation**: real executors respected scope and quota did not run out; both cases had offline coverage |
 | VS Code extensions (interactive panel) | **Not exercised**: brains ran through CLIs in headless mode; skills and commands are the same, but interactive approvals were not tested |
 | Windows | User-reported offline run: **646 passed, 0 failed, 12 skipped (658 total)**; real E2E not run there |
@@ -458,7 +458,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (5 de novembro de 2026):** **v0.3.1 é a última release pública**; **v0.4.0 está em preparação, com o gate de validação do Claude ainda pendente**. A suíte offline integrada no macOS passou **672/672**, com **0 falhas**. O Q9 marcou **3/3** apenas por essa verificação offline, não 100/100 pelo gate completo da release. O usuário relatou **646 pass, 0 fail, 12 skip (658 no total)** no Windows; a bateria E2E real não rodou lá, e o Linux segue sem teste. A evidência histórica da v0.3.1 inclui E2E real **16/16** e qualidade **100/100** ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)); ela não conclui o gate da v0.4.0. O fluxo paralelo abaixo descreve a árvore de desenvolvimento, não um pacote v0.4.0 publicado.
+> **Estado (7 de novembro de 2026):** **v0.4.0 é a última release pública.** O gate da release no macOS passou: teste de qualidade real **100/100**, bateria E2E real **17/17** (incluindo quatro executores Codex reais ao mesmo tempo) e suíte offline **680/680**, com as revisões adversariais independentes do Claude e do Codex sem bloqueio ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). No Windows a suíte offline passou (**646 pass, 0 fail, 12 skip**) num build anterior da v0.4.0; a bateria E2E real não rodou lá, e o Linux segue sem teste.
 
 
 ## O que o projeto é e o que não é
@@ -831,11 +831,11 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 | Item | Situação |
 | --- | --- |
 | Release pública | **v0.3.1**, último pacote publicado; os links de download acima apontam para ele |
-| v0.4.0 | **Em preparação, não publicada**; gate de validação do Claude pendente por indisponibilidade de cota |
+| v0.4.0 | **Publicada (07/11/2026)**; gate no macOS: qualidade 100/100, E2E real 17/17 |
 | Suíte offline integrada no macOS | **672/672 passaram, 0 falhas**, em 5 de novembro de 2026; Q9 **3/3** confirma apenas essa verificação offline |
 | `duo doctor` real histórico | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes; não é uma checagem atual de compatibilidade |
 | Bateria E2E real histórica da v0.3.1 ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro; não é validação da v0.4.0 |
-| Cérebro nativo usando a skill, histórico | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded`; o gate Claude da v0.4.0 continua pendente |
+| Cérebro nativo usando a skill, histórico | **Validado em modo headless**: `claude -p "/duo-delegate …"` → Codex e `codex exec "$duo-delegate …"` → Claude, ambos `succeeded`; também coberto pelo gate da v0.4.0 (T10, T11, Q7) |
 | Cenários históricos da v0.3.1 de cota esgotada/violação de escopo com executor real | **Não exercitados naquela validação**: os executores reais respeitaram o escopo e não houve cota esgotada; os dois casos tinham cobertura offline |
 | Extensões do VS Code (painel interativo) | **Não exercitado**: os cérebros rodaram pelas CLIs em modo headless; as skills e os comandos são os mesmos, mas as aprovações interativas não foram testadas |
 | Windows | Rodada offline relatada pelo usuário: **646 pass, 0 fail, 12 skip (658 no total)**; E2E real não executado lá |

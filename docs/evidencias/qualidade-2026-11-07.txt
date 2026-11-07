@@ -1,0 +1,110 @@
+▶ Q1… ✔ 10/10 (20s) — GPT-6-Astra implementa código com teste (Claude cérebro → Codex executor)
+   ok  ponte: succeeded
+   ok  aceite npm test executado pela ponte e aprovado
+   ok  só src/preco.js alterado
+   ok  independente: npm test passa no repositório
+   ok  rollout do Codex existe e é desta sessão (mesmo ID e diretório)
+   ok  rollout: modelo gpt-6-astra, provedor openai, originador codex_exec
+   ok  rollout: IDs de resposta emitidos pelo servidor da OpenAI (resp_…)
+   ok  ponte registrou o mesmo modelo via rollout
+   ok  executor rodou com hooks/plugins do usuário desligados
+▶ Q2… ✔ 10/10 (41s) — GPT-6-Astra cria arte com a ferramenta de imagem do Codex
+   ok  ponte: succeeded com imagem verificada
+   ok  independente: assets/foguete.png é PNG real
+   ok  rollout: modelo gpt-6-astra via openai
+   ok  rollout: chamada à ferramenta image_gen__imagegen
+   ok  independente: SHA-256 do asset = imagem gerada pelo Codex nesta sessão
+   ok  ponte: generatedByExecutorTool=true
+▶ Q3… ✔ 6/6 (19s) — Troca de modelo é real: pedido gpt-6-sol ⇒ Codex executa gpt-6-sol
+   ok  ponte: succeeded
+   ok  rollout: modelo gpt-6-sol
+   ok  args da invocação continham --model gpt-6-sol
+   ok  sessão diferente da Q1 com modelo diferente (não é placebo)
+▶ Q4… ✔ 6/6 (16s) — Revisão cruzada somente leitura pelo GPT (acha bug plantado)
+   ok  ponte: succeeded
+   ok  nenhum arquivo alterado (ponte e git)
+   ok  rollout: sandbox read-only imposto
+   ok  rollout: modelo gpt-6-astra via openai
+   ok  achou o bug (percentual não dividido por 100)
+▶ Q5… ✔ 8/8 (14s) — Sentido inverso: Codex cérebro → Claude Opus 5.5 executor
+   ok  ponte: succeeded com aceite aprovado
+   ok  modelo efetivo claude-opus-5-5 informado nativamente pelo Claude
+   ok  IDs de mensagem emitidos pela Anthropic (msg_…) no stream
+   ok  independente: npm test passa
+▶ Q6… ✔ 8/8 (18s) — Segurança: aceite impossível nunca vira sucesso; plugins do usuário isolados
+   ok  ponte: não succeeded
+   ok  teste não foi alterado
+   ok  executor com --disable hooks --disable plugins
+   ok  nenhum arquivo de plugin (.claude-flow, proven-config) em nenhum repositório do teste
+▶ Q7… ✔ 8/8 (166s) — Fluxo completo pela skill: Claude cérebro faz o código e delega a arte ao GPT
+   ok  sessão do cérebro (Opus 5.5) terminou sem erro
+   ok  arte delegada ao Codex e verificada pela ponte
+   ok  rollout da arte: gpt-6-astra via openai + ferramenta de imagem
+   ok  SHA-256 de assets/hero.png = imagem gerada pelo Codex
+   ok  código: node check.mjs passa
+   ok  resposta do cérebro cita Opus e Astra
+▶ Q8… ✔ 8/8 (0s) — Bateria E2E real completa (T1–T15 + A1 + P1)
+   ok  todos os 17 cenários aprovados, inclusive o paralelismo P1
+▶ Q9… ✔ 3/3 (228s) — Suíte offline completa
+   ok  npm test: todos passam, nenhuma falha
+▶ Q10… ✔ 3/3 (0s) — Higiene: sem processos órfãos, sem segredos, sem dados de conta
+   ok  nenhum executor sobrevivente
+   ok  nenhum token/segredo nos artefatos .duo
+   ok  catálogos sem e-mail/dados de conta
+▶ Q11… ✔ 6/6 (18s) — Escolha adaptativa leve: catálogo light, esforço low e execução comprovada
+   ok  catálogo atual: modelo escolhido é light (gpt-6-luna esperado)
+   ok  task.selection: escolha automática light/low
+   ok  ponte: succeeded e npm test executado/aprovado
+   ok  só src/preco.js alterado; testes intactos
+   ok  independente: npm test falhava antes e passa após a implementação
+   ok  rollout independente desta sessão/diretório: modelo selecionado e effort low
+   ok  rollout: IDs de resposta do servidor
+   ok  ponte confirma o mesmo modelo via rollout
+▶ Q12… ✔ 6/6 (22s) — Piso deep por risco/escopo: executa com esforço alto e bloqueia Luna antes de executar
+   ok  catálogo atual: modelo deep (gpt-6-astra esperado) anuncia high
+   ok  task.selection: modelo automático deep, esforço explícito >= high
+   ok  ponte: succeeded e npm test executado/aprovado
+   ok  só src/auth/token.js alterado; testes intactos
+   ok  independente: npm test falhava antes e passa após a implementação
+   ok  rollout independente desta sessão/diretório: modelo deep e esforço >= high anunciado
+   ok  rollout: IDs de resposta do servidor
+   ok  ponte confirma o mesmo modelo via rollout
+   ok  Luna: blocked por piso deep (não por login/cota)
+   ok  Luna: zero invocações, sem sessão nativa nem plano de execução
+   ok  independente: nenhum rollout novo
+   ok  independente: nenhum arquivo do projeto ou HEAD alterado
+▶ Q13… ✔ 5/5 (4s) — Descoberta atual, versões reais das CLIs e recomendações sem uso extra
+   ok  models --refresh --json concluiu
+   ok  descoberta atual: claude-sonnet-5-5 é standard
+   ok  descoberta atual: gpt-6.1-sol é standard
+   ok  descoberta atual: gpt-6-astra é deep
+   ok  descoberta atual: claude-opus-5-5 é deep
+   ok  independente: cliVersions.claude corresponde a claude --version
+   ok  recommend (claude, low): nenhum escolhido usa cota extra
+   ok  recommend (claude, medium): nenhum escolhido usa cota extra
+   ok  recommend (claude, high): nenhum escolhido usa cota extra
+   ok  independente: cliVersions.codex corresponde a codex --version
+   ok  recommend (codex, low): nenhum escolhido usa cota extra
+   ok  recommend (codex, medium): nenhum escolhido usa cota extra
+   ok  recommend (codex, high): nenhum escolhido usa cota extra
+▶ Q14… ✔ 5/5 (3s) — Cota nativa, privacidade, exclusão do Codex esgotado e limpeza
+   ok  quota refresh grava observação nativa codex-rate-limits
+   ok  independente (após refresh): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail
+   ok  cota manual Codex 100% persistida até amanhã
+   ok  recommend não recomenda Codex; todos os candidatos Codex indisponíveis
+   ok  seleção escolhe Claude de nível >= standard
+   ok  independente (após recommend): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail
+   ok  limpeza: Codex volta a 0% e status ok
+   ok  independente (após limpeza): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail
+▶ Q15… ✔ 8/8 (31s) — Paralelismo: 4 executores Codex reais ao mesmo tempo, patches verificados e aplicados, 5º recusado
+   ok  ponte: run compartilhado criado
+   ok  ponte: as 4 tarefas succeeded, cada uma em worktree
+   ok  ponte: 5º pedido recusado pelo limite com as 4 vagas ocupadas, sem executor
+   ok  independente: 4 rollouts do Codex desta execução (openai, codex_exec, cwd = worktree da tarefa)
+   ok  independente: ≥ 2 sessões do Codex se sobrepõem no tempo (rollouts)
+   ok  ponte: cada patch traz só o arquivo da própria tarefa
+   ok  ponte: os 4 applies em sequência ok
+   ok  independente: git mostra só os 4 arquivos + a nota do cérebro, e os testes passam
+   ok  independente: nenhuma vaga nem espelho lock.json sobrando
+
+NOTA: 100/100 — detalhes e provas em <base>/q/quality-2026-11-07T22-39-29-957Z.json

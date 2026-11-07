@@ -2,7 +2,7 @@
 
 **English** · [Português](#português)
 
-## 0.4.0 — 2026-11-05
+## 0.4.0 — 2026-11-07
 
 ### English
 
@@ -15,7 +15,10 @@
 - `duo apply` serializes integration and checks drift only in touched files; other in-scope changes warn. Integrate one patch at a time in the brain's order; rerun rejected tasks on the current base.
 - Guarded quota/capacity updates and active slots in text/JSON status. Parallel requests share an existing `runId`; the default budget is eight delegations per run, including retries.
 
-- Review fixes: exclusive reclaim markers, complete lock/slot publication, stale unreadable records after 10 seconds, exclusive legacy mirror creation and 5-second refresh (a residual compatibility window remains). All quota/capacity updates are guarded, including `saveQuota`; inherited denied dependency links no longer break older configs.
+- Review fixes: complete lock/slot publication, stale unreadable records after 10 seconds, exclusive legacy mirror creation and 5-second refresh (a residual compatibility window with older duo versions remains). All quota/capacity updates are guarded, including `saveQuota`; inherited denied dependency links no longer break older configs.
+- Dead-lock recovery uses a chain of permanent reclaim markers per dead generation: a new level is created only when the previous owner died, so at most one live recoverer can check and remove a dead guard. Read errors never make a guard look abandoned; a failed recovery is retried until the deadline.
+- Snapshot: tracked or staged symlinks are checked in the private worktree right after `git apply`, before untracked files are copied. A link that leaves the project, points to a directory or to a denied path refuses the whole snapshot. Untracked files are copied with `COPYFILE_EXCL`.
+- Release gate (2026-11-07, commit `4c3274d`): real quality test **100/100** and real E2E battery **17/17**, including P1/Q15 with four real Codex executors at once; independent Claude and Codex adversarial reviews found no remaining blocker.
 
 ### Português
 
@@ -28,7 +31,10 @@
 - `duo apply` serializa a integração e confere deriva apenas nos arquivos tocados; mudanças nos demais arquivos do escopo geram aviso. Integre um patch por vez na ordem do cérebro; execute novamente tarefas rejeitadas sobre a base atual.
 - Atualizações protegidas de cota/capacidade e slots ativos no status textual/JSON. Pedidos paralelos usam o mesmo `runId` existente; o orçamento padrão é de oito delegações por run, incluindo retentativas.
 
-- Correções da revisão: marcadores exclusivos de recuperação, publicação completa de locks/slots, registros ilegíveis velhos após 10 segundos, criação exclusiva do espelho legado e renovação a cada 5 segundos (permanece uma janela residual de compatibilidade). Toda atualização de cota/capacidade usa guard, inclusive `saveQuota`; links herdados negados não quebram mais configs antigas.
+- Correções da revisão: publicação completa de locks/slots, registros ilegíveis velhos após 10 segundos, criação exclusiva do espelho legado e renovação a cada 5 segundos (permanece uma janela residual de compatibilidade com versões antigas do duo). Toda atualização de cota/capacidade usa guard, inclusive `saveQuota`; links herdados negados não quebram mais configs antigas.
+- A recuperação de lock morto usa uma cadeia de marcadores permanentes por geração morta: um nível novo só nasce quando o dono do anterior morreu, então no máximo um recuperador vivo confere e apaga o guard morto. Erro de leitura nunca faz um guard parecer abandonado; recuperação que falha é tentada de novo até o prazo.
+- Snapshot: links simbólicos rastreados ou staged são conferidos na worktree privada logo após o `git apply`, antes de copiar os não rastreados. Link que sai do projeto, aponta para diretório ou para caminho negado recusa o snapshot inteiro. Não rastreados são copiados com `COPYFILE_EXCL`.
+- Gate da release (07/11/2026, commit `4c3274d`): teste de qualidade real **100/100** e bateria E2E real **17/17**, incluindo P1/Q15 com quatro executores Codex reais ao mesmo tempo; as revisões adversariais independentes do Claude e do Codex não deixaram bloqueio.
 
 ## 0.3.1 — 2026-10-30
 

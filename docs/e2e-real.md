@@ -76,6 +76,10 @@ There are 10 criteria totaling 100 points. A criterion scores only if **all** of
 | Q9 | 5 | Offline suite | all tests pass |
 | Q10 | 5 | Hygiene | no orphan processes, no tokens in artifacts, no account data in the catalog |
 
+### Result (07/11/2026, v0.4.0)
+
+**100/100** in one complete run (Q1–Q15, including Q15 with four real Codex executors at once), with the real E2E battery at **17/17** in the same round, on commit `4c3274d`. Files: `qualidade-2026-11-07.json`, `qualidade-2026-11-07.txt` and `bateria-e2e-2026-11-07.json` in [docs/evidencias/](evidencias/) (local paths replaced by placeholders). Two earlier rounds that day were not counted: the Codex quota ran out midway, and the battery's Claude brain was not allowed to call `duo` when it was on PATH (test fixed).
+
 ### Result (26/09/2026)
 
 **100/100** in one complete run, with the real E2E suite at 16/16 in the same round. Files are in [docs/evidencias/](evidencias/): report with each check and proof (`qualidade-2026-09-26.json`), log (`qualidade-2026-09-26.txt`), suite result, and the Q2 image.
@@ -161,6 +165,10 @@ São 10 critérios que somam 100 pontos. Um critério só pontua se **todas** as
 | Q8 | 10 | Bateria E2E completa | 16/16 |
 | Q9 | 5 | Suíte offline | todos os testes passam |
 | Q10 | 5 | Higiene | sem processos órfãos, sem tokens nos artefatos, sem dados de conta no catálogo |
+
+### Resultado (07/11/2026, v0.4.0)
+
+**100/100** numa execução completa e única (Q1–Q15, incluindo a Q15 com quatro executores Codex reais ao mesmo tempo), com a bateria E2E real **17/17** na mesma rodada, no commit `4c3274d`. Arquivos: `qualidade-2026-11-07.json`, `qualidade-2026-11-07.txt` e `bateria-e2e-2026-11-07.json` em [docs/evidencias/](evidencias/) (caminhos locais trocados por marcadores). Duas rodadas anteriores no mesmo dia não contaram: a cota do Codex acabou no meio, e o cérebro Claude da bateria não podia chamar `duo` quando ele estava no PATH (teste corrigido).
 
 ### Resultado (26/09/2026)
 

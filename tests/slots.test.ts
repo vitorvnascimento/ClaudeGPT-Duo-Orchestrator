@@ -148,7 +148,7 @@ it("lock vazio com mais de 10 s é recuperado por marcador de inode", (t) => {
   t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
     if (String(args[0]) === path && !recovered) {
       recovered = true;
-      assert.ok(existsSync(`${path}.reclaim-ino-${inode}`));
+      assert.ok(readdirSync(p).some((n) => n.startsWith(`guard.lock.reclaim-ino-${inode}-`)));
     }
     return remove(...args);
   });
@@ -283,6 +283,21 @@ it("com um recuperador vivo na geração, nenhum outro confere nem apaga o guard
   assert.equal(readJson<{ nonce: string }>(lock)?.nonce, "morto");
   assert.equal(existsSync(`${lock}.reclaim-morto.2`), false);
   assert.ok(existsSync(`${lock}.reclaim-morto`) && existsSync(`${lock}.reclaim-morto.1`), "marcadores nunca são apagados");
+});
+it("tentativa de recuperação que falhou no próprio processo não trava o lock", (t) => {
+  const p = root(), path = join(p, "guard.lock");
+  writeJsonAtomic(path, { pid: deadPid(), nonce: "morto" });
+  const remove = fs.rmSync;
+  let failed = false;
+  t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
+    if (String(args[0]) === path && !failed) { failed = true; throw Object.assign(new Error("EPERM simulado"), { code: "EPERM" }); }
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(withFileLock(path, 500, () => "entrou"), "entrou", "a falha transitória é tentada de novo no mesmo pedido");
+    assert.equal(failed, true);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 it("renovação do espelho nunca sobrescreve lock.json legado vivo que apareceu depois", () => {
   const p = root(), path = join(p, ".duo/lock.json");

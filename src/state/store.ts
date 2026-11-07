@@ -1,6 +1,6 @@
 // Estado local: Chain/Run versionados por CAS; auditorias em JSON/JSONL.
 import { randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { duoDir } from "../paths.js";
 import { isPidAlive } from "../adapters/process.js";
@@ -82,15 +82,23 @@ export function writeJsonExclusive(path: string, value: unknown): void {
 }
 
 function staleLock(path: string): string | null {
+  // Stat e leitura pelo mesmo fd: o guard observado é um só (sem chave `ino-` de um guard válido que sumiu no meio).
+  let fd: number;
+  try { fd = openSync(path, "r"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   try {
-    const stat = statSync(path);
-    const holder = readJson<{ pid: number; nonce: string }>(path);
-    if (holder && Number.isInteger(holder.pid) && holder.pid > 0 && typeof holder.nonce === "string" && /^[a-zA-Z0-9-]+$/.test(holder.nonce)) {
-      return isPidAlive(holder.pid) ? null : holder.nonce;
+    const stat = fstatSync(fd);
+    let holder: { pid?: unknown; nonce?: unknown } | null = null;
+    try { holder = JSON.parse(readFileSync(fd, "utf8")); } catch { holder = null; }
+    if (holder && Number.isInteger(holder.pid) && (holder.pid as number) > 0 && typeof holder.nonce === "string" && /^[a-zA-Z0-9-]+$/.test(holder.nonce)) {
+      return isPidAlive(holder.pid as number) ? null : holder.nonce;
     }
-    return Date.now() - stat.mtimeMs > 10_000 ? `ino-${stat.ino}` : null;
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    return Date.now() - stat.mtimeMs > 10_000 ? `ino-${stat.ino}-${Math.trunc(stat.mtimeMs)}` : null;
+  } finally { closeSync(fd); }
 }
+
+/** Marcadores deste processo cuja recuperação falhou (só esses podem ser pulados; uma em andamento nunca). */
+const failedMarkers = new Set<string>();
 
 /**
  * Recupera o guard morto da geração `stale` (nonce do dono morto, ou `ino-N` de guard ilegível velho).
@@ -102,15 +110,20 @@ function staleLock(path: string): string | null {
 export function reclaimStale(path: string, stale: string): void {
   for (let level = 0; level < 32; level++) {
     const marker = level ? `${path}.reclaim-${stale}.${level}` : `${path}.reclaim-${stale}`;
-    try { writeJsonExclusive(marker, { pid: process.pid, nonce: randomBytes(16).toString("hex") }); }
+    const nonce = randomBytes(16).toString("hex");
+    try { writeJsonExclusive(marker, { pid: process.pid, nonce }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = readJson<{ pid: number }>(marker);
+      const owner = readJson<{ pid: number; nonce?: string }>(marker);
+      // Marcador de uma tentativa anterior deste processo que falhou (ex.: EPERM no Windows): esta chamada é síncrona
+      // e não está dentro dela, então segue de nível como se o dono tivesse morrido, em vez de travar o lock.
+      if (owner?.pid === process.pid && typeof owner.nonce === "string" && failedMarkers.has(owner.nonce)) continue;
       // Dono vivo (mesmo pausado) ou marcador ilegível: espera; só um dono morto abre o próximo nível.
       if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || isPidAlive(owner.pid)) return;
       continue;
     }
-    if (staleLock(path) === stale) removeWithRetry(path);
+    try { if (staleLock(path) === stale) removeWithRetry(path); }
+    catch (error) { failedMarkers.add(nonce); throw error; }
     return;
   }
 }
@@ -120,13 +133,15 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
   mkdirSync(dirname(path), { recursive: true });
   const deadline = Date.now() + timeoutMs;
   const nonce = randomBytes(16).toString("hex");
+  let reclaimError: Error | null = null;
   for (;;) {
     try { writeJsonExclusive(path, { pid: process.pid, nonce }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const stale = staleLock(path);
-      if (stale) reclaimStale(path, stale);
-      if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}`);
+      // Falha transitória ao recuperar (ex.: EPERM no Windows) tenta de novo no próximo ciclo, até o prazo.
+      try { const stale = staleLock(path); if (stale) reclaimStale(path, stale); }
+      catch (error) { reclaimError = error as Error; }
+      if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}${reclaimError ? ` (última falha ao recuperar: ${reclaimError.message})` : ""}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       continue;
     }

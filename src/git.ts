@@ -2,7 +2,7 @@
 // ou qualquer comando que descarte alterações do usuário.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, sep, resolve } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
@@ -262,7 +262,7 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
         }
         const inWt = relative(realpathSync(wt), resolve(dirname(dest), raw));
         if (inWt.startsWith("..") || isAbsolute(inWt)) { rmSync(dest, { force: true }); continue; }
-      } else copyFileSync(src, dest);
+      } else copyFileSync(src, dest, fsConstants.COPYFILE_EXCL); // nunca escreve através de um link já presente
     }
     const lateBad = deferredLinks.filter((rel) => unsafeLink(wt, rel, allowed));
     if (lateBad.length) return refuseLinks(lateBad);

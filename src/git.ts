@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, sep, resolve } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
 
@@ -160,6 +160,25 @@ export function worktreeAdd(root: string, path: string, commit: string) {
 }
 
 /** Inclui o estado não commitado sem tocar no índice do projeto e sem levar caminhos privados. */
+/**
+ * Link só é seguro se for relativo, apontar para um arquivo (não diretório) dentro do projeto e não negado,
+ * e continuar dentro da cópia; senão vira porta para fora dela (ou de volta ao projeto).
+ */
+function unsafeLink(root: string, rel: string, allowed: (rel: string) => boolean): boolean {
+  const src = join(root, rel);
+  const raw = readlinkSync(src);
+  if (isAbsolute(raw)) return true;
+  let target: string;
+  try {
+    const real = realpathSync(src);
+    if (statSync(real).isDirectory()) return true;
+    target = relative(realpathSync(root), real);
+  } catch { return true; }
+  if (target.startsWith("..") || isAbsolute(target) || !allowed(target.split(sep).join("/"))) return true;
+  const inCopy = normalize(join(dirname(rel), raw));
+  return inCopy.startsWith("..") || isAbsolute(inCopy);
+}
+
 export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[]; maxBytes: number }): { ok: true; snapshot: string | null; copiedBytes: number } | { ok: false; error: string } {
   const tracked = git(root, ["diff", "HEAD", "--name-only", "--no-renames", "-z"]);
   const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
@@ -195,6 +214,13 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       const emitted = listed.stdout.split("\0").filter(Boolean).map((entry) => entry.split("\t").slice(2).join("\t"));
       const forbidden = emitted.filter((rel) => !allowed(rel));
       if (forbidden.length) return { ok: false, error: `snapshot recusado: o diff traria caminhos negados ou de .duo/ (${forbidden.length})` };
+      // Link rastreado (ex.: `git add` de um link novo) passa pelas mesmas regras dos não rastreados; o --numstat
+      // só mostra o nome, então confere o link no projeto. Inseguro recusa o snapshot inteiro (nunca omite um caminho do diff).
+      const badLinks = emitted.filter((rel) => {
+        try { return lstatSync(join(root, rel)).isSymbolicLink() && unsafeLink(root, rel, allowed); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+      });
+      if (badLinks.length) return { ok: false, error: `snapshot recusado: link simbólico rastreado que sai do projeto, aponta para diretório ou para caminho negado (${badLinks.join(", ")})` };
       const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
       if (applied.status !== 0 || applied.error) return { ok: false, error: applied.error?.message ?? applied.stderr };
     }
@@ -204,17 +230,8 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));
       if (parent.startsWith("..") || isAbsolute(parent)) return { ok: false, error: `snapshot fora da worktree: ${rel}` };
       if (lstatSync(src).isSymbolicLink()) {
-        // Link só entra se for relativo, apontar para um arquivo (não diretório) dentro do projeto e não negado,
-        // e continuar dentro da cópia depois de criado; senão vira porta para fora dela (ou de volta ao projeto).
+        if (unsafeLink(root, rel, allowed)) continue;
         const raw = readlinkSync(src);
-        if (isAbsolute(raw)) continue;
-        let target: string;
-        try {
-          const real = realpathSync(src);
-          if (statSync(real).isDirectory()) continue;
-          target = relative(realpathSync(root), real);
-        } catch { continue; }
-        if (target.startsWith("..") || isAbsolute(target) || !allowed(target.split(sep).join("/"))) continue;
         // Windows sem modo desenvolvedor exige admin para symlink: bloqueia com diagnóstico, nunca omite o link
         // (a cópia ficaria diferente do projeto) nem copia o alvo no lugar.
         try { symlinkSync(raw, dest); }

@@ -398,6 +398,42 @@ describe("snapshot de worktree", () => {
       assert.equal(lexists(join(wt, "atalho-dir")), false, "link de diretório pode esconder caminho negado");
     } finally { s.cleanup(); }
   });
+  it("snapshot recusa link rastreado (staged) inseguro e aceita o seguro", { skip: !CAN_SYMLINK && "symlink indisponível (Windows sem admin/modo desenvolvedor)" }, () => {
+    const casos: Array<[string, (root: string, tmp: string) => void, boolean]> = [
+      ["para .env negado", (root) => symlinkSync(".env", join(root, "alias")), false],
+      ["absoluto", (root) => symlinkSync(join(root, "ok.txt"), join(root, "alias")), false],
+      ["para fora do projeto", (root, tmp) => { writeFileSync(join(tmp, "fora.txt"), "fora\n"); symlinkSync(join("..", "fora.txt"), join(root, "alias")); }, false],
+      ["para diretório", (root) => symlinkSync("src", join(root, "alias")), false],
+      ["relativo para arquivo permitido", (root) => symlinkSync("ok.txt", join(root, "alias")), true],
+    ];
+    for (const [nome, criar, aceito] of casos) {
+      const s = makeSandbox();
+      try {
+        s.write(".env", "TOKEN=x\n"); s.write("ok.txt", "ok\n"); s.write("src/app.ts", "x\n");
+        s.git("add", "ok.txt", "src/app.ts"); s.git("commit", "-qm", "base");
+        criar(s.root, s.tmp); s.git("add", "alias");
+        const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+        const snap = worktreeSnapshot(s.root, wt, { deny: [".env"], maxBytes: 1 << 20 });
+        assert.equal(snap.ok, aceito, `${nome}: ${JSON.stringify(snap)}`);
+        if (!aceito) {
+          assert.equal(lexists(join(wt, "alias")), false, `${nome}: o link não pode chegar à worktree`);
+          assert.ok(!snap.ok && !snap.error.includes(".env\""), `${nome}: a mensagem não revela o alvo`);
+        } else assert.equal(lexists(join(wt, "alias")), true, nome);
+      } finally { s.cleanup(); }
+    }
+  });
+  it("link já commitado e inalterado não é afetado pelo snapshot", { skip: !CAN_SYMLINK && "symlink indisponível (Windows sem admin/modo desenvolvedor)" }, () => {
+    const s = makeSandbox();
+    try {
+      s.write("ok.txt", "ok\n"); symlinkSync("ok.txt", join(s.root, "alias"));
+      s.git("add", "ok.txt", "alias"); s.git("commit", "-qm", "link commitado");
+      s.write("src/app.ts", "rascunho\n");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      assert.equal(lexists(join(wt, "alias")), true);
+    } finally { s.cleanup(); }
+  });
   it("arquivo negado que muda depois da enumeração nunca entra no snapshot", (t) => {
     const s = makeSandbox();
     try {

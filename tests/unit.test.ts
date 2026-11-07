@@ -298,7 +298,8 @@ describe("duo init: comando gravado nas skills", () => {
 describe("skills distribuídas", () => {
   it("frontmatter YAML das skills é válido: valor sem aspas não contém ': ' nem ' #'", () => {
     for (const brain of ["claude", "codex"]) {
-      const text = readFileSync(join(packageRoot(), "skills", brain, "duo-delegate", "SKILL.md"), "utf8");
+      // CRLF vem de checkouts Windows com core.autocrlf=true.
+      const text = readFileSync(join(packageRoot(), "skills", brain, "duo-delegate", "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
       const fm = (text.split("\n---")[0] ?? "").replace(/^---\n/, "");
       for (const line of fm.split("\n").filter(Boolean)) {
         const m = /^([A-Za-z-]+):\s(.*)$/.exec(line);

@@ -67,18 +67,18 @@ Recent npm versions may block automatic install scripts, including `prepare` in 
 
 **Option 2 — prebuilt release package (no compilation):**
 
-These downloads remain **v0.3.1**, the latest published version. There is no published v0.4.0 download yet.
+These downloads install **v0.4.0**, the latest published version.
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.4.0/duo-orchestrator-0.4.0.tgz
 duo --version
 ```
 
 Or download with the GitHub CLI and install the local file:
 
 ```bash
-gh release download v0.3.1 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.3.1.tgz
+gh release download v0.4.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.4.0.tgz
 ```
 
 Without `npm link` or a global installation, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` instead of `duo`. **Removal:** `npm uninstall -g duo-orchestrator` (or `npm unlink -g duo-orchestrator`).
@@ -88,7 +88,7 @@ Without `npm link` or a global installation, use `node /caminho/duo-orchestrator
 `duo` notifies you when a new version is released: at most once a day, in the background, it checks this repository's latest public GitHub release and, if a newer version exists, prints a terminal message (stderr, without interfering with `--json` output):
 
 ```text
-duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.1
+duo: nova versão 0.4.0 disponível (instalada: 0.3.1). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.4.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -386,7 +386,7 @@ Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in 
 
 | Item | Status |
 | --- | --- |
-| Public release | **v0.3.1**, latest published package; download links above point to it |
+| Public release | **v0.4.0**, latest published package; download links above point to it |
 | v0.4.0 | **Published (2026-11-07)**; macOS gate: quality 100/100, real E2E 17/17 |
 | Integrated macOS offline suite | **672/672 passed, 0 failed** on November 5, 2026; Q9 **3/3** confirms only this offline check |
 | Historical real `duo doctor` | Claude 2.1.114 and Codex 0.157.1 authenticated by subscription, with all required flags present; not a current compatibility check |
@@ -509,18 +509,18 @@ Versões recentes do npm podem bloquear scripts automáticos de instalação, in
 
 **Opção 2 — pacote pronto da release (sem compilar):**
 
-Estes downloads continuam na **v0.3.1**, a última versão publicada. Ainda não há download publicado da v0.4.0.
+Estes downloads instalam a **v0.4.0**, a última versão publicada.
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.3.1/duo-orchestrator-0.3.1.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.4.0/duo-orchestrator-0.4.0.tgz
 duo --version
 ```
 
 Ou baixe com o GitHub CLI e instale o arquivo local:
 
 ```bash
-gh release download v0.3.1 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.3.1.tgz
+gh release download v0.4.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.4.0.tgz
 ```
 
 Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
@@ -530,7 +530,7 @@ Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/
 O `duo` avisa quando sai uma versão nova: no máximo uma vez por dia, em segundo plano, ele consulta a última release pública deste repositório no GitHub e, se houver versão mais nova, mostra no terminal (stderr, sem atrapalhar saídas `--json`):
 
 ```text
-duo: nova versão 0.3.1 disponível (instalada: 0.3.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.3.1
+duo: nova versão 0.4.0 disponível (instalada: 0.3.1). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.4.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -830,7 +830,7 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 
 | Item | Situação |
 | --- | --- |
-| Release pública | **v0.3.1**, último pacote publicado; os links de download acima apontam para ele |
+| Release pública | **v0.4.0**, último pacote publicado; os links de download acima apontam para ele |
 | v0.4.0 | **Publicada (07/11/2026)**; gate no macOS: qualidade 100/100, E2E real 17/17 |
 | Suíte offline integrada no macOS | **672/672 passaram, 0 falhas**, em 5 de novembro de 2026; Q9 **3/3** confirma apenas essa verificação offline |
 | `duo doctor` real histórico | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes; não é uma checagem atual de compatibilidade |

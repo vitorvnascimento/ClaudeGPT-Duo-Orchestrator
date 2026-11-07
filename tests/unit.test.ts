@@ -422,6 +422,17 @@ describe("snapshot de worktree", () => {
       } finally { s.cleanup(); }
     }
   });
+  it("link staged para arquivo permitido ainda não rastreado é aceito", { skip: !CAN_SYMLINK && "symlink indisponível (Windows sem admin/modo desenvolvedor)" }, () => {
+    const s = makeSandbox();
+    try {
+      s.write("base.txt", "x\n"); s.git("add", "base.txt"); s.git("commit", "-qm", "base");
+      s.write("novo.txt", "novo\n"); symlinkSync("novo.txt", join(s.root, "alias")); s.git("add", "alias");
+      const wt = join(s.tmp, "wt"); assert.equal(worktreeAdd(s.root, wt, "HEAD").ok, true);
+      const snap = worktreeSnapshot(s.root, wt, { deny: [], maxBytes: 1 << 20 });
+      assert.equal(snap.ok, true, JSON.stringify(snap));
+      assert.equal(readFileSync(join(wt, "alias"), "utf8"), "novo\n");
+    } finally { s.cleanup(); }
+  });
   it("link já commitado e inalterado não é afetado pelo snapshot", { skip: !CAN_SYMLINK && "symlink indisponível (Windows sem admin/modo desenvolvedor)" }, () => {
     const s = makeSandbox();
     try {

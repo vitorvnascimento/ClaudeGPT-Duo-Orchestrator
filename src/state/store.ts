@@ -81,35 +81,6 @@ export function writeJsonExclusive(path: string, value: unknown): void {
   } finally { try { removeWithRetry(tmp); } catch { /* temporário órfão: ignorado pelos leitores */ } }
 }
 
-/**
- * Remove `path` só se ele ainda for o arquivo observado (mesmo inode e conteúdo aceito por `same`).
- * Tira o arquivo do lugar por rename atômico para um nome só seu e confere depois: se saiu outro (alguém
- * recriou no meio), devolve com link exclusivo. Assim um recuperador atrasado nunca apaga o arquivo novo de outro.
- * shortcut: entre o rename e a devolução um quarto processo pode criar o arquivo no lugar (a devolução então
- * desiste); fechar de vez exigiria flock, que o Node não tem.
- */
-export function removeIfSame(path: string, ino: number, same: (value: unknown) => boolean): boolean {
-  const grab = `${path}.reap-${process.pid}-${randomBytes(8).toString("hex")}`;
-  try { renameWithRetry(path, grab); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  let ok = false;
-  try { ok = statSync(grab).ino === ino && same(readJson<unknown>(grab)); } catch { ok = false; }
-  if (!ok) {
-    try { linkWithRetry(grab, path); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; // devolução falhou: mantém o grab, nunca apaga um dono vivo
-      /* recriado no meio: o novo vale */
-    }
-  }
-  removeWithRetry(grab);
-  return ok;
-}
-
-function inodeOf(path: string): number | null {
-  try { return statSync(path).ino; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-}
-
 function staleLock(path: string): string | null {
   try {
     const stat = statSync(path);
@@ -121,7 +92,30 @@ function staleLock(path: string): string | null {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 
-/** Guard curto entre processos; apenas um recuperador pode apagar cada geração morta. */
+/**
+ * Recupera o guard morto da geração `stale` (nonce do dono morto, ou `ino-N` de guard ilegível velho).
+ * Cada geração tem uma cadeia de marcadores que nunca são apagados: o nível n+1 só é criado quando o dono
+ * do nível n morreu. Assim há no máximo um recuperador vivo por geração, e só ele confere e apaga o guard;
+ * como o dono do guard morreu e nenhum outro recuperador vivo pode mexer nele, conferir e apagar não tem corrida.
+ * Um marcador sobra por guard recuperado (só após um crash); são pequenos e nenhum leitor os conta.
+ */
+export function reclaimStale(path: string, stale: string): void {
+  for (let level = 0; level < 32; level++) {
+    const marker = level ? `${path}.reclaim-${stale}.${level}` : `${path}.reclaim-${stale}`;
+    try { writeJsonExclusive(marker, { pid: process.pid, nonce: randomBytes(16).toString("hex") }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const owner = readJson<{ pid: number }>(marker);
+      // Dono vivo (mesmo pausado) ou marcador ilegível: espera; só um dono morto abre o próximo nível.
+      if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || isPidAlive(owner.pid)) return;
+      continue;
+    }
+    if (staleLock(path) === stale) removeWithRetry(path);
+    return;
+  }
+}
+
+/** Guard curto entre processos; apenas um recuperador vivo pode apagar cada geração morta. */
 export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T {
   mkdirSync(dirname(path), { recursive: true });
   const deadline = Date.now() + timeoutMs;
@@ -130,38 +124,8 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
     try { writeJsonExclusive(path, { pid: process.pid, nonce }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const guardIno = inodeOf(path);
-      const stale = guardIno === null ? null : staleLock(path);
-      if (stale && guardIno !== null) {
-        const marker = `${path}.reclaim-${stale}`;
-        const markerNonce = randomBytes(16).toString("hex");
-        const ownMarker = (v: unknown) => (v as { nonce?: string } | null)?.nonce === markerNonce;
-        let mine = false;
-        try { writeJsonExclusive(marker, { pid: process.pid, nonce: markerNonce }); mine = true; }
-        catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-          // Marcador sai só quando o recuperador dono dele morreu; um recuperador vivo (mesmo pausado) continua dono.
-          // Remove só o marcador morto observado: um marcador novo, recriado por outro no meio, é devolvido.
-          const markerIno = inodeOf(marker);
-          const owner = readJson<{ pid: number }>(marker);
-          if (markerIno !== null && owner && Number.isInteger(owner.pid) && !isPidAlive(owner.pid)) {
-            removeIfSame(marker, markerIno, (v) => (v as { pid?: number } | null)?.pid === owner.pid);
-          }
-        }
-        if (mine) {
-          const markerIno = inodeOf(marker);
-          try {
-            // Recuperador atrasado (outro já recuperou e alguém pegou o lock): nem tira o guard vivo do lugar.
-            // Remove só o guard morto observado (mesmo inode e mesma geração): nunca um guard vivo publicado depois.
-            if (inodeOf(path) === guardIno && staleLock(path) === stale) {
-              removeIfSame(path, guardIno, (v) => {
-                const holder = v as { pid?: number; nonce?: string } | null;
-                return stale.startsWith("ino-") ? true : holder?.nonce === stale && !isPidAlive(holder.pid ?? 0);
-              });
-            }
-          } finally { if (markerIno !== null) removeIfSame(marker, markerIno, ownMarker); }
-        }
-      }
+      const stale = staleLock(path);
+      if (stale) reclaimStale(path, stale);
       if (Date.now() >= deadline) throw new Error(`tempo esgotado aguardando lock: ${path}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       continue;

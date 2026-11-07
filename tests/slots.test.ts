@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { activeSlots, ExecutorSlots, type AdmitRequest } from "../src/state/slots.js";
-import { readJson, removeIfSame, renameWithRetry, withFileLock, writeJsonAtomic } from "../src/state/store.js";
+import { readJson, reclaimStale, renameWithRetry, withFileLock, writeJsonAtomic } from "../src/state/store.js";
 
 const roots: string[] = [];
 const owners: ExecutorSlots[] = [];
@@ -119,23 +119,23 @@ it("recuperadores concorrentes do guard morto não removem a nova admissão", as
 it("dois recuperadores do mesmo lock velho intercalados: só um entra na seção crítica", (t) => {
   const p = root(), path = join(p, "guard.lock");
   writeJsonAtomic(path, { pid: 2147483647, nonce: "velho" });
-  const grab = fs.renameSync;
+  const remove = fs.rmSync;
   let paused = false, entered = 0;
-  // A remoção do guard morto agora é um rename atômico conferido (removeIfSame): a pausa entra nele.
-  t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
+  // Pausa o recuperador dono do marcador logo antes de apagar o guard morto: o outro espera.
+  t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
     if (String(args[0]) === path && !paused) {
       paused = true;
       assert.ok(existsSync(`${path}.reclaim-velho`));
       assert.throws(() => withFileLock(path, 30, () => { entered++; }), /tempo esgotado/);
     }
-    return grab(...args);
+    return remove(...args);
   });
   syncBuiltinESMExports();
   try {
     withFileLock(path, 200, () => { entered++; });
     assert.equal(paused, true);
     assert.equal(entered, 1);
-    assert.deepEqual(readdirSync(p), []);
+    assert.deepEqual(readdirSync(p), ["guard.lock.reclaim-velho"], "só o marcador permanente da geração morta");
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
@@ -143,15 +143,14 @@ it("lock vazio com mais de 10 s é recuperado por marcador de inode", (t) => {
   const p = root(), path = join(p, "guard.lock");
   writeFileSync(path, "");
   const old = new Date(Date.now() - 11_000); utimesSync(path, old, old);
-  const inode = fs.statSync(path).ino, grab = fs.renameSync;
+  const inode = fs.statSync(path).ino, remove = fs.rmSync;
   let recovered = false;
-  // A remoção do guard morto agora é um rename atômico conferido (removeIfSame): a pausa entra nele.
-  t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
+  t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => {
     if (String(args[0]) === path && !recovered) {
       recovered = true;
       assert.ok(existsSync(`${path}.reclaim-ino-${inode}`));
     }
-    return grab(...args);
+    return remove(...args);
   });
   syncBuiltinESMExports();
   try {
@@ -266,29 +265,24 @@ it("marcador de recuperador morto é removido e o guard é recuperado", () => {
   writeJsonAtomic(`${lock}.reclaim-morto`, { pid: deadPid() });
   assert.equal(withFileLock(lock, 2000, () => "entrou"), "entrou");
 });
-it("recuperador atrasado não apaga o marcador ou guard novo recriado no mesmo caminho", () => {
-  const p = root(), path = join(p, "guard.lock.reclaim-morto");
-  writeJsonAtomic(path, { pid: deadPid() });
-  const observado = fs.statSync(path).ino, morto = readJson<{ pid: number }>(path)?.pid;
-  // Outro recuperador removeu o marcador morto e criou o dele no mesmo caminho antes do atrasado agir.
-  rmSync(path); writeJsonAtomic(path, { pid: process.pid, nonce: "novo" });
-  assert.equal(removeIfSame(path, observado, (v) => (v as { pid?: number } | null)?.pid === morto), false);
-  assert.equal(readJson<{ nonce: string }>(path)?.nonce, "novo", "o marcador novo continua no lugar");
-  assert.deepEqual(readdirSync(p).filter((n) => n.includes(".reap-")), [], "não sobra cópia temporária");
+it("recuperador atrasado não apaga o guard vivo publicado depois da recuperação", () => {
+  const p = root(), lock = join(p, "guard.lock");
+  // Outro recuperador já recuperou a geração "morto" e saiu; um processo vivo publicou o guard novo.
+  writeJsonAtomic(`${lock}.reclaim-morto`, { pid: deadPid() });
+  writeJsonAtomic(lock, { pid: process.pid, nonce: "vivo" });
+  reclaimStale(lock, "morto");
+  assert.equal(readJson<{ nonce: string }>(lock)?.nonce, "vivo");
+  assert.ok(existsSync(`${lock}.reclaim-morto.1`), "abre o próximo nível só porque o dono anterior morreu");
 });
-it("removeIfSame remove o arquivo observado quando ele não mudou", () => {
-  const p = root(), path = join(p, "guard.lock");
-  writeJsonAtomic(path, { pid: deadPid(), nonce: "morto" });
-  assert.equal(removeIfSame(path, fs.statSync(path).ino, (v) => (v as { nonce?: string } | null)?.nonce === "morto"), true);
-  assert.equal(existsSync(path), false);
-});
-it("guard recuperado por outro e republicado vivo não é apagado pelo recuperador atrasado", () => {
+it("com um recuperador vivo na geração, nenhum outro confere nem apaga o guard (sem marcador removível)", () => {
   const p = root(), lock = join(p, "guard.lock");
   writeJsonAtomic(lock, { pid: deadPid(), nonce: "morto" });
-  const observado = fs.statSync(lock).ino;
-  rmSync(lock); writeJsonAtomic(lock, { pid: process.pid, nonce: "vivo" });
-  assert.equal(removeIfSame(lock, observado, (v) => (v as { nonce?: string } | null)?.nonce === "morto"), false);
-  assert.equal(readJson<{ nonce: string }>(lock)?.nonce, "vivo");
+  writeJsonAtomic(`${lock}.reclaim-morto`, { pid: deadPid() });
+  writeJsonAtomic(`${lock}.reclaim-morto.1`, { pid: process.pid });
+  reclaimStale(lock, "morto");
+  assert.equal(readJson<{ nonce: string }>(lock)?.nonce, "morto");
+  assert.equal(existsSync(`${lock}.reclaim-morto.2`), false);
+  assert.ok(existsSync(`${lock}.reclaim-morto`) && existsSync(`${lock}.reclaim-morto.1`), "marcadores nunca são apagados");
 });
 it("renovação do espelho nunca sobrescreve lock.json legado vivo que apareceu depois", () => {
   const p = root(), path = join(p, ".duo/lock.json");

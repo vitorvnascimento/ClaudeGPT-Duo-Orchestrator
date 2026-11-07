@@ -198,6 +198,16 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
     // Diff só da lista permitida já enumerada: um arquivo negado que mude depois da enumeração nunca entra.
     const allowedTracked = trackedFiles.filter(allowed);
     let patch = "";
+    const deferredLinks: string[] = [];
+    const refuseLinks = (bad: string[]) => {
+      // a worktree recusada nunca guarda a porta; só apaga com o pai real dentro da worktree
+      const wtReal = realpathSync(wt);
+      for (const rel of bad) {
+        try { const r = relative(wtReal, realpathSync(dirname(join(wt, rel)))); if (!r.startsWith("..") && !isAbsolute(r)) rmSync(join(wt, rel), { force: true }); }
+        catch { /* sem pai: nada a apagar */ }
+      }
+      return { ok: false as const, error: `snapshot recusado: link simbólico rastreado que sai do projeto, aponta para diretório ou para caminho negado (${bad.join(", ")})` };
+    };
     for (let i = 0; i < allowedTracked.length; i += 200) {
       const batch = allowedTracked.slice(i, i + 200).map((rel) => `:(literal)${rel}`);
       const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ...batch, ...excludes], {
@@ -222,15 +232,18 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       // Inseguro recusa o snapshot inteiro (nunca omite um caminho do diff).
       const wtReal = realpathSync(wt);
       const insideWt = (rel: string) => { const r = relative(wtReal, realpathSync(dirname(join(wt, rel)))); return !r.startsWith("..") && !isAbsolute(r); };
+      // Link cujo alvo é um não rastreado ainda não copiado: confere de novo depois da cópia.
+      const newSet = new Set(newFiles);
+      const pendingTarget = (rel: string) => { const raw = readlinkSync(join(wt, rel)); return !isAbsolute(raw) && newSet.has(normalize(join(dirname(rel), raw)).split(sep).join("/")); };
       const badLinks = emitted.filter((rel) => {
-        try { return !insideWt(rel) || (lstatSync(join(wt, rel)).isSymbolicLink() && unsafeLink(wt, rel, allowed)); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+        try {
+          if (!insideWt(rel)) return true;
+          if (!lstatSync(join(wt, rel)).isSymbolicLink() || !unsafeLink(wt, rel, allowed)) return false;
+          if (pendingTarget(rel)) { deferredLinks.push(rel); return false; }
+          return true;
+        } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
       });
-      if (badLinks.length) {
-        // a worktree recusada nunca guarda a porta; só apaga com o pai real dentro da worktree
-        for (const rel of badLinks) { try { if (insideWt(rel)) rmSync(join(wt, rel), { force: true }); } catch { /* sem pai: nada a apagar */ } }
-        return { ok: false, error: `snapshot recusado: link simbólico rastreado que sai do projeto, aponta para diretório ou para caminho negado (${badLinks.join(", ")})` };
-      }
+      if (badLinks.length) return refuseLinks(badLinks);
     }
     for (const rel of newFiles) {
       const src = join(root, rel), dest = join(wt, rel);
@@ -251,6 +264,8 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
         if (inWt.startsWith("..") || isAbsolute(inWt)) { rmSync(dest, { force: true }); continue; }
       } else copyFileSync(src, dest);
     }
+    const lateBad = deferredLinks.filter((rel) => unsafeLink(wt, rel, allowed));
+    if (lateBad.length) return refuseLinks(lateBad);
     const add = git(wt, ["add", "-A", "--", ".", ...excludes]);
     if (!add.ok) return { ok: false, error: add.stderr };
     const changed = git(wt, ["diff", "--cached", "--name-only", "-z"]);

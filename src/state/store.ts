@@ -94,7 +94,13 @@ export function removeIfSame(path: string, ino: number, same: (value: unknown) =
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
   let ok = false;
   try { ok = statSync(grab).ino === ino && same(readJson<unknown>(grab)); } catch { ok = false; }
-  if (!ok) { try { linkWithRetry(grab, path); } catch { /* recriado no meio: o novo vale */ } }
+  if (!ok) {
+    try { linkWithRetry(grab, path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; // devolução falhou: mantém o grab, nunca apaga um dono vivo
+      /* recriado no meio: o novo vale */
+    }
+  }
   removeWithRetry(grab);
   return ok;
 }
@@ -145,11 +151,14 @@ export function withFileLock<T>(path: string, timeoutMs: number, fn: () => T): T
         if (mine) {
           const markerIno = inodeOf(marker);
           try {
+            // Recuperador atrasado (outro já recuperou e alguém pegou o lock): nem tira o guard vivo do lugar.
             // Remove só o guard morto observado (mesmo inode e mesma geração): nunca um guard vivo publicado depois.
-            removeIfSame(path, guardIno, (v) => {
-              const holder = v as { pid?: number; nonce?: string } | null;
-              return stale.startsWith("ino-") ? true : holder?.nonce === stale && !isPidAlive(holder.pid ?? 0);
-            });
+            if (inodeOf(path) === guardIno && staleLock(path) === stale) {
+              removeIfSame(path, guardIno, (v) => {
+                const holder = v as { pid?: number; nonce?: string } | null;
+                return stale.startsWith("ino-") ? true : holder?.nonce === stale && !isPidAlive(holder.pid ?? 0);
+              });
+            }
           } finally { if (markerIno !== null) removeIfSame(marker, markerIno, ownMarker); }
         }
       }

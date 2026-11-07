@@ -89,7 +89,9 @@ function staleLock(path: string): string | null {
   try {
     const stat = fstatSync(fd);
     let holder: { pid?: unknown; nonce?: unknown } | null = null;
-    try { holder = JSON.parse(readFileSync(fd, "utf8")); } catch { holder = null; }
+    // Só conteúdo inválido conta como ilegível; erro de leitura (EIO etc.) sobe: não conhecer o dono não prova que morreu.
+    const text = readFileSync(fd, "utf8");
+    try { holder = JSON.parse(text); } catch (error) { if (!(error instanceof SyntaxError)) throw error; holder = null; }
     if (holder && Number.isInteger(holder.pid) && (holder.pid as number) > 0 && typeof holder.nonce === "string" && /^[a-zA-Z0-9-]+$/.test(holder.nonce)) {
       return isPidAlive(holder.pid as number) ? null : holder.nonce;
     }
@@ -108,7 +110,9 @@ const failedMarkers = new Set<string>();
  * Um marcador sobra por guard recuperado (só após um crash); são pequenos e nenhum leitor os conta.
  */
 export function reclaimStale(path: string, stale: string): void {
-  for (let level = 0; level < 32; level++) {
+  // Sem teto de níveis: cada nível pulado já existe (finitos) e cada chamada cria no máximo um, então termina,
+  // e uma geração nunca fica abandonada depois de muitas falhas.
+  for (let level = 0; ; level++) {
     const marker = level ? `${path}.reclaim-${stale}.${level}` : `${path}.reclaim-${stale}`;
     const nonce = randomBytes(16).toString("hex");
     try { writeJsonExclusive(marker, { pid: process.pid, nonce }); }

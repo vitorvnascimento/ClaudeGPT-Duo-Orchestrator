@@ -299,6 +299,28 @@ it("tentativa de recuperação que falhou no próprio processo não trava o lock
     assert.equal(failed, true);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
+it("erro de leitura do guard não o trata como ilegível nem prende o marcador", (t) => {
+  const p = root(), path = join(p, "guard.lock");
+  writeJsonAtomic(path, { pid: process.pid, nonce: "vivo" });
+  const old = new Date(Date.now() - 11_000); utimesSync(path, old, old);
+  const read = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+    if (typeof args[0] === "number") throw Object.assign(new Error("EIO simulado"), { code: "EIO" });
+    return read(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => withFileLock(path, 50, () => assert.fail("entrou com o dono vivo")), /tempo esgotado.*EIO simulado/);
+    assert.equal(readJson<{ nonce: string }>(path)?.nonce, "vivo", "guard vivo continua no lugar");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+it("geração com muitas tentativas falhas continua recuperável depois (sem teto de níveis)", () => {
+  const p = root(), lock = join(p, "guard.lock");
+  writeJsonAtomic(lock, { pid: deadPid(), nonce: "morto" });
+  const dead = deadPid();
+  for (let i = 0; i < 40; i++) writeJsonAtomic(i ? `${lock}.reclaim-morto.${i}` : `${lock}.reclaim-morto`, { pid: dead });
+  assert.equal(withFileLock(lock, 2000, () => "entrou"), "entrou");
+});
 it("renovação do espelho nunca sobrescreve lock.json legado vivo que apareceu depois", () => {
   const p = root(), path = join(p, ".duo/lock.json");
   const owner = slots(p, 4); assert.equal(owner.admit(req()).ok, true);

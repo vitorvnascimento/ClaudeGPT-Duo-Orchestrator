@@ -410,7 +410,7 @@ const CRITERIA = {
       "Use Opus 5.5 (claude-opus-5-5) para o desenvolvimento e GPT-6-Astra (gpt-6-astra) para a arte. Siga a skill. " +
       "As duas partes são de baixo risco; informe risk=low nos pedidos à ponte e preserve os modelos explícitos. " +
       "Ao final responda em uma linha: quem fez cada parte, com qual modelo, e os taskIds.";
-    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *)"], { cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 14 * 60_000 });
+    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], { cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 14 * 60_000 });
     let brain = null;
     try {
       brain = JSON.parse(r.stdout);

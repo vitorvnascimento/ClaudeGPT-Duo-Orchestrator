@@ -492,7 +492,7 @@ const scenarios = {
       '/duo-delegate Delegue ao Codex (executor) esta subtarefa: adicionar a função exportada double(n) que retorna n * 2 em src/math.mjs, sem alterar outros arquivos. ' +
       'Critério de aceite: o comando node check.mjs deve passar (use acceptance.commands com argv ["node","check.mjs"]). ' +
       "Não implemente você mesmo: escreva o pedido e execute a ponte duo exatamente como a skill descreve. Ao final responda em uma linha com o taskId e o state devolvidos pela ponte.";
-    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *)"], {
+    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], {
       cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 12 * 60_000,
     });
     let brain = null;
@@ -519,7 +519,7 @@ const scenarios = {
       ...Array.from({ length: 4 }, () => ({ executor: "claude", ok: true })),
       ...Array.from({ length: 4 }, () => ({ executor: "codex", ok: false, overclaim: true })),
     ]);
-    const r = spawnSync("claude", ["-p", `/duo-delegate ${EVIDENCE_PROMPT}`, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *)"], {
+    const r = spawnSync("claude", ["-p", `/duo-delegate ${EVIDENCE_PROMPT}`, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], {
       cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 12 * 60_000,
     });
     let brain = null;
@@ -603,7 +603,7 @@ const scenarios = {
       "(2) criar uma ilustração quadrada estilo flat de um robô simpático acenando, salva em assets/hero.png. " +
       "Use Opus 5.5 (claude-opus-5-5) para o desenvolvimento e GPT-6-Astra (gpt-6-astra) para a arte. Siga a skill (consulte duo models se precisar). " +
       "Ao final responda em uma linha: quem fez cada parte, com qual modelo, e os taskIds.";
-    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *)"], {
+    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", CLAUDE_MODEL, "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], {
       cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 14 * 60_000,
     });
     let brain = null;

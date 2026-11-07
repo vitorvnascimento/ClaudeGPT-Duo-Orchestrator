@@ -198,7 +198,6 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
     // Diff só da lista permitida já enumerada: um arquivo negado que mude depois da enumeração nunca entra.
     const allowedTracked = trackedFiles.filter(allowed);
     let patch = "";
-    let emitted: string[] = [];
     for (let i = 0; i < allowedTracked.length; i += 200) {
       const batch = allowedTracked.slice(i, i + 200).map((rel) => `:(literal)${rel}`);
       const diff = spawnSync("git", ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--", ...batch, ...excludes], {
@@ -212,11 +211,26 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       // confere cada caminho que o patch traz antes de aplicar qualquer coisa.
       const listed = spawnSync("git", ["apply", "--numstat", "-z", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
       if (listed.status !== 0 || listed.error) return { ok: false, error: listed.error?.message ?? listed.stderr };
-      emitted = listed.stdout.split("\0").filter(Boolean).map((entry) => entry.split("\t").slice(2).join("\t"));
+      const emitted = listed.stdout.split("\0").filter(Boolean).map((entry) => entry.split("\t").slice(2).join("\t"));
       const forbidden = emitted.filter((rel) => !allowed(rel));
       if (forbidden.length) return { ok: false, error: `snapshot recusado: o diff traria caminhos negados ou de .duo/ (${forbidden.length})` };
       const applied = spawnSync("git", ["apply", "--index", "--binary", "-"], { cwd: wt, input: patch, encoding: "utf8", timeout: 60_000, windowsHide: true });
       if (applied.status !== 0 || applied.error) return { ok: false, error: applied.error?.message ?? applied.stderr };
+      // Link rastreado (ex.: `git add` de um link novo) segue as regras dos não rastreados. Confere o que o patch
+      // gravou na worktree (privada), não o projeto, que pode mudar entre o diff e a conferência; e antes de copiar
+      // qualquer não rastreado, para nada ser escrito através de um link inseguro.
+      // Inseguro recusa o snapshot inteiro (nunca omite um caminho do diff).
+      const wtReal = realpathSync(wt);
+      const insideWt = (rel: string) => { const r = relative(wtReal, realpathSync(dirname(join(wt, rel)))); return !r.startsWith("..") && !isAbsolute(r); };
+      const badLinks = emitted.filter((rel) => {
+        try { return !insideWt(rel) || (lstatSync(join(wt, rel)).isSymbolicLink() && unsafeLink(wt, rel, allowed)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+      });
+      if (badLinks.length) {
+        // a worktree recusada nunca guarda a porta; só apaga com o pai real dentro da worktree
+        for (const rel of badLinks) { try { if (insideWt(rel)) rmSync(join(wt, rel), { force: true }); } catch { /* sem pai: nada a apagar */ } }
+        return { ok: false, error: `snapshot recusado: link simbólico rastreado que sai do projeto, aponta para diretório ou para caminho negado (${badLinks.join(", ")})` };
+      }
     }
     for (const rel of newFiles) {
       const src = join(root, rel), dest = join(wt, rel);
@@ -236,17 +250,6 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
         const inWt = relative(realpathSync(wt), resolve(dirname(dest), raw));
         if (inWt.startsWith("..") || isAbsolute(inWt)) { rmSync(dest, { force: true }); continue; }
       } else copyFileSync(src, dest);
-    }
-    // Link rastreado (ex.: `git add` de um link novo) segue as regras dos não rastreados. Confere o que o patch
-    // gravou na worktree (privada), não o projeto, que pode mudar entre o diff e a conferência.
-    // Inseguro recusa o snapshot inteiro (nunca omite um caminho do diff).
-    const badLinks = emitted.filter((rel) => {
-      try { return lstatSync(join(wt, rel)).isSymbolicLink() && unsafeLink(wt, rel, allowed); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-    });
-    if (badLinks.length) {
-      for (const rel of badLinks) rmSync(join(wt, rel), { force: true }); // a worktree recusada nunca guarda a porta
-      return { ok: false, error: `snapshot recusado: link simbólico rastreado que sai do projeto, aponta para diretório ou para caminho negado (${badLinks.join(", ")})` };
     }
     const add = git(wt, ["add", "-A", "--", ".", ...excludes]);
     if (!add.ok) return { ok: false, error: add.stderr };

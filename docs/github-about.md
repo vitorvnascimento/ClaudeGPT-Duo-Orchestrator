@@ -1,8 +1,8 @@
-# GitHub About — proposed metadata / metadados propostos
+# GitHub About — metadata / metadados
 
-Proposal only: no GitHub description or topics have been changed. Choose one description for the repository's About field.
+Applied on 2026-11-07 with the v0.4.0 release: the English description and the topics below.
 
-Somente proposta: a descrição e os tópicos do GitHub não foram alterados. Escolha uma descrição para o campo About do repositório.
+Aplicado em 07/11/2026 com a release v0.4.0: a descrição em inglês e os tópicos abaixo.
 
 ## Description (EN)
 
@@ -12,7 +12,7 @@ Local bridge for Claude Code and Codex using official CLIs and your subscription
 
 Ponte local entre Claude Code e Codex pelas CLIs oficiais e suas assinaturas. Um cérebro, até quatro executores independentes em worktrees, verificação de escopo e testes e integração sequencial dos patches.
 
-## Proposed topics / Tópicos propostos
+## Topics / Tópicos
 
 ```text
 claude-code
@@ -29,7 +29,7 @@ typescript
 vscode
 ```
 
-All topics use lowercase letters and hyphens, with at most 50 characters each; 12 proposed topics. / Todos usam letras minúsculas e hífens, com até 50 caracteres cada; 12 tópicos propostos.
+All topics use lowercase letters and hyphens, with at most 50 characters each; 12 topics. / Todos usam letras minúsculas e hífens, com até 50 caracteres cada; 12 tópicos.
 
 **v0.4.0 is the latest public release**, with the macOS release gate at 100/100 (quality) and 17/17 (real E2E).
 

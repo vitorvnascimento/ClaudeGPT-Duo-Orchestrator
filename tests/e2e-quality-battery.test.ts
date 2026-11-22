@@ -22,7 +22,7 @@ cp.spawnSync = (file) => {
 cp.spawn = cp.execFileSync = () => { throw new Error("processo inesperado"); };
 syncBuiltinESMExports();`;
 
-const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser"];
+const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
 const validGemini = () => ({ results: GEMINI_IDS.map((id) => ({ id, status: "pass", pass: true })) });
 
 function runBattery(content: string, expectedScore: number, gemini: string | null = JSON.stringify(validGemini())) {
@@ -71,13 +71,22 @@ describe("gate Q8 da bateria E2E", () => {
     ]) runBattery(JSON.stringify(input), 0);
   });
 
+  it("sem --gemini-battery o script recusa antes de gastar cota", () => {
+    const root = mkdtempSync(join(tmpdir(), "duo-q8-"));
+    try {
+      writeFileSync(join(root, "b.json"), JSON.stringify(valid()));
+      const r = spawnSync(process.execPath, [join(process.cwd(), "tests/e2e/quality-test.mjs"), "--confirm-quota", "--base", join(root, "run"), "--only", "Q8", "--battery", join(root, "b.json")], { encoding: "utf8", env: { PATH: process.env.PATH } });
+      assert.equal(r.status, 2, r.stdout + r.stderr);
+      assert.match(r.stderr, /--gemini-battery/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("exige a bateria do Gemini completa e aprovada", () => {
-    runBattery(JSON.stringify(valid()), 0, null);
     const gem = validGemini();
     for (const g of [
-      { results: gem.results.slice(0, 12) },
-      { results: [...gem.results.slice(0, 12), { id: "P-browser", status: "inconclusive", pass: false }] },
-      { results: [...gem.results.slice(0, 12), { id: "X1", status: "pass", pass: true }] },
+      { results: gem.results.slice(0, 13) },
+      { results: [...gem.results.slice(0, 13), { id: "P-schedule", status: "inconclusive", pass: false }] },
+      { results: [...gem.results.slice(0, 13), { id: "X1", status: "pass", pass: true }] },
       { results: [...gem.results, { id: "G1", status: "pass", pass: true }] },
     ]) runBattery(JSON.stringify(valid()), 0, JSON.stringify(g));
     runBattery(JSON.stringify(valid()), 0, "{");

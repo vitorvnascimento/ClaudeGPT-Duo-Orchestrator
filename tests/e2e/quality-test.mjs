@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Teste de qualidade REAL da integração Claude Code ↔ Codex, com nota de 0 a 100 e provas independentes.
 // Invoca as CLIs de verdade e CONSOME COTA. Uso:
-//   node tests/e2e/quality-test.mjs --confirm-quota --base <dir-descartável> [--battery <results.json>] [--only Q1,Q2] [--allow-loopback-proxy]
+//   node tests/e2e/quality-test.mjs --confirm-quota --base <dir-descartável> --battery <results.json> --gemini-battery <gemini-results.json> [--only Q1,Q2] [--allow-loopback-proxy]
 //   node tests/e2e/quality-test.mjs --dry-run (só plano e invariantes; não cria repos nem chama CLIs)
 // Cada critério só pontua se TODAS as suas verificações passarem. As provas de que o GPT executou vêm do
 // próprio Codex (rollout da sessão, IDs de resposta do servidor, imagem gerada pela ferramenta), não do que a IA diz.
@@ -42,9 +42,14 @@ if (!DRY_RUN && (!argv.includes("--confirm-quota") || !opt("--base"))) {
 }
 const BASE = opt("--base");
 const ONLY = opt("--only")?.split(",");
+// Q8 exige as duas baterias: a falta é avisada antes de gastar cota nos outros critérios.
+if (!DRY_RUN && (!ONLY || ONLY.includes("Q8")) && (!opt("--battery") || !opt("--gemini-battery"))) {
+  console.error("Q8 exige --battery <results.json> (real-e2e.mjs) e --gemini-battery <gemini-results.json> (gemini-e2e.mjs); sem eles a nota máxima é impossível.");
+  process.exit(2);
+}
 const BATTERY = opt("--battery");
 const GEMINI_BATTERY = opt("--gemini-battery");
-const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser"];
+const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 
 function cleanEnv() {
@@ -439,7 +444,7 @@ const CRITERIA = {
   },
 
   async Q8() {
-    // Bateria do Gemini (tests/e2e/gemini-e2e.mjs): os 13 cenários exatos, cada um com pass === true.
+    // Bateria do Gemini (tests/e2e/gemini-e2e.mjs): os 14 cenários exatos (inclui P-schedule), cada um com pass === true.
     let gem = null;
     try { gem = GEMINI_BATTERY && existsSync(GEMINI_BATTERY) ? JSON.parse(readFileSync(GEMINI_BATTERY, "utf8")) : null; } catch { gem = null; }
     const gList = Array.isArray(gem?.results) ? gem.results : [];
@@ -457,7 +462,7 @@ const CRITERIA = {
       title: "Bateria E2E real completa (T1–T15 + A1 + P1)",
       checks: [
         check("todos os 17 cenários aprovados, inclusive o paralelismo P1", entries.length === 17 && passed === 17 && ids.size === 17 && [...ids].every((id) => expected.has(id)), { arquivo: BATTERY, aprovados: passed, total: entries.length }),
-        check("bateria do Gemini: os 13 cenários aprovados (G1–G9 e sondas)", geminiOk, { arquivo: GEMINI_BATTERY ?? null, aprovados: gPassed, total: gList.length }),
+        check("bateria do Gemini: os 14 cenários aprovados (G1–G9 e sondas, inclusive schedule)", geminiOk, { arquivo: GEMINI_BATTERY ?? null, aprovados: gPassed, total: gList.length }),
       ],
     };
   },

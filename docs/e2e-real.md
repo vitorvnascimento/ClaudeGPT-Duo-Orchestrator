@@ -58,7 +58,8 @@ Each scenario creates a disposable Git repository at `<base>/<id>`, with `.duo/c
 ## Quality test with a score (`tests/e2e/quality-test.mjs`)
 
 ```bash
-node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json
+node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini (P-schedule only with/só com --allow-schedule-probe)
+node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json --gemini-battery /tmp/duo-gemini/run-<data>/gemini-results.json
 ```
 
 There are 10 criteria totaling 100 points. A criterion scores only if **all** of its checks pass. Evidence that GPT executed comes from Codex itself and is checked by an independent reading that does not use the bridge code:
@@ -148,7 +149,8 @@ Cada cenário cria um repositório Git descartável em `<base>/<id>`, com `.duo/
 ## Teste de qualidade com nota (`tests/e2e/quality-test.mjs`)
 
 ```bash
-node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json
+node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini (P-schedule only with/só com --allow-schedule-probe)
+node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json --gemini-battery /tmp/duo-gemini/run-<data>/gemini-results.json
 ```
 
 São 10 critérios que somam 100 pontos. Um critério só pontua se **todas** as verificações dele passarem. As provas de que o GPT executou vêm do próprio Codex e são conferidas por uma leitura independente, que não usa o código da ponte:

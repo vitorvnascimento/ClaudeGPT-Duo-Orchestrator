@@ -19,14 +19,19 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const cwd = await $.session.cwd()
     const script = `${$.plugin.root}/hooks/ativos.mjs`
+    let lendo = false // nunca sobrepõe leituras: uma lenta não empilha processos a cada período
     const ler = async () => {
+      if (lendo) return
+      lendo = true
       try {
-        const r = await $.process.run(['node', script, cwd]) // sem /usr/bin/env: funciona também no Windows (node.exe pelo PATH)
+        const r = await $.process.run(['node', script, cwd], { timeoutMs: 4000 }) // sem /usr/bin/env: funciona também no Windows (node.exe pelo PATH)
         const ativos: Ativo[] = r.exitCode === 0 ? JSON.parse(r.stdout) : []
         const novo: Leitura = { ativos, at: await $.clock.now() }
         await update($, leitura, () => novo)
       } catch {
         // leitura falhou: mantém a anterior; a próxima tentativa vem no próximo período
+      } finally {
+        lendo = false
       }
     }
     await ler()

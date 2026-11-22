@@ -279,7 +279,7 @@ export function formatDoctor(r: DoctorReport): string {
   lines.push(`projeto: ${String(proj.root ?? "(fora de repositório Git)")} | config: ${String(proj.config)}`);
   for (const slot of r.executorSlots ?? []) {
     lines.push(`slot ${slot.slot}: ${slot.taskId}, ponte pid ${slot.pid}, exclusive=${slot.exclusive === true}, nonce=${slot.nonce}`);
-    if (slot.exclusive) lines.push("  Reserva órfã: verifique que ponte, executor e descendentes terminaram; então duo doctor --release-slot <nonce> --confirm-executor-stopped. Recuperação compara nascimento da ponte com o slot e recusa filho auditado vivo; nunca mata PID não verificado.");
+    if (slot.exclusive || (slot as { phase?: string }).phase === "spawning") lines.push("  Reserva órfã: verifique que ponte, executor e descendentes terminaram; então duo doctor --release-slot <nonce> --confirm-executor-stopped. Recuperação compara nascimento da ponte com o slot e recusa filho auditado vivo; nunca mata PID não verificado.");
   }
   if (r.computerUse) {
     const cu = r.computerUse;
@@ -332,6 +332,7 @@ export function formatDoctor(r: DoctorReport): string {
     lines.push(`catálogo de modelos (${cat.discoveredAt}):`);
     lines.push(`  claude: ${cat.claude}`);
     lines.push(`  codex: ${cat.codex}`);
+    if (cat.gemini) lines.push(`  gemini: ${cat.gemini}`);
   }
   for (const [d, s] of Object.entries(r.directions as Record<string, string>)) lines.push(`${d}: ${s}`);
   const others = r.otherOrchestrators as string[];

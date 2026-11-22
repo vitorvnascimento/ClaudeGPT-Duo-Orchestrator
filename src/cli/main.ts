@@ -291,7 +291,7 @@ async function main(argv: string[]): Promise<number> {
       const kind = str(args, "kind") ?? request?.kind;
       if (!kind || !["implement", "review", "test", "investigate", "asset"].includes(kind)) throw new Error("--kind deve ser implement, review, test, investigate ou asset");
       const needs = (str(args, "needs") ?? request?.needs?.join(",") ?? "").split(",").map((x) => x.trim()).filter(Boolean) as Capability[];
-      if (needs.some((n) => !["code", "image_generation"].includes(n))) throw new Error("--needs aceita: code, image_generation");
+      if (needs.some((n) => !["code", "image_generation", "computer_use"].includes(n))) throw new Error("--needs aceita: code, image_generation, computer_use");
       const brainModel = str(args, "brain-model") ?? request?.brainModel ?? null;
       const risk = (str(args, "risk") ?? request?.risk ?? "medium") as Risk;
       if (!["low", "medium", "high"].includes(risk)) throw new Error("--risk deve ser low, medium ou high");

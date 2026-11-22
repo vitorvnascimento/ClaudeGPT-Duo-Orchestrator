@@ -43,9 +43,16 @@ if (!DRY_RUN && (!argv.includes("--confirm-quota") || !opt("--base"))) {
 const BASE = opt("--base");
 const ONLY = opt("--only")?.split(",");
 // Q8 exige as duas baterias: a falta é avisada antes de gastar cota nos outros critérios.
-if (!DRY_RUN && (!ONLY || ONLY.includes("Q8")) && (!opt("--battery") || !opt("--gemini-battery"))) {
-  console.error("Q8 exige --battery <results.json> (real-e2e.mjs) e --gemini-battery <gemini-results.json> (gemini-e2e.mjs); sem eles a nota máxima é impossível.");
-  process.exit(2);
+if (!DRY_RUN && (!ONLY || ONLY.includes("Q8"))) {
+  for (const k of ["--battery", "--gemini-battery"]) {
+    const v = opt(k);
+    let readable = false;
+    try { readable = !!v && !v.startsWith("--") && readFileSync(v).length > 0; } catch { readable = false; }
+    if (!readable) {
+      console.error(`Q8 exige ${k} apontando para um arquivo legível (real-e2e.mjs → --battery; gemini-e2e.mjs → --gemini-battery); recebido: ${v ?? "(nada)"}. Nada foi executado.`);
+      process.exit(2);
+    }
+  }
 }
 const BATTERY = opt("--battery");
 const GEMINI_BATTERY = opt("--gemini-battery");

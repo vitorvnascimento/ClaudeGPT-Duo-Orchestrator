@@ -1,0 +1,3 @@
+{"tool":"write_file","path":"/WORKSPACE/ok.txt","decision":"allow"}
+{"tool":"write_file","path":"/WORKSPACE/other.txt","decision":"deny"}
+{"tool":"invoke_subagent","path":null,"decision":"deny"}

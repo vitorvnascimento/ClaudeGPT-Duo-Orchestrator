@@ -4,10 +4,13 @@
  * O prompt vai por stdin; `-p=` (valor vazio) é a única forma aceita (verificado no agy 1.5.3: `-p` seguido de outra
  * flag consome essa flag como prompt).
  */
+
+/** Id de modelo aceito do agy (e repassado em --model): minúsculas, dígitos, ponto e hífen, sem começar por hífen. */
+export const AGY_MODEL_ID = /^[a-z0-9][a-z0-9.-]*$/;
 const VALUE_FLAGS: Record<string, ((v: string) => boolean) | null> = {
   "--input-format": (v) => v === "stream-json",
   "--output-format": (v) => v === "stream-json",
-  "--model": (v) => /^gemini-[a-z0-9.-]+$/.test(v),
+  "--model": (v) => AGY_MODEL_ID.test(v),
   "--settings": null,
   "--conversation": (v) => /^[A-Za-z0-9-]{1,80}$/.test(v),
   "--json-schema": null,

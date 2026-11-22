@@ -4,7 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
-import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { AGY_MODEL_ID } from "../adapters/gemini-argv.js";
+import { agyBase, agyVendor, findModel, loadCatalog, sameAsBrainModel, sameVendorAsBrain, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -38,7 +39,7 @@ import { automaticModelAllowed, confirmFloor, selectModel, type ModelSelection }
 import { observeTaskQuota, quotaBlock, quotaStates } from "./quota.js";
 import { capacityBlock, recordCapacity } from "./capacity.js";
 import { chainPolicy, chainStatus, effortRank, maxEffort, maxTier } from "./chain.js";
-import { deriveTags, evaluateCandidates, liveAvailability } from "./router.js";
+import { deriveTags, evaluateCandidates, liveAvailability, type CandidateEval } from "./router.js";
 
 export const EXIT = { ok: 0, failed: 1, invalid: 2, blocked: 3, cancelled: 4 } as const;
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -168,7 +169,8 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
   if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
     return { ok: false, out: invalid(`delegar ao mesmo cliente (${req.brain}) exige "model" explícito (outro modelo da mesma conta); sem isso, faça você mesmo`) };
   }
-  if (req.brainModel && req.model && req.brain === req.executor && req.brainModel.toLowerCase() === req.model.toLowerCase()) {
+  if (req.brainModel && req.model && (req.brain === req.executor && req.brainModel.toLowerCase() === req.model.toLowerCase()
+    || req.executor === "gemini" && agyVendor(req.model) === req.brain && agyBase(req.model).toLowerCase() === req.brainModel.toLowerCase())) {
     return { ok: false, out: invalid(`o modelo pedido (${req.model}) é o próprio cérebro; faça você mesmo em vez de delegar`) };
   }
   if (req.needs?.includes("image_generation") && req.kind !== "asset") {
@@ -179,9 +181,9 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
 
 type Gates = { resolved: ReturnType<typeof resolveExecutable> & { ok: true }; caps: Capabilities; entries: ScopeEntry[] };
 
-/** Marca como indisponíveis os candidatos do mesmo cliente do cérebro sem independência comprovada. */
+/** Marca como indisponíveis os candidatos do mesmo fornecedor do cérebro sem independência comprovada. */
 function markBrainUnavailable<C extends { executor: Provider; model: string | null; available: boolean }>(list: C[], req: DelegationRequest, catalog: Catalog | null): C[] {
-  return list.map((c) => req.brain === c.executor && (!req.brainModel || !c.model || sameBaseModel(catalog, c.executor, c.model, req.brainModel))
+  return list.map((c) => sameVendorAsBrain(req.brain, c.executor, c.model) && (!req.brainModel || !c.model || sameAsBrainModel(catalog, req.brain, req.brainModel, c.executor, c.model))
     ? { ...c, available: false } : c);
 }
 
@@ -205,7 +207,7 @@ function runGates(
     if ((gem.platform ?? process.platform) !== "darwin") return { ok: false, reason: "executor gemini exige macOS nesta versão (trava do sistema por sandbox-exec)" };
     const parent = geminiParentEnvProblem(env);
     if (parent) return { ok: false, reason: parent };
-    if (task.model.requested && !/^gemini-/.test(task.model.requested)) return { ok: false, reason: `modelo fora do catálogo gemini-*: ${task.model.requested}` };
+    if (task.model.requested && !AGY_MODEL_ID.test(task.model.requested)) return { ok: false, reason: `id de modelo inválido para o agy: ${task.model.requested}` };
     const suffix = /-(low|medium|high|xhigh)$/.exec(task.model.requested ?? "")?.[1];
     if (req.effort && suffix && req.effort !== suffix) return { ok: false, reason: `modelo ${task.model.requested} fixado é incompatível com o esforço pedido (${req.effort}); o esforço do gemini faz parte do id` };
     if (gem.sandbox !== false) {
@@ -466,6 +468,11 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       return evaluateCandidates(store, cfg, { kind: req.kind, tags, risk: req.risk ?? "medium", brain: req.brain, needs: req.needs, complexity: tier }, await liveAvailability(store, cfg, env, authPaths, true), catalog).evals.map((candidate) =>
         coolingAttempt(candidate.executor, candidate.model) ? { ...candidate, available: false } : candidate);
     };
+    // Escolhas automáticas (inicial e escalada) tentam primeiro sem o próprio cérebro: com brainModel, o modelo dele em
+    // qualquer conta; sem, os do fornecedor dele servidos por outra conta (o mesmo cliente segue a regra própria). Se só
+    // sobrar o do cérebro, a escolha segue e o portão de independência bloqueia com "faça no cérebro".
+    const withoutBrain = (evals: CandidateEval[]) => req.brainModel ? markBrainUnavailable(evals, req, catalog)
+      : evals.map((c) => c.executor !== req.brain && sameVendorAsBrain(req.brain, c.executor, c.model) ? { ...c, available: false } : c);
     for (;;) {
       chain = store.loadChain(run.runId, rootId)!;
       if (adaptive) chain = store.updateChain(run.runId, rootId, (fresh) => { fresh.minTier = maxTier(fresh.minTier, assessment.floor); });
@@ -494,7 +501,8 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       if (adaptive && !restoring) {
         if (assessment.signals.includes("risk=high")) task.risk = "high";
         const candidates = await availableCandidates(target);
-        const selectFor = (executor: Provider) => selectModel(catalog, cfg, executor, target, { candidates, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: !autoUnavailable && policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
+        const selectAmong = (executor: Provider, list: CandidateEval[]) => selectModel(catalog, cfg, executor, target, { candidates: list, floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: !autoUnavailable && policy.attempts === 1 && !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
+        const selectFor = (executor: Provider) => selectAmong(executor, withoutBrain(candidates)) ?? selectAmong(executor, candidates);
         let chosen = origin.model === "auto" ? selectFor(task.executor) : null;
         // Retomada de tentativa que nunca invocou, travada por cota/capacidade: se o fornecedor atual não tem modelo
         // equivalente livre, usa o outro (mesma regra do fallback de cota: nível >= minTier, esforço >= minEffort).
@@ -567,18 +575,18 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
           fresh.minEffort = maxEffort(fresh.minEffort, task.effort?.requested);
         });
       }
-      if (req.brain === task.executor && (!task.model.requested || !adaptive && !originalReq.model)) {
+      if (sameVendorAsBrain(req.brain, task.executor, task.model.requested) && (!task.model.requested || !adaptive && !originalReq.model)) {
         blockTask(task, "delegar ao mesmo cliente exige model explícito ou seleção automática de outro modelo; faça você mesmo");
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
       // Mesmo cliente com modelo escolhido pela ponte: sem brainModel não há como provar que não é o próprio cérebro.
-      if (adaptive && req.brain === task.executor && !req.brainModel && chainPolicy(store.loadChain(run.runId, rootId)!).automatic) {
+      if (adaptive && sameVendorAsBrain(req.brain, task.executor, task.model.requested) && !req.brainModel && chainPolicy(store.loadChain(run.runId, rootId)!).automatic) {
         blockTask(task, `delegar ao mesmo cliente (${task.executor}) com escolha automática de modelo exige brainModel (o modelo do cérebro), para garantir que o executor não é o próprio cérebro; informe brainModel ou fixe model`);
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
-      if (adaptive && req.brain === task.executor && req.brainModel && task.model.requested && sameBaseModel(catalog, task.executor, task.model.requested, req.brainModel)) {
+      if (req.brainModel && task.model.requested && sameAsBrainModel(catalog, req.brain, req.brainModel, task.executor, task.model.requested)) {
         blockTask(task, "o modelo selecionado é o próprio cérebro; faça no cérebro");
         store.saveTask(task);
         return { exitCode: EXIT.blocked, summary: summarize(task) };
@@ -708,7 +716,9 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
           if (!task.model.requested || !nextEffort || effortRank(nextEffort) <= effortRank(task.effort?.requested)) return out;
           nextSelection = { model: task.model.requested, effort: nextEffort, tier: currentTier, reason: ["mesmo modelo, esforço máximo suportado"] };
         } else {
-          const selected = selectModel(catalog, cfg, task.executor, nextTier, { candidates: await availableCandidates(nextTier), floor: nextTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+          const nextEvals = await availableCandidates(nextTier);
+          const escalate = (list: CandidateEval[]) => selectModel(catalog, cfg, task.executor, nextTier, { candidates: list, floor: nextTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+          const selected = escalate(withoutBrain(nextEvals)) ?? escalate(nextEvals);
           if (!selected) {
             task.limitations.push(`escalada não aplicada: nenhum modelo elegível de nível ${nextTier} ou superior`);
             store.saveTask(task);
@@ -948,8 +958,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       }
       // O executor nunca pode ser o próprio modelo do cérebro (a revisão/implementação perderia a independência).
       const brainModel = ctx.req.brainModel;
-      if (brainModel && task.executor === task.brain) {
-        if (sameBaseModel(ctx.catalog, task.executor, model, brainModel)) {
+      if (brainModel) {
+        if (sameAsBrainModel(ctx.catalog, task.brain, brainModel, task.executor, model)) {
           return `o executor rodou no próprio modelo do cérebro (${info.id}); resultado não integrado — faça no cérebro ou delegue a outro modelo`;
         }
       }
@@ -1076,10 +1086,22 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       const paid = info ? extraUsage(info) : /\[[^\]]+\]$/.test(u);
       if (paid && !matchesRequest(u) && !(info && automaticModelAllowed(info, cfg))) {
         nativeFailure = `uso em ${u} consome créditos extras sem autorização (billing.acknowledgeUnverifiableExtraUsage + routing.include); resultado não integrado`;
-      } else if (!servedAs(u) && ctx.req.brainModel && task.executor === task.brain && sameBaseModel(ctx.catalog, task.executor, ctx.req.brainModel, u)) {
+      } else if (!servedAs(u) && ctx.req.brainModel && sameAsBrainModel(ctx.catalog, task.brain, ctx.req.brainModel, task.executor, u)) {
         nativeFailure = `o uso registrado inclui o próprio modelo do cérebro (${u}); resultado não integrado`;
       }
     }
+  }
+  // Independência do cérebro vale com ou sem seleção adaptativa: nenhum modelo observado pode ser o próprio cérebro.
+  if (!nativeFailure) {
+    const brainModel = ctx.req.brainModel;
+    const seen = [...new Set([task.model.reported, ...mains, ...used].filter((m): m is string => !!m))];
+    const own = brainModel
+      ? seen.find((m) => sameAsBrainModel(ctx.catalog, task.brain, brainModel, task.executor, m))
+      // Sem brainModel, um modelo do fornecedor do cérebro servido por outra conta só vale se foi exatamente o pedido.
+      : seen.find((m) => task.executor !== task.brain && sameVendorAsBrain(task.brain, task.executor, m) && !matchesRequest(m));
+    if (own) nativeFailure = brainModel
+      ? `o executor rodou no próprio modelo do cérebro (${own}); resultado não integrado — faça no cérebro ou delegue a outro modelo`
+      : `o executor rodou em ${own}, do mesmo fornecedor do cérebro, sem ter sido pedido; sem brainModel não há como provar que não é o próprio cérebro; resultado não integrado`;
   }
   task.executorReport = outcome.report;
   if (loggedBytes >= MAX_EVENT_LOG_BYTES) task.limitations.push("log de eventos truncado em 2 MiB (parsing continuou sobre o stream completo)");

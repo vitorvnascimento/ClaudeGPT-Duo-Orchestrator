@@ -70,11 +70,55 @@ describe("delegação ao gemini", () => {
     assert.match(prompt, /do not run any program|não rode nenhum programa/i);
   });
 
-  it("model outside ^gemini- is refused before invocation", async () => {
+  it("a Claude model served by agy runs on the gemini executor (Antigravity quota)", async () => {
     const s = setup();
-    const out = await run(s, req({ model: "claude-opus-5-5-high" }));
-    assert.equal(out.summary.state, "blocked");
-    assert.match(String(out.summary.outcome), /gemini-/);
+    const out = await run(s, req({ model: "claude-opus-5-5-high", brainModel: "claude-sonnet-5-5" }), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(task(s, out.summary.taskId).model.reported, "claude-opus-5-5-high");
+    assert.equal(agyRuns(s)[0]?.args[agyRuns(s)[0]!.args.indexOf("--model") + 1], "claude-opus-5-5-high");
+  });
+
+  it("the brain's own model through agy is refused before invocation", async () => {
+    const s = setup();
+    const out = await run(s, req({ model: "claude-opus-5-5-high", brainModel: "claude-opus-5-5" }));
+    assert.notEqual(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome ?? out.summary.error), /cérebro/);
+    assert.equal(agyRuns(s).length, 0);
+  });
+
+  it("non-adaptive: the brain's own model served instead of the requested one is not integrated", async () => {
+    const s = setup();
+    const out = await run(s, req({ model: "claude-opus-5-5-high", brainModel: "claude-sonnet-5-5" }), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }), FAKE_AGY_SERVED_MODEL: "claude-sonnet-5-5-high" });
+    assert.notEqual(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /cérebro/);
+  });
+
+  it("a same-vendor default model from config needs an explicit model in the request", async () => {
+    const s = setup({ executors: { gemini: { enabled: true, command: [FAKE_AGY], model: "claude-opus-5-5-high" } } });
+    const out = await run(s, req({ model: undefined }));
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /model explícito/);
+    assert.equal(agyRuns(s).length, 0);
+  });
+
+  it("no brainModel: a brain-vendor model served instead of the requested Gemini is not integrated", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }), FAKE_AGY_SERVED_MODEL: "claude-opus-5-5-high" });
+    assert.notEqual(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /cérebro/);
+  });
+
+  it("non-adaptive same client: a family alias of the brain is refused before invocation", async () => {
+    const s = setup();
+    const out = await run(s, baseRequest("claude", { executor: "claude", model: "opus", brainModel: "claude-opus-5-5" }));
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.equal(s.execCalls().length, 0);
+  });
+
+  it("a malformed model id is refused before invocation", async () => {
+    const s = setup();
+    const out = await run(s, req({ model: "Gemini Pro" }));
+    assert.notEqual(out.summary.state, "succeeded");
     assert.equal(agyRuns(s).length, 0);
   });
 

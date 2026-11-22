@@ -5,7 +5,7 @@ import { loadSchema, validate } from "../schema.js";
 import type { ExecutorReport } from "../state/types.js";
 import { childEnv } from "../permissions/auth.js";
 import { compareVersions } from "./capabilities.js";
-import { validateGeminiArgv } from "./gemini-argv.js";
+import { AGY_MODEL_ID, validateGeminiArgv } from "./gemini-argv.js";
 import { writeExecutorSchema } from "./report-schema.js";
 import { SANDBOX_EXEC } from "./sandbox-profile.js";
 import { classifyErrorText, extractJson, numericFields, type ExecutorAdapter, type InvocationInput, type InvocationPlan, type ParsedOutcome, type StreamParser } from "./types.js";
@@ -45,8 +45,8 @@ export class GeminiAdapter implements ExecutorAdapter {
       throw new Error(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma (${process.platform}); rode a sonda de contenção (tests/fixtures/agy/probe) antes de liberar`);
     }
     if (!input.gemini) throw new Error("executor gemini sem HOME privado preparado pela ponte");
-    if (!input.model) throw new Error("executor gemini exige modelo explícito (id gemini-*)");
-    if (!/^gemini-/.test(input.model)) throw new Error(`modelo fora do catálogo gemini-*: ${input.model}`);
+    if (!input.model) throw new Error("executor gemini exige modelo explícito (id do agy models)");
+    if (!AGY_MODEL_ID.test(input.model)) throw new Error(`id de modelo inválido para o agy: ${input.model}`);
     const args = ["-p=", "--input-format", "stream-json", "--output-format", "stream-json", "--model", input.model, "--settings", JSON.stringify(SESSION_GUARD)];
     const enforced = [
       "gate PreToolUse do duo (.agents/hooks.json): só leitura na worktree e escrita nos alvos autorizados; demais ferramentas negadas",

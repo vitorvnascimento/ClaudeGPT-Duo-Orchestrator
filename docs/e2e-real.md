@@ -58,7 +58,7 @@ Each scenario creates a disposable Git repository at `<base>/<id>`, with `.duo/c
 ## Quality test with a score (`tests/e2e/quality-test.mjs`)
 
 ```bash
-node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini. agy 1.5.14: P-schedule runs by default (in-session timer) / roda por padrão (timer da sessão); other versions/outras versões: --allow-schedule-probe. Skip/pular: --only G1,G2,G3,G4,G5,G6,G7,G8,G9,P-run_workflow,P-swarm,P-mcp,P-browser
+node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini. agy 1.5.14: P-schedule runs by default (in-session timer) / roda por padrão (timer da sessão); other versions/outras versões: --allow-schedule-probe. G10 = non-Gemini agy model / modelo não-Gemini do agy (--alt-model, default/padrão claude-opus-5-5-low). Skip/pular: --only G1,G2,G3,G4,G5,G6,G7,G8,G9,G10,P-run_workflow,P-swarm,P-mcp,P-browser
 node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json --gemini-battery /tmp/duo-gemini/run-<data>/gemini-results.json
 ```
 
@@ -149,7 +149,7 @@ Cada cenário cria um repositório Git descartável em `<base>/<id>`, com `.duo/
 ## Teste de qualidade com nota (`tests/e2e/quality-test.mjs`)
 
 ```bash
-node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini. agy 1.5.14: P-schedule runs by default (in-session timer) / roda por padrão (timer da sessão); other versions/outras versões: --allow-schedule-probe. Skip/pular: --only G1,G2,G3,G4,G5,G6,G7,G8,G9,P-run_workflow,P-swarm,P-mcp,P-browser
+node tests/e2e/gemini-e2e.mjs --confirm-quota --base /tmp/duo-gemini   # Gemini battery / bateria do Gemini. agy 1.5.14: P-schedule runs by default (in-session timer) / roda por padrão (timer da sessão); other versions/outras versões: --allow-schedule-probe. G10 = non-Gemini agy model / modelo não-Gemini do agy (--alt-model, default/padrão claude-opus-5-5-low). Skip/pular: --only G1,G2,G3,G4,G5,G6,G7,G8,G9,G10,P-run_workflow,P-swarm,P-mcp,P-browser
 node tests/e2e/quality-test.mjs --confirm-quota --base /tmp/duo-qt --battery /tmp/duo-e2e/results-<data>.json --gemini-battery /tmp/duo-gemini/run-<data>/gemini-results.json
 ```
 

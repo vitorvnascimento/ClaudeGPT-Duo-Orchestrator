@@ -96,8 +96,9 @@ describe("GeminiAdapter.plan", () => {
     assert.throws(() => new GeminiAdapter().plan(input()), /não verificada/);
   });
 
-  it("refuses a model outside ^gemini- and a missing model", () => {
-    assert.throws(() => adapter.plan(input({ model: "claude-opus-5-5-high" })), /gemini-/);
+  it("accepts any agy model id, refuses a malformed one and a missing model", () => {
+    assert.ok(adapter.plan(input({ model: "claude-opus-5-5-high" })).args.includes("claude-opus-5-5-high"));
+    assert.throws(() => adapter.plan(input({ model: "--dangerously-skip-permissions" })), /inválido/);
     assert.throws(() => adapter.plan(input({ model: null })), /modelo/);
   });
 

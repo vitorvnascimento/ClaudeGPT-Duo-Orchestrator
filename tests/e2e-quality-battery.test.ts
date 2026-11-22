@@ -22,8 +22,10 @@ cp.spawnSync = (file) => {
 cp.spawn = cp.execFileSync = () => { throw new Error("processo inesperado"); };
 syncBuiltinESMExports();`;
 
-const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
-const validGemini = () => ({ results: GEMINI_IDS.map((id) => ({ id, status: "pass", pass: true })) });
+const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
+const SERVED: Record<string, string> = { G1: "gemini-3.8-flash-low", G10: "claude-opus-5-5-low" };
+const validGemini = () => ({ model: "gemini-3.8-flash-low", altModel: "claude-opus-5-5-low",
+  results: GEMINI_IDS.map((id) => ({ id, status: "pass", pass: true, ...(SERVED[id] ? { evidence: { served: [SERVED[id]] } } : {}) })) });
 
 function runBattery(content: string, expectedScore: number, gemini: string | null = JSON.stringify(validGemini())) {
   const root = mkdtempSync(join(tmpdir(), "duo-q8-"));
@@ -84,10 +86,18 @@ describe("gate Q8 da bateria E2E", () => {
   it("exige a bateria do Gemini completa e aprovada", () => {
     const gem = validGemini();
     for (const g of [
-      { results: gem.results.slice(0, 13) },
-      { results: [...gem.results.slice(0, 13), { id: "P-schedule", status: "inconclusive", pass: false }] },
-      { results: [...gem.results.slice(0, 13), { id: "X1", status: "pass", pass: true }] },
-      { results: [...gem.results, { id: "G1", status: "pass", pass: true }] },
+      { ...gem, results: gem.results.slice(0, 14) },
+      { ...gem, results: [...gem.results.slice(0, 14), { id: "P-schedule", status: "inconclusive", pass: false }] },
+      { ...gem, results: [...gem.results.slice(0, 14), { id: "X1", status: "pass", pass: true }] },
+      { ...gem, results: [...gem.results, { id: "G1", status: "pass", pass: true }] },
+      { ...gem, results: gem.results.map((r) => r.id === "G1" ? { ...r, evidence: { served: ["claude-opus-5-5-low"] } } : r) },
+      { ...gem, results: gem.results.map((r) => r.id === "G1" ? { id: "G1", status: "pass", pass: true } : r) },
+      { ...gem, results: gem.results.map((r) => r.id === "G10" ? { ...r, evidence: { served: ["gpt-oss-120b-medium"] } } : r) },
+      { ...gem, results: gem.results.map((r) => r.id === "G10" ? { ...r, evidence: { served: [""] } } : r) },
+      { ...gem, results: gem.results.filter((r) => r.id !== "G10") },
+      { ...gem, model: "claude-opus-5-5-low" },
+      { ...gem, altModel: "gemini-4-argon-low" },
+      { results: gem.results },
     ]) runBattery(JSON.stringify(valid()), 0, JSON.stringify(g));
     runBattery(JSON.stringify(valid()), 0, "{");
   });

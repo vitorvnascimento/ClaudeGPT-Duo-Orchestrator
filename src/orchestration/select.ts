@@ -51,10 +51,17 @@ export function selectModel(catalog: Catalog | null, cfg: DuoConfig, executor: P
   const pc = catalog?.providers[executor];
   if (!pc?.ok || pc.stale || !pc.models.length) return null;
   const ev = (m: ModelInfo) => ctx.candidates.find((c) => c.executor === executor && c.model === m.id);
-  const eligible = pc.models.filter((m) => ev(m)?.available !== false && confirmFloor({
-    catalog, cfg, executor, model: m.id, floor: ctx.floor, needs: ctx.needs, automatic: true,
-    effort: selectEffort(tierOf(m, cfg).tier, m, { minimum: ctx.minimumEffort }), minimumEffort: ctx.minimumEffort,
-  }).ok);
+  const eligible = pc.models.filter((m) => {
+    // Esforço fixo no id (agy): confirma com o esforço real da variante e no nível do próprio modelo, como a
+    // confirmação antes de invocar (que usa o maior entre o piso e o nível do modelo).
+    const fixed = executor === "gemini" && m.efforts.length === 1;
+    const effort = fixed ? m.efforts[0] as Effort : selectEffort(tierOf(m, cfg).tier, m, { minimum: ctx.minimumEffort });
+    const own = tierOf(m, cfg).tier;
+    const floor = fixed && tierRank(own) > tierRank(ctx.floor) ? own : ctx.floor;
+    return ev(m)?.available !== false && confirmFloor({
+      catalog, cfg, executor, model: m.id, floor, needs: ctx.needs, automatic: true, effort, minimumEffort: ctx.minimumEffort,
+    }).ok;
+  });
   const reason: string[] = [`nível-alvo=${tier}; piso=${ctx.floor}`];
   const ranked = (target: Tier, downgrade = false) => {
     let models = eligible.filter((m) => tierOf(m, cfg).tier === target);

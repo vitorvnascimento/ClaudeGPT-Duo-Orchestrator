@@ -36,6 +36,12 @@ describe("argv do agy", () => {
     }
   });
 
+  it("accepts any agy model id but not a flag or odd characters as the model", () => {
+    const withModel = (m: string) => ["-p=", "--input-format", "stream-json", "--output-format", "stream-json", "--model", m];
+    for (const ok of ["claude-opus-5-5-low", "gpt-oss-120b-medium", "gemini-pro-orchestrator-neon"]) assert.equal(validateGeminiArgv(withModel(ok)), null, ok);
+    for (const bad of ["-x", "--foo", "a b", "Claude", "a/b", ""]) assert.notEqual(validateGeminiArgv(withModel(bad)), null, bad);
+  });
+
   it("requires exactly one -p= and a value for value-taking flags", () => {
     assert.notEqual(validateGeminiArgv(CANONICAL.slice(1)), null);
     assert.notEqual(validateGeminiArgv([...CANONICAL, "-p="]), null);

@@ -17,6 +17,7 @@ import { redact } from "../redact.js";
 import { readJson, type Store, writeJsonAtomic } from "../state/store.js";
 import { parseCodexQuota, saveQuota, type QuotaState } from "../orchestration/quota.js";
 import { parseVersion } from "./capabilities.js";
+import { AGY_MODEL_ID } from "./gemini-argv.js";
 import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
@@ -173,12 +174,15 @@ export function parseCodexAppServerModels(data: Record<string, unknown>[], tools
 
 const AGY_EFFORT = /-(low|medium|high|xhigh)$/;
 
-/** Saída de `agy models` (id<TAB>nome). Só ids gemini-*; um ModelInfo por id completo (o esforço faz parte do id). */
+/**
+ * Saída de `agy models` (id<TAB>nome). Todo modelo listado entra, como no Codex: Gemini, Claude e GPT-OSS servidos pela
+ * conta do Antigravity (cota dela, não a do Claude). Um ModelInfo por id completo (o esforço faz parte do id).
+ */
 export function parseAgyModels(text: string): ModelInfo[] {
   const out: ModelInfo[] = [];
   for (const line of text.split("\n")) {
     const [id, name] = line.split("\t");
-    if (!id || !/^gemini-[a-z0-9.-]+$/.test(id.trim())) continue;
+    if (!id || name === undefined || !AGY_MODEL_ID.test(id.trim())) continue;
     const effort = AGY_EFFORT.exec(id.trim())?.[1];
     out.push({
       provider: "gemini", id: id.trim(), aliases: [], displayName: (name ?? id).trim(), description: "",
@@ -186,6 +190,16 @@ export function parseAgyModels(text: string): ModelInfo[] {
     });
   }
   return out;
+}
+
+/** Fornecedor do modelo que o agy serve: claude-* e gpt-* são o mesmo modelo de outro fornecedor, só que na cota do Antigravity. */
+export function agyVendor(id: string): Provider {
+  return /^claude-/.test(id) ? "claude" : /^gpt-/.test(id) ? "codex" : "gemini";
+}
+
+/** Id do agy sem o sufixo de esforço (claude-opus-5-5-high → claude-opus-5-5). */
+export function agyBase(id: string): string {
+  return id.replace(AGY_EFFORT, "");
 }
 
 /** Variantes de esforço de um modelo base (só para seleção/exibição; a confirmação usa o id completo). */
@@ -457,7 +471,7 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
   } finally { release?.(); }
   const models = r.ok ? parseAgyModels(r.stdout) : [];
   if (!models.length) {
-    const error = (r.stderr || r.error || "agy models sem modelos gemini-*").trim().slice(0, 300);
+    const error = (r.stderr || r.error || "agy models sem modelos").trim().slice(0, 300);
     return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
   }
   return { ok: true, source: "agy models", sourceKind: "agy-models", stable: true, tools: [], models };
@@ -613,6 +627,20 @@ export function sameBaseModel(catalog: Catalog | null, provider: Provider, a: st
   if (ba === bb) return true;
   const inFamily = (alias: string, id: string) => FAMILY_ALIAS.test(alias) && new RegExp(`(^|-)${alias.toLowerCase()}(-|$)`).test(id);
   return inFamily(ba, bb) || inFamily(bb, ba);
+}
+
+/**
+ * O modelo do executor é o próprio modelo do cérebro? Inclui o agy servindo o mesmo modelo de outro fornecedor
+ * (gemini:claude-opus-5-5-high com cérebro claude-opus-5-5): outra cota, mas sem independência.
+ */
+export function sameAsBrainModel(catalog: Catalog | null, brain: Provider, brainModel: string, executor: Provider, model: string): boolean {
+  if (executor === "gemini" && brain !== "gemini") return agyVendor(model) === brain && sameBaseModel(catalog, brain, agyBase(model), brainModel);
+  return executor === brain && sameBaseModel(catalog, executor, model, brainModel);
+}
+
+/** Mesmo fornecedor de modelo do cérebro: o próprio cliente, ou o agy servindo um modelo desse fornecedor. */
+export function sameVendorAsBrain(brain: Provider, executor: Provider, model: string | null | undefined): boolean {
+  return executor === brain || executor === "gemini" && !!model && agyVendor(model) === brain;
 }
 
 export function sameModelIdentity(catalog: Catalog | null, provider: Provider, a: string, b: string, family: "strict" | "loose" = "strict"): boolean {

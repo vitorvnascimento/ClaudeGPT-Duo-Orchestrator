@@ -2,10 +2,11 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
+import { isPidAlive } from "../src/adapters/process.js";
 import { applyTask, cancelRun } from "../src/orchestration/control.js";
 import { activeSlots, ExecutorSlots, releaseOrphanSlot, type AdmitRequest } from "../src/state/slots.js";
 import { processStartTime, startedAfterReservation } from "../src/state/process-identity.js";
@@ -15,7 +16,7 @@ const roots: string[] = [];
 const childProcess = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
 const owners: ExecutorSlots[] = [];
 const root = () => { const p = mkdtempSync(join(tmpdir(), "duo-exclusive-")); roots.push(p); return p; };
-const owner = (p: string) => { const s = new ExecutorSlots(p, 8); owners.push(s); return s; };
+const owner = (p: string, max = 8) => { const s = new ExecutorSlots(p, max); owners.push(s); return s; };
 const req = (patch: Partial<AdmitRequest> = {}): AdmitRequest => ({ taskId: "task-exclusive-000000", runId: "run-exclusive-000000", kind: "implement", requested: "worktree", fixed: null, gitReady: true, ...patch });
 afterEach(() => { for (const s of owners.splice(0)) s.release(); for (const p of roots.splice(0)) rmSync(p, { recursive: true, force: true }); });
 
@@ -32,6 +33,42 @@ it("slot exclusivo worktree mantém isolamento, espelho e bloqueia todas as admi
   }
   exclusive.release();
   assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("v0.4.0 refuses admission and apply for an active computer-use worktree reservation", () => {
+  const p = root(), exclusive = owner(p);
+  const locks = join(p, ".duo/locks");
+  // Copied from d107cbe: activeSlots reads the raw slot using only the bridge PID.
+  // Both v0.4.0 exclusion predicates ignore the newer exclusive and childPid fields.
+  const legacyActive = () => readdirSync(locks).filter(name => /^slot-\d+\.json$/.test(name)).flatMap(name => {
+    const s = readJson<{ pid: number; isolation: string }>(join(locks, name));
+    return s && isPidAlive(s.pid) ? [s] : [];
+  });
+  const refusesAdmission = () => legacyActive().some((s) => s.isolation === "in-place");
+  const refusesApply = () => legacyActive().some((slot) => slot.isolation === "in-place");
+  assert.deepEqual(exclusive.admit(req({ exclusive: true })), { ok: true, isolation: "worktree", forced: false });
+  assert.equal(refusesAdmission(), true);
+  assert.equal(refusesApply(), true);
+  assert.equal(readJson<{ isolation: string }>(join(p, ".duo/lock.json"))?.isolation, "in-place");
+  exclusive.release();
+  assert.equal(refusesAdmission(), false);
+  assert.equal(refusesApply(), false);
+});
+
+it("registerChildPid publica o filho no slot sob o nonce do dono", () => {
+  const p = root(), slots = owner(p);
+  assert.equal(slots.admit(req({ exclusive: true })).ok, true);
+  slots.registerChildPid(process.pid);
+  const saved = readJson<{ childPid: number }>(join(p, ".duo/locks/slot-0.json"));
+  assert.equal(saved?.childPid, process.pid);
+});
+
+it("registerChildPid recusa PID inválido e slot perdido", () => {
+  const p = root(), slots = owner(p);
+  assert.equal(slots.admit(req({ exclusive: true })).ok, true);
+  assert.throws(() => slots.registerChildPid(0), /PID do filho inválido/);
+  slots.release();
+  assert.throws(() => slots.registerChildPid(process.pid), /slot sem dono local/);
 });
 
 it("exclusivo exige projeto livre mesmo com worktree antigo sem campo exclusive", () => {
@@ -60,10 +97,40 @@ it("apply é recusado durante worktree exclusivo e volta a prosseguir após rele
   assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
 });
 
+it("registro exclusivo ilegível fecha activeSlots e apply até a limpeza", () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  mkdirSync(join(p, ".duo/locks"), { recursive: true });
+  writeFileSync(path, '{"exclusive":true');
+  assert.equal(activeSlots(p).length, 1);
+  assert.equal(activeSlots(p)[0]?.exclusive, true);
+  assert.match(applyTask(p, "inexistente").message, /exclusivo.*aguarde/);
+  assert.match(JSON.stringify(owner(p).admit(req())), /exclusivo.*aguarde/);
+});
+
+it("registro exclusivo válido porém malformado é removido só após dez segundos", () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: process.pid, nonce: "malformed-time", startedAt: "garbage" });
+  assert.equal(activeSlots(p).length, 1);
+  assert.match(JSON.stringify(owner(p).admit(req())), /exclusivo.*aguarde/);
+  const stale = new Date(Date.now() - 11_000);
+  utimesSync(path, stale, stale);
+  assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("childPid malformado fecha a reserva e não permite remoção manual", () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json"), bridge = deadPid();
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "malformed-child", startedAt: new Date().toISOString(), childPid: 0 });
+  assert.equal(activeSlots(p).length, 1);
+  assert.equal(releaseOrphanSlot(p, "malformed-child", true).ok, false);
+  const stale = new Date(Date.now() - 11_000);
+  utimesSync(path, stale, stale);
+  assert.equal(owner(p).admit(req()).ok, true);
+});
+
 const auditPath = (p: string) => join(p, ".duo/runs", req().runId, "tasks", req().taskId, "task.json");
 const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid as number;
 function orphanSlot(p: string, bridge: number): void {
-  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "orphan", startedAt: "" });
+  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", exclusive: true, pid: bridge, nonce: "orphan", startedAt: new Date().toISOString() });
 }
 function audit(bridge: number, child: number | null) {
   return { taskId: req().taskId, runId: req().runId, state: "running", pids: { bridge, child }, history: [],
@@ -142,7 +209,7 @@ for (const terminal of [false, true]) {
   });
 }
 
-it("retomada limpa reserva anterior antes de gravar nova ponte e preserva janela de spawn ambígua", () => {
+it("retomada limpa reserva anterior antes de gravar nova ponte e aceita child nulo legado", () => {
   const p = root(), bridge = deadPid();
   orphanSlot(p, bridge);
   writeJsonAtomic(auditPath(p), { ...audit(bridge, deadPid()), state: "blocked" });
@@ -157,7 +224,7 @@ it("retomada limpa reserva anterior antes de gravar nova ponte e preserva janela
   resumed.release();
   orphanSlot(p, bridge);
   writeJsonAtomic(auditPath(p), audit(bridge, null));
-  assert.equal(owner(p).admit(req({ exclusive: true }), () => { assert.fail("não pode sobrescrever auditoria ambígua"); }).ok, false);
+  assert.equal(owner(p).admit(req({ exclusive: true })).ok, true);
 });
 
 it("ponte morta mantém exclusividade enquanto filho auditado vive e libera após sua morte", async () => {
@@ -179,12 +246,37 @@ it("ponte morta mantém exclusividade enquanto filho auditado vive e libera apó
   }
 });
 
+it("ponte exclusiva morta com childPid nulo publicado pode ser liberada", () => {
+  const p = root(), bridge = deadPid();
+  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "in-place", exclusive: true, pid: bridge, nonce: "orphan", startedAt: new Date().toISOString(), childPid: null });
+  writeJsonAtomic(auditPath(p), audit(bridge, null));
+  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+  assert.equal(activeSlots(p).length, 0);
+});
+
+it("slot ordinário permanece ativo enquanto o filho auditado vive após a morte da ponte", async () => {
+  const p = root(), bridge = deadPid();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+  try {
+    assert.ok(child.pid);
+    writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "worktree", pid: bridge, nonce: "ordinary", startedAt: new Date().toISOString(), childPid: child.pid });
+    assert.equal(activeSlots(p).length, 1);
+    assert.match(JSON.stringify(owner(p, 1).admit(req({ taskId: "task-outra-000000" }))), /limite de 1/);
+    assert.match(applyTask(p, "inexistente").message, /task não encontrada/);
+    const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+    assert.equal(activeSlots(p).length, 0);
+    assert.equal(owner(p, 1).admit(req()).ok, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+  }
+});
+
 it("auditoria ausente, inválida ou divergente mantém reserva exclusiva fechada", () => {
   const p = root(), bridge = deadPid(), path = auditPath(p);
   orphanSlot(p, bridge);
   const invalid = [null, {}, { ...audit(bridge, deadPid()), taskId: "task-outra-000000" },
     { ...audit(bridge, deadPid()), runId: "run-outra-000000" }, { ...audit(bridge + 1, deadPid()) },
-    { ...audit(bridge, null) }, { ...audit(bridge, deadPid()), state: "invalido" }, { ...audit(bridge, -1) }];
+    { ...audit(bridge, deadPid()), state: "invalido" }, { ...audit(bridge, -1) }];
   for (const value of invalid) {
     if (value) writeJsonAtomic(path, value);
     assert.equal(activeSlots(p).length, 1);
@@ -226,7 +318,6 @@ it("recuperação explícita recusa auditoria ambígua e filho vivo ou inacessí
   const p = root(), bridge = deadPid(), kill = process.kill;
   const ambiguous = [
     { ...audit(bridge + 1, null), state: "succeeded" },
-    audit(bridge, null),
     audit(bridge, process.pid),
   ];
   for (const saved of ambiguous) {
@@ -248,6 +339,14 @@ it("recuperação explícita recusa auditoria ambígua e filho vivo ou inacessí
   writeJsonAtomic(auditPath(p), { ...audit(bridge, null), state: "succeeded" });
   assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
   assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("slot legado pode liberar auditoria correspondente sem filho registrado", () => {
+  const p = root(), bridge = deadPid();
+  orphanSlot(p, bridge);
+  writeJsonAtomic(auditPath(p), audit(bridge, null));
+  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+  assert.equal(activeSlots(p).length, 0);
 });
 
 it("recuperação recusa filho auditado vivo mesmo com confirmação", () => {

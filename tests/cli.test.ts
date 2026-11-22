@@ -157,7 +157,7 @@ describe("doctor e report", () => {
     const bridge = spawnSync(process.execPath, ["-e", ""]).pid;
     const path = join(s.root, ".duo/locks/slot-0.json");
     writeJsonAtomic(path, { pid: bridge, taskId: "task-orphan-000000", runId: "run-orphan-000000", slot: 0,
-      isolation: "worktree", kind: "implement", exclusive: true, nonce: "nonce-de-recuperacao", startedAt: "" });
+      isolation: "worktree", kind: "implement", exclusive: true, nonce: "nonce-de-recuperacao", startedAt: new Date().toISOString() });
     const report = cli(s, ["doctor", "--json"]);
     assert.equal(report.status, 0, report.stderr);
     assert.equal(JSON.parse(report.stdout).executorSlots[0].nonce, "nonce-de-recuperacao");

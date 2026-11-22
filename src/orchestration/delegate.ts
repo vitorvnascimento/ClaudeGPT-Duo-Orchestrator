@@ -2,10 +2,10 @@
 // verifica o resultado de forma independente e registra estado e métricas. Não é um segundo cérebro.
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
-import { collectCodexEvidence, findRollout, sha256File } from "../adapters/codex-rollout.js";
+import { collectCodexEvidence, readRolloutEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { canonicalAppId, ComputerUseCollector, sanitizeComputerUseLine } from "../adapters/computer-use-evidence.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
@@ -23,10 +23,11 @@ import { createStreamRedactor, redact, redactDeep } from "../redact.js";
 import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
-import { newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
+import { newId, Store, writeJsonAtomic } from "../state/store.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
+import { refreshInterrupted } from "./control.js";
 import { buildExecutorPrompt } from "./prompt.js";
 import { extraUsage, selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
@@ -64,6 +65,12 @@ function stableHash(value: unknown): string {
   const sort = (v: unknown): unknown =>
     Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sort(x)])) : v;
   return createHash("sha256").update(JSON.stringify(sort(value))).digest("hex").slice(0, 16);
+}
+
+function appApprovalInstruction(app: string, taskId: string): string {
+  const resume = `duo delegate --resume ${taskId}`;
+  return `Approve only ${app} in Codex, preferably once if offered, then run ${resume}.\n` +
+    `Aprove somente ${app} no Codex, de preferência uma vez se essa opção estiver disponível, e rode ${resume}.`;
 }
 
 function exitFor(state: TaskState): number {
@@ -127,7 +134,7 @@ function newRun(req: DelegationRequest, cfg: DuoConfig): Run {
   return { runId: newId("run"), brain: req.brain, policy: cfg.policy, createdAt: now, updatedAt: now, cancelled: false, invocations: 0, taskIds: [], decisions: [], nextStep: null };
 }
 
-function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean, cfg: DuoConfig): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+function readRequestFile(cwd: string, requestPath: string): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
   const p = resolve(cwd, requestPath);
   let raw: string;
   try {
@@ -144,7 +151,13 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean,
   }
   const errors = validate(loadSchema("delegation-request"), parsed);
   if (errors.length) return { ok: false, out: invalid("pedido fora do schema", errors) };
-  const req = parsed as DelegationRequest;
+  return { ok: true, req: parsed as DelegationRequest };
+}
+
+function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean, cfg: DuoConfig): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+  const contents = readRequestFile(cwd, requestPath);
+  if (!contents.ok) return contents;
+  const { req } = contents;
   const cuReason = computerUseBlockReason(req, cfg.computerUse.enabled);
   if (cuReason) return { ok: false, out: invalid(cuReason) };
   if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
@@ -279,9 +292,19 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const policy = chainPolicy(chain, { resumeTaskId: task.taskId });
     if (policy.resumeError) return invalid(policy.resumeError);
     if (policy.succeeded) return reused(chain);
-    const saved = readJson<DelegationRequest>(chain.originalRequestPath);
-    if (!saved) return invalid("request.json da cadeia não encontrado");
-    req = saved;
+    if (task.needs.includes("computer_use")) {
+      if (task.state === "running" || task.state === "approved") {
+        refreshInterrupted(store, task.taskId);
+        const interrupted = store.findTask(task.taskId);
+        if (interrupted?.state === "failed") return { exitCode: EXIT.failed, summary: summarize(interrupted) };
+      }
+      if (task.state !== "blocked" || task.blockedReason?.kind !== "app_permission" || !task.native.sessionId) {
+        return invalid("computer use só permite retomada de bloqueio por permissão com sessão nativa registrada", [], EXIT.blocked);
+      }
+    }
+    const saved = readRequestFile(opts.cwd, chain.originalRequestPath);
+    if (!saved.ok) return saved.out;
+    req = saved.req;
     if (task.needs.includes("computer_use")) {
       const { runId: _r, taskKey: _k, ...hashable } = req;
       if (stableHash(hashable) !== task.requestHash) return invalid("pedido original de computer use mudou; retomada recusada", [], EXIT.blocked);
@@ -343,7 +366,15 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         mkdirSync(task.artifactsDir, { recursive: true });
         if (!task.needs.includes("computer_use")) writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
         chain = store.chainForTask(task, { request: req, floor });
-        chain = store.updateChain(run.runId, chain.chainId, (current) => { current.status = "running"; current.owner = owner; if (task.needs.includes("computer_use")) current.originalRequestPath = resolve(opts.cwd, opts.requestPath!); });
+        const source = resolve(opts.cwd, opts.requestPath!);
+        const excluded = [source, realpathSync(source)].map(path => relative(projectRoot, path).split(sep).join("/"))
+          .filter(rel => rel && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
+        chain = store.updateChain(run.runId, chain.chainId, (current) => {
+          current.status = "running";
+          current.owner = owner;
+          if (task.needs.includes("computer_use")) current.originalRequestPath = source;
+          if (excluded.length) current.snapshotExcludedPaths = [...new Set(excluded)];
+        });
         pending = chain;
         store.saveTask(task);
         try {
@@ -368,7 +399,21 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   task = task!;
   chain = chain!;
   try {
-    if (opts.resumeTaskId) store.saveTask(task);
+    if (opts.resumeTaskId) {
+      if (task.needs.includes("computer_use") && task.native.sessionId) {
+        const audit = auditCollector(task, Infinity); // Everything in this preflight belongs to the prior invocation.
+        audit.auditSession(env.CODEX_HOME ?? join(authPaths.home, ".codex"), task.native.sessionId);
+        const evidence = audit.snapshot();
+        if (evidence.violations.length) {
+          task.evidence = { computerUse: evidence };
+          delete task.blockedReason;
+          transition(task, "failed", "a auditoria da sessão original falhou antes da retomada");
+          store.saveTask(task);
+          return { exitCode: EXIT.failed, summary: summarize(task) };
+        }
+      }
+      store.saveTask(task);
+    }
     const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
     const appendAttempt = (next: Task, reason: ChainAttempt["reason"], tier: Tier, effort: Effort | null = null) => {
       mkdirSync(next.artifactsDir, { recursive: true });
@@ -597,7 +642,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       try {
         const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
         const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
+        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, excludePaths: chain.snapshotExcludedPaths ?? [], ...(opts.signal ? { signal: opts.signal } : {}) });
       } finally { lock.release(); }
       if (task.needs.includes("computer_use") || !adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
       if (!chainPolicy(store.loadChain(run.runId, rootId)!, { maxAttempts: cfg.routing.adaptive.maxAttempts }).canRetry) {
@@ -703,8 +748,15 @@ type ExecCtx = {
   chainId: string;
   timeoutSec: number;
   codexHome: string;
+  excludePaths: string[];
   signal?: AbortSignal;
 };
+
+function auditCollector(task: Task, attemptSinceMs: number): ComputerUseCollector {
+  const start = task.history.find(entry => entry.to === "running")?.at ?? task.createdAt;
+  return new ComputerUseCollector({ apps: task.apps, artifactsDir: task.artifactsDir, sinceMs: Date.parse(start),
+    attemptSinceMs, priorEvidence: task.evidence?.computerUse });
+}
 
 async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const { req, task, run, cfg, store, projectRoot, env, lock, entries } = ctx;
@@ -740,7 +792,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!existsSync(wt)) {
       const r = worktreeAdd(projectRoot, wt, task.base.head as string);
       if (!r.ok) return block(`falha ao criar worktree: ${redact(r.stderr.slice(0, 300))}`);
-      const snapshot = worktreeSnapshot(projectRoot, wt, { deny: cfg.scope.deny, maxBytes: cfg.limits.maxSnapshotBytes });
+      const snapshot = worktreeSnapshot(projectRoot, wt, { excludePaths: ctx.excludePaths, deny: cfg.scope.deny, maxBytes: cfg.limits.maxSnapshotBytes });
       const drift = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((rel) => !rel.startsWith(".duo/") && inScope(rel, entries));
       if (!snapshot.ok || headCommit(projectRoot) !== task.base.head || drift.length) {
         // Só descarta a cópia recém-criada; nenhum executor chegou a escrever nela.
@@ -750,7 +802,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
         return block(snapshot.ok ? `o projeto mudou durante o snapshot: ${drift.join(", ") || "HEAD"}; tente novamente` : `falha no snapshot da worktree: ${redact(snapshot.error)}`);
       }
       task.base.snapshot = snapshot.snapshot;
-      const links = computerUse ? { linked: [] as string[], failed: [] as string[] } : linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks);
+      const links = computerUse ? { linked: [] as string[], failed: [] as string[] } : linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks, ctx.excludePaths);
       task.worktreeLinks = links.linked;
       if (links.failed.length) task.limitations.push(`links indisponíveis na worktree: ${links.failed.join(", ")}`);
     } else if (!task.worktree) {
@@ -831,11 +883,15 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   store.saveTask(task);
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 
-  const parser = adapter.parser();
-  const cuStartedAt = Date.now();
+  const attemptSince = Date.parse(task.history.at(-1)!.at);
   const previousNativeSessionId = task.native.sessionId;
-  const collector = computerUse ? new ComputerUseCollector({ apps: task.apps, artifactsDir: task.artifactsDir, sinceMs: cuStartedAt }) : null;
+  const collector = computerUse ? auditCollector(task, attemptSince) : null;
   const nativeAbort = new AbortController();
+  const parser = collector && adapter instanceof CodexAdapter ? adapter.parser(id => {
+    if (typeof id !== "string" || !/^[0-9a-f-]{16,64}$/i.test(id) || (task.native.sessionId && task.native.sessionId !== id)) {
+      collector.violate("native_session_mismatch");
+    } else task.native.sessionId = id;
+  }, () => collector.violate("unknown_or_incomplete_audit")) : adapter.parser();
   let nativeFailure: string | null = null;
   // Identidade única (catalog.ts): estrita para autorizar; alias de família não resolvido nunca vale como pedido exato.
   const sameModel = (executor: Provider, a: string, b: string): boolean => sameModelIdentity(ctx.catalog, executor, a, b, "strict");
@@ -897,13 +953,20 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       firstSignal: plan.firstSignal,
       signal: ctx.signal ? AbortSignal.any([ctx.signal, nativeAbort.signal]) : nativeAbort.signal,
       onSpawn: (pid) => {
+        lock.registerChildPid(pid);
         task.pids.child = pid;
         store.saveTask(task);
       },
       onLine: (line) => {
+        const revision = collector?.revision;
+        const sessionId = task.native.sessionId;
         parser.onLine(line);
         collector?.onLine(line);
-        if (collector && line.includes("Computer Use was not approved to use ") && collector.finish().permission) nativeAbort.abort();
+        if (collector && (collector.revision !== revision || task.native.sessionId !== sessionId)) {
+          if (collector.hasViolations) nativeAbort.abort();
+          task.evidence = { computerUse: collector.snapshot() };
+          store.saveTask(task);
+        }
         // Confere cada modelo novo do fluxo principal (init e fallback no meio do turno) assim que aparece.
         const observed = parser.observedModel?.();
         if (ctx.adaptive && observed && observed !== lastObserved && !nativeFailure) {
@@ -918,6 +981,12 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
         }
       },
       onOversizeLine: () => {
+        if (collector) {
+          collector.violate("unknown_or_incomplete_audit");
+          nativeAbort.abort();
+          task.evidence = { computerUse: collector.snapshot() };
+          store.saveTask(task);
+        }
         // A linha descartada não passou pelo redator, que pode ter perdido o início de um bloco PEM: falha fechado e para o log.
         if (loggedBytes < MAX_EVENT_LOG_BYTES) {
           appendFileSync(eventsPath, `${JSON.stringify({ redacted: "oversize-line", note: "linha acima do limite descartada; log de eventos interrompido" })}\n`);
@@ -957,22 +1026,20 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const lockIntact = lock.intact();
   const cancelledExternally = store.loadRun(run.runId)?.cancelled === true;
 
-  const nativeSessionMismatch = computerUse && !!previousNativeSessionId && !!outcome.sessionId && outcome.sessionId !== previousNativeSessionId;
-  if (outcome.sessionId && !nativeSessionMismatch && (!computerUse || /^[0-9a-f-]{16,64}$/i.test(outcome.sessionId))) task.native.sessionId = outcome.sessionId;
+  const nativeSessionMismatch = computerUse && !!previousNativeSessionId && outcome.sessionId !== previousNativeSessionId;
+  if (outcome.sessionId && !computerUse) task.native.sessionId = outcome.sessionId;
   task.model.reported = outcome.reportedModel;
   task.model.reportedSource = outcome.reportedModel ? "native" : "unavailable";
   // O JSONL do codex exec não informa o modelo; o rollout da própria sessão sim (e traz os IDs de resposta do servidor).
-  let rolloutFile: string | null = null;
-  if (computerUse && task.native.sessionId) {
-    try { rolloutFile = findRollout(ctx.codexHome, task.native.sessionId, cuStartedAt); }
-    catch { /* stream evidence remains subject to the same audit checks */ }
-  }
-  if (collector && rolloutFile && task.native.sessionId) collector.readRollout(rolloutFile, task.native.sessionId);
+  const rolloutFile = collector && task.native.sessionId ? collector.auditSession(ctx.codexHome, task.native.sessionId) : null;
   let codexEvidence: ReturnType<typeof collectCodexEvidence> = null;
   if (task.executor === "codex") {
     if (!computerUse) codexEvidence = collectCodexEvidence(ctx.codexHome, task.native.sessionId, Date.now() - result.durationMs);
-    else if (rolloutFile) {
-      try { if (statSync(rolloutFile).size <= 64 * 1024 * 1024) codexEvidence = collectCodexEvidence(ctx.codexHome, task.native.sessionId, cuStartedAt); }
+    else if (rolloutFile && task.native.sessionId) {
+      try {
+        const stat = statSync(rolloutFile);
+        if (stat.isFile() && stat.size <= 64 * 1024 * 1024) codexEvidence = readRolloutEvidence(rolloutFile, task.native.sessionId, ctx.codexHome);
+      }
       catch { /* malformed or disappearing rollout is not model evidence */ }
     }
   }
@@ -1034,27 +1101,22 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let cuViolations: string[] = [];
   let cuPermission: { kind: "app_permission"; app: string } | null = null;
   if (collector) {
-    const current = collector.finish();
-    const prior = task.evidence?.computerUse;
-    const appsUsed = [...new Set([...(prior?.appsUsed ?? []), ...current.appsUsed])].sort();
-    const actions = [...(prior?.actions ?? []), ...current.actions];
-    const screenshots = [...(prior?.screenshots ?? []), ...current.screenshots].filter((image, i, all) => all.findIndex((other) => other.sha256 === image.sha256) === i);
+    const current = collector.finish(reportedApps);
+    const { actions, appsUsed, screenshots } = current;
     cuViolations = current.violations.filter((v) => v !== "app_permission_denied");
     cuPermission = current.permission;
     if (outcome.events.unknown || outcome.events.malformed || result.oversizeLines || result.outputLimitExceeded) cuViolations.push("unknown_or_incomplete_audit");
-    if (!current.actions.length || !current.appsUsed.length) cuViolations.push("missing_auditable_actions");
+    if (!current.actions.some(action => Date.parse(action.at) >= attemptSince) || !current.appsUsed.length) cuViolations.push("missing_auditable_actions");
     if (nativeSessionMismatch || (outcome.sessionId && !/^[0-9a-f-]{16,64}$/i.test(outcome.sessionId))) cuViolations.push("native_session_mismatch");
     if (!task.native.sessionId) cuViolations.push("missing_native_session");
     if (!cuPermission && result.exitCode !== 0) cuViolations.push("executor_did_not_exit_cleanly");
     if (outcome.report) {
       if (!reportedApps) cuViolations.push("reported_apps_missing");
-      else {
-        const declared = new Set(reportedApps.map(canonicalAppId));
-        if (declared.has("") || declared.size !== appsUsed.length || appsUsed.some((app) => !declared.has(app))) cuViolations.push("reported_apps_mismatch");
-      }
       outcome.report.appsUsed = appsUsed;
     }
-    task.evidence = { computerUse: { actions, appsUsed, screenshots, permission: cuPermission, violations: cuViolations, warnings: [] } };
+    cuViolations = [...new Set(cuViolations)];
+    task.evidence = { computerUse: { actions, appsUsed, screenshots, permission: cuPermission,
+      violations: cuPermission ? [...cuViolations, "app_permission_denied"] : cuViolations, warnings: [] } };
     delete task.blockedReason;
     if (cuPermission && !cuViolations.length && task.native.sessionId) task.blockedReason = cuPermission;
     if (result.spawnError) result.spawnError = "detalhes omitidos";
@@ -1116,7 +1178,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     ? ["failed" as const, `auditoria de computer use falhou (violações: ${cuViolations.length}; arquivos alterados: ${verification.filesChangedCount ?? 0}); alterações preservadas na worktree`, false]
     : nativeFailure ? ["failed" as const, nativeFailure, false]
     : computerUse && cuPermission && !task.native.sessionId ? ["failed" as const, "permissão de aplicativo negada sem sessão nativa para retomada", false]
-    : computerUse && cuPermission && !cancelledExternally && !ctx.signal?.aborted ? ["blocked" as const, `aprove ${cuPermission.app} no app do Codex (sempre permitir) e rode duo delegate --resume ${task.taskId}`, false]
+    : computerUse && cuPermission && !cancelledExternally && !ctx.signal?.aborted ? ["blocked" as const, appApprovalInstruction(cuPermission.app, task.taskId), false]
     : decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
   if (state !== "blocked" || !cuPermission) delete task.blockedReason;
   task.pids.child = null;
@@ -1336,8 +1398,8 @@ export function summarize(task: Task): Record<string, unknown> {
   const next: string[] = [];
   if (task.state === "succeeded" && task.worktree && !task.applied && !task.needs.includes("computer_use")) next.push(`duo apply --task-id ${task.taskId}`);
   if (task.state === "succeeded" && v?.diffPath) next.push(`revisar o diff: ${v.diffPath}`);
-  if (task.state === "blocked") next.push(task.blockedReason
-    ? `aprove ${task.blockedReason.app} no app do Codex (sempre permitir) e rode duo delegate --resume ${task.taskId}`
+  if (task.state === "blocked" && (!task.needs.includes("computer_use") || task.blockedReason)) next.push(task.blockedReason
+    ? appApprovalInstruction(task.blockedReason.app, task.taskId)
     : `corrigir a causa e retomar: duo delegate --resume ${task.taskId}`);
   if (task.state === "succeeded" || task.state === "failed") next.push(`registrar decisão: duo accept --task-id ${task.taskId} [--reject] --note "..."`);
   return {

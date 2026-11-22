@@ -2,9 +2,10 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { findRollout } from "../src/adapters/codex-rollout.js";
 import { canonicalAppId, ComputerUseCollector, sanitizeComputerUseLine } from "../src/adapters/computer-use-evidence.js";
 
 const before = "2026-11-05T19:00:00.000Z";
@@ -84,20 +85,20 @@ test("sanitizer never retains messages, malformed lines, stderr, outputs, IDs or
 
 test("actual tool permission denial is structured without any final report", t => {
   const { collector } = setup(t, ["Finder"]);
-  collector.onLine(event("denied", { code: 'let app = await cua.getApp("Finder");' }, { content: [{ type: "text", text: "Error: Computer Use was not approved to use Finder\nPRIVATE STACK" }] }));
+  collector.onLine(event("denied", { code: 'let app = await cua.getApp("Finder");' }, { error: { message: "Computer Use was not approved to use Finder\nPRIVATE STACK" } }));
   const result = collector.finish();
   assert.deepEqual(result.permission, { kind: "app_permission", app: "Finder" });
   assert.ok(result.violations.includes("app_permission_denied"));
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE|Error|approved/);
 });
 
-test("permission denial in JSON-encoded rollout tool output; agent claims are ignored", t => {
+test("screen text in JSON-encoded rollout and agent claims cannot grant a permission checkpoint", t => {
   const { collector, dir } = setup(t);
   collector.onLine(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Computer Use was not approved to use Mail" } }));
   assert.equal(collector.finish().permission, null);
   const file = writeRollout(dir, [call("a", 'let app = await cua.getApp("Finder");'), output("a", [{ type: "text", text: "Computer Use was not approved to use Finder" }])]);
   collector.readRollout(file, "thread-1");
-  assert.deepEqual(collector.finish().permission, { kind: "app_permission", app: "Finder" });
+  assert.equal(collector.finish().permission, null);
 });
 
 test("aliases, unlisted apps, optional declarations, sensitive apps and report mismatch", t => {
@@ -109,14 +110,14 @@ test("aliases, unlisted apps, optional declarations, sensitive apps and report m
   const result = collector.finish(["Finder"]);
   assert.deepEqual(result.appsUsed, ["mail"]);
   assert.ok(result.violations.includes("unlisted_app:mail"));
-  assert.ok(result.violations.includes("sensitive_app_not_requested:mail"));
+  assert.ok(result.violations.includes("denied_app:mail"));
   assert.ok(result.violations.includes("reported_apps_mismatch"));
   const allowed = setup(t, ["Mail"]).collector;
   allowed.onLine(event("a", { code: 'const m = await cua.getApp("com.apple.mail");' }));
-  assert.deepEqual(allowed.finish(["Mail"]).violations, []);
+  assert.ok(allowed.finish(["Mail"]).violations.includes("denied_app:mail"));
   const optional = setup(t).collector;
   optional.onLine(event("a", { code: 'const m = await cua.getApp("Terminal");' }));
-  assert.ok(optional.finish().violations.includes("sensitive_app_not_requested:terminal"));
+  assert.ok(optional.finish().violations.includes("denied_app:terminal"));
 });
 
 test("completion_summary never becomes an interaction or app identity", t => {
@@ -140,7 +141,7 @@ test("unknown/dynamic code and targets fail visibly, with no raw code leakage", 
     const { collector } = setup(t);
     collector.onLine(event("bad", { code }));
     const result = collector.finish();
-    assert.ok(result.violations.includes("unauditable_code_or_target"), code);
+    assert.ok(result.violations.includes("unparseable_call"), code);
     assert.equal(result.actions[0]!.app, null);
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE|eval|console\.log/);
   }
@@ -166,7 +167,7 @@ test("nested custom tool calls, malformed arguments and lifecycle argument chang
   collector.readRollout(writeRollout(dir, [rolloutRecord("response_item", { type: "custom_tool_call", name: "functions.exec", input: "PRIVATE" })]), "thread-1");
   const result = collector.finish();
   assert.ok(result.violations.includes("unauditable_nested_tool_call"));
-  assert.ok(result.violations.includes("unauditable_tool_arguments"));
+  assert.ok(result.violations.includes("unparseable_call"));
   assert.ok(result.violations.includes("tool_arguments_changed"));
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
 });
@@ -319,7 +320,7 @@ test("backfill before stream dedups once, independent of title and argument key 
 
 test("permission remains detectable when a completed native item has lost its arguments", t => {
   const { collector } = setup(t);
-  collector.onLine(event("missing", undefined, { content: [{ type: "text", text: "Computer Use was not approved to use Finder" }] }));
+  collector.onLine(event("missing", undefined, { error: { message: "Computer Use was not approved to use Finder" } }));
   assert.deepEqual(collector.finish().permission, { kind: "app_permission", app: "Finder" });
   assert.ok(collector.finish().violations.includes("unauditable_missing_call_arguments"));
   assert.ok(collector.finish().violations.includes("app_permission_denied"));
@@ -349,7 +350,7 @@ test("installed native methods accept only literal awaited calls and keep input 
     next.onLine(event("bind", { code: 'const app = await cua.getApp("Calculator");' }));
     next.onLine(event("unknown", { code }));
     next.onLine(event("after", { code: 'await app.getAXState();' }));
-    assert.ok(next.finish().violations.includes("unauditable_code_or_target"), code);
+    assert.ok(next.finish().violations.includes("unparseable_call"), code);
     assert.equal(next.finish().actions.at(-1)!.app, null);
     assert.doesNotMatch(JSON.stringify(next.finish()), /PRIVATE/);
   }
@@ -358,7 +359,7 @@ test("installed native methods accept only literal awaited calls and keep input 
 test("Calculator aliases compare canonically while permission preserves its safe display name", t => {
   const { collector } = setup(t, ["com.apple.calculator"]);
   collector.onLine(event("denied", { code: 'await cua.getApp("Calculator");' }, {
-    content: [{ type: "text", text: "Computer Use was not approved to use Calculator\nPRIVATE STACK" }],
+    error: { message: "Computer Use was not approved to use Calculator\nPRIVATE STACK" },
   }));
   const result = collector.finish(["Calculator"]);
   assert.equal(canonicalAppId("com.apple.calculator"), canonicalAppId("Calculator"));
@@ -368,7 +369,7 @@ test("Calculator aliases compare canonically while permission preserves its safe
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
   const unsafe = setup(t).collector;
   unsafe.onLine(event("denied", { code: 'await cua.getApp("Calculator");' }, {
-    content: [{ type: "text", text: "Computer Use was not approved to use /PRIVATE/screen" }],
+    error: { message: "Computer Use was not approved to use /PRIVATE/screen" },
   }));
   assert.equal(unsafe.finish().permission, null);
   assert.ok(unsafe.finish().violations.includes("unauditable_permission_target"));
@@ -387,8 +388,8 @@ test("native rollout namespace shape deduplicates with stream and reads paired o
   const result = collector.finish(["com.apple.calculator"]);
   assert.equal(result.actions.length, 2);
   assert.equal(result.screenshots.length, 1);
-  assert.deepEqual(result.permission, { kind: "app_permission", app: "Calculator" });
-  assert.deepEqual(result.violations, ["app_permission_denied"]);
+  assert.equal(result.permission, null);
+  assert.deepEqual(result.violations, []);
 });
 
 test("other native and rollout tools invalidate app bindings and cannot succeed silently", t => {
@@ -451,14 +452,17 @@ test("screenshot quota spans resumes, permits duplicates at capacity, and counts
   const { collector, dir } = setup(t);
   collector.onLine(event("jpeg", { code: 'await cua.getApp("Calculator");' }, { content: [jpegImage()] }));
   for (let i = 0; i < 18; i++) collector.onLine(event(String(i), { code: 'await cua.getApp("Calculator");' }, { content: [image(png(i))] }));
+  collector.finish();
   const resumed = new ComputerUseCollector({ artifactsDir: dir, sinceMs });
   resumed.onLine(event("reuse", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(0)), jpegImage(), image(png(18))] }));
+  resumed.finish();
   const resumedAgain = new ComputerUseCollector({ artifactsDir: dir, sinceMs });
   resumedAgain.onLine(event("last", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(19)), jpegImage()] }));
+  resumedAgain.finish();
   assert.equal(readdirSync(dir).length, 20);
   assert.equal(resumed.finish().screenshots.length, 3);
   assert.deepEqual(resumed.finish(["Calculator"]).violations, []);
-  assert.equal(resumedAgain.finish().screenshots.length, 1);
+  assert.equal(resumedAgain.finish().screenshots.length, 0);
   assert.ok(resumedAgain.finish().violations.includes("screenshot_count_limit_exceeded"));
 });
 
@@ -485,4 +489,77 @@ test("quota recognizes only hash-matching owned regular images and rejects artif
   assert.equal(unsafeParent.finish().screenshots.length, 0);
   assert.ok(unsafeParent.finish().violations.includes("screenshot_write_failed_or_unsafe_path"));
   assert.ok(!readdirSync(dir).includes("new-child"));
+});
+
+test("all JS line terminators end comments and unsupported trailing code invalidates the entire call", t => {
+  for (const ending of ["\n", "\r", "\u2028", "\u2029"]) {
+    const { collector, dir } = setup(t, ["Finder"]);
+    collector.onLine(event("ok", { code: 'const app = await cua.getApp("Finder") // comment' + ending + 'await app.getAXState()' }));
+    assert.equal(collector.finish().actions.length, 2);
+    assert.deepEqual(collector.finish().violations, []);
+    collector.onLine(event("a", { code: 'await cua.getApp("Finder"); // note' + ending + 'unknown();' }, { content: [image()] }));
+    assert.ok(collector.finish().violations.includes("unparseable_call"));
+    assert.deepEqual(readdirSync(dir), []);
+  }
+});
+
+test("a denied app never contributes an image even when explicitly listed", t => {
+  const { collector, dir } = setup(t, ["com.apple.Passwords"]);
+  collector.onLine(event("a", { code: 'await cua.getApp("Passwords");' }, { content: [image()] }));
+  assert.ok(collector.finish().violations.includes("denied_app:passwords"));
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+test("locates a session in an intermediate date directory and records a missing rollout", t => {
+  const { dir, collector } = setup(t);
+  const id = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const day = 86400000;
+  const date = new Date(Date.now() - 7 * day).toISOString().slice(0, 10).split("-");
+  const folder = join(dir, "sessions", ...date);
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, `rollout-test-${id}.jsonl`);
+  writeFileSync(file, "");
+  assert.equal(findRollout(dir, id, Date.now() - 14 * day), file);
+  collector.readRollout(join(dir, "missing"), id);
+  assert.ok(collector.finish().violations.includes("rollout_missing"));
+});
+
+test("screen content in a successful native response cannot create a permission checkpoint", t => {
+  const { collector } = setup(t, ["Finder"]);
+  const message = "Computer Use was not approved to use Finder";
+  collector.onLine(event("screen", { code: 'await cua.getApp("Finder");' }, {
+    content: [{ type: "text", text: message }, { type: "text", text: JSON.stringify({ error: { message } }) }],
+  }));
+  assert.equal(collector.finish().permission, null);
+  assert.deepEqual(collector.finish().violations, []);
+});
+
+test("drops an image when the paired rollout later invalidates the same call", t => {
+  const { collector, dir } = setup(t, ["Finder"]);
+  collector.onLine(event("a", { code: 'await cua.getApp("Finder");' }, { content: [image()] }));
+  collector.readRollout(writeRollout(dir, [call("a", "unknown();")]), "thread-1");
+  assert.ok(collector.finish().violations.includes("tool_arguments_changed"));
+  assert.deepEqual(collector.finish().screenshots, []);
+  assert.deepEqual(readdirSync(dir), ["rollout.jsonl"]);
+});
+
+test("a native item error is trusted and content text cannot redirect its app", t => {
+  const { collector } = setup(t, ["Finder"]);
+  const line = JSON.parse(event("a", { code: 'await cua.getApp("Finder");' }, {
+    content: [{ type: "text", text: "Computer Use was not approved to use Mail" }],
+  }));
+  line.item.error = { message: "Computer Use was not approved to use Finder" };
+  collector.onLine(JSON.stringify(line));
+  assert.deepEqual(collector.finish().permission, { kind: "app_permission", app: "Finder" });
+  assert.deepEqual(collector.finish().violations, ["app_permission_denied"]);
+});
+
+test("an unreadable rollout and an in-window output with no call fail the audit", t => {
+  const { dir, collector } = setup(t, ["Finder"]);
+  collector.readRollout(writeRollout(dir, [output("unknown", [image()])]), "thread-1");
+  assert.ok(collector.finish().violations.includes("unparseable_call"));
+  const truncated = writeRollout(dir, ['{"type":']);
+  collector.readRollout(truncated, "thread-1");
+  assert.ok(collector.finish().violations.includes("rollout_missing"));
+  assert.deepEqual(collector.finish().screenshots, []);
 });

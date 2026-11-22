@@ -137,6 +137,7 @@ export type Chain = {
   taskKey: string | null;
   requestHash: string;
   originalRequestPath: string;
+  snapshotExcludedPaths?: string[];
   floorTier: Tier;
   minTier: Tier;
   minEffort: Effort | null;

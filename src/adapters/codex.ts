@@ -66,6 +66,7 @@ export class CodexAdapter implements ExecutorAdapter {
     if (computerUse) {
       if (!caps.flags.config || !caps.flags.enable || !caps.flags.disable) throw new Error("computer use exige --config, --enable e --disable");
       if (!effective || effective.pluginKeys === null || effective.mcpKeys === null) throw new Error("computer use exige enumeração verificável de plugins e MCPs efetivos");
+      if (writes) args.push("--config", "sandbox_workspace_write.writable_roots=[]");
       // Codex 0.166 splits dotted override keys even when quoted.
       const safeName = (name: string) => /^[A-Za-z0-9_@-]{1,200}$/.test(name);
       if (![...effective.pluginKeys, ...effective.mcpKeys].every(safeName)) throw new Error("identificador de plugin ou MCP não pode ser isolado com segurança");
@@ -94,6 +95,10 @@ export class CodexAdapter implements ExecutorAdapter {
       if (!caps.flags.config) throw new Error("esforço solicitado, mas esta versão do codex não anuncia --config");
       args.push("--config", `model_reasoning_effort="${input.effort}"`);
     }
+    if (!computerUse) {
+      if (!caps.flags.config) throw new Error("esta versão do codex não anuncia --config, necessário para desligar computer use");
+      args.push("--config", "plugins.unified-computer-use@openai-bundled.enabled=false");
+    }
     if (input.needs.includes("image_generation")) {
       if (!caps.flags.enable) throw new Error("esta versão do codex não anuncia --enable, necessário para ligar image_generation");
       args.push("--enable", "image_generation");
@@ -113,7 +118,7 @@ export class CodexAdapter implements ExecutorAdapter {
     };
   }
 
-  parser(): StreamParser {
+  parser(onThreadStarted?: (id: unknown) => void, onIncomplete?: () => void): StreamParser {
     const events = { total: 0, unknown: 0, malformed: 0 };
     const unknownTypes = new Set<string>();
     let sessionId: string | null = null;
@@ -129,13 +134,16 @@ export class CodexAdapter implements ExecutorAdapter {
         let ev: Record<string, unknown>;
         try {
           ev = JSON.parse(line) as Record<string, unknown>;
+          if (!ev || typeof ev !== "object" || Array.isArray(ev)) throw new Error("invalid event");
         } catch {
+          onIncomplete?.();
           events.malformed++;
           return;
         }
         const type = String(ev.type ?? "");
         switch (type) {
           case "thread.started":
+            onThreadStarted?.(ev.thread_id);
             if (typeof ev.thread_id === "string") sessionId = ev.thread_id;
             break;
           case "turn.started":
@@ -164,6 +172,7 @@ export class CodexAdapter implements ExecutorAdapter {
             const item = ev.item as Record<string, unknown> | undefined;
             const itemType = String(item?.type ?? "");
             if (!KNOWN_ITEM_TYPES.has(itemType)) {
+              onIncomplete?.();
               events.unknown++;
               unknownTypes.add(`item:${itemType || "?"}`);
             }
@@ -173,6 +182,7 @@ export class CodexAdapter implements ExecutorAdapter {
             break;
           }
           default:
+            onIncomplete?.();
             events.unknown++;
             unknownTypes.add(type || "(sem type)");
         }

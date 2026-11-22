@@ -179,11 +179,12 @@ function unsafeLink(root: string, rel: string, allowed: (rel: string) => boolean
   return inCopy.startsWith("..") || isAbsolute(inCopy);
 }
 
-export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[]; maxBytes: number }): { ok: true; snapshot: string | null; copiedBytes: number } | { ok: false; error: string } {
+export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[]; maxBytes: number; excludePaths?: readonly string[] }): { ok: true; snapshot: string | null; copiedBytes: number } | { ok: false; error: string } {
   const tracked = git(root, ["diff", "HEAD", "--name-only", "--no-renames", "-z"]);
   const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
   if (!tracked.ok || !untracked.ok) return { ok: false, error: tracked.stderr || untracked.stderr };
-  const allowed = (rel: string) => rel !== ".duo" && !rel.startsWith(".duo/") && !isDenied(rel, opts.deny);
+  const excluded = new Set(opts.excludePaths ?? []);
+  const allowed = (rel: string) => !excluded.has(rel) && rel !== ".duo" && !rel.startsWith(".duo/") && !isDenied(rel, opts.deny);
   const trackedFiles = tracked.stdout.split("\0").filter(Boolean);
   const newFiles = untracked.stdout.split("\0").filter((rel) => rel && allowed(rel));
   let copiedBytes = 0;
@@ -194,7 +195,13 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     if (copiedBytes > opts.maxBytes) return { ok: false, error: `snapshot de ${copiedBytes} bytes excede limits.maxSnapshotBytes (${opts.maxBytes})` };
-    const excludes = [".duo", ...trackedFiles.filter((rel) => !allowed(rel))].map((rel) => `:(exclude,literal)${rel}`);
+    // A clean, committed request already exists in the fresh checkout. Stage its
+    // removal in the private snapshot so later patches compare against that baseline.
+    if (excluded.size) {
+      const removed = git(wt, ["rm", "--ignore-unmatch", "--", ...[...excluded].map(rel => `:(literal)${rel}`)]);
+      if (!removed.ok) return { ok: false, error: removed.stderr };
+    }
+    const excludes = [".duo", ...excluded, ...trackedFiles.filter((rel) => !allowed(rel))].map((rel) => `:(exclude,literal)${rel}`);
     // Diff só da lista permitida já enumerada: um arquivo negado que mude depois da enumeração nunca entra.
     const allowedTracked = trackedFiles.filter(allowed);
     let patch = "";
@@ -277,7 +284,7 @@ export function worktreeSnapshot(root: string, wt: string, opts: { deny: string[
   } catch (error) { return { ok: false, error: (error as Error).message }; }
 }
 
-export function linkIntoWorktree(root: string, wt: string, rels: string[]): { linked: string[]; failed: string[] } {
+export function linkIntoWorktree(root: string, wt: string, rels: string[], excludePaths: readonly string[] = []): { linked: string[]; failed: string[] } {
   const linked: string[] = [], failed: string[] = [];
   for (const rel of rels) {
     if (!normalizeRel(rel) || rel === "." || rel === ".duo" || rel.startsWith(".duo/")) { failed.push(rel); continue; }
@@ -285,6 +292,8 @@ export function linkIntoWorktree(root: string, wt: string, rels: string[]): { li
     if (!existsSync(src) || existsSync(dest)) continue;
     try {
       const target = realpathSync(src), inside = relative(realpathSync(root), target);
+      const targetRel = inside.split(sep).join("/");
+      if (excludePaths.some(path => !targetRel || path === targetRel || path.startsWith(targetRel + "/"))) continue;
       if (inside.startsWith("..") || isAbsolute(inside)) throw new Error("link fora do projeto");
       mkdirSync(dirname(dest), { recursive: true });
       const parent = relative(realpathSync(wt), realpathSync(dirname(dest)));

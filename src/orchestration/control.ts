@@ -12,22 +12,28 @@ import type { Task } from "../state/types.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Marca como blocked as tasks "running" cujo processo da ponte morreu. Não mata processos. */
-export function refreshInterrupted(store: Store): { taskId: string; orphanChild: number | null }[] {
+/** Reconcile tasks whose bridge exited. A lost computer-use audit is terminal. */
+export function refreshInterrupted(store: Store, taskId?: string): { taskId: string; orphanChild: number | null }[] {
   const found: { taskId: string; orphanChild: number | null }[] = [];
   for (const run of store.listRuns()) {
     for (const task of store.listTasks(run)) {
-      if (task.state !== "running") continue;
+      if (taskId && task.taskId !== taskId) continue;
+      const computerUse = task.needs?.includes("computer_use");
+      const admitted = computerUse && task.state === "approved" && task.pids.bridge !== null;
+      if (task.state !== "running" && !admitted) continue;
       if (task.pids.bridge && isPidAlive(task.pids.bridge)) continue;
       const orphan = task.pids.child && isPidAlive(task.pids.child) ? task.pids.child : null;
-      transition(task, "blocked", `interrompida: o processo da ponte não está mais ativo${orphan ? ` (PID auditado ${orphan} ainda existe; verifique a identidade e a saída do processo antes de recuperar a reserva)` : ""}`);
+      const state = computerUse ? "failed" : "blocked";
+      if (admitted) transition(task, "blocked", "a ponte saiu após a admissão e antes do início da execução");
+      if (state === "failed") delete task.blockedReason;
+      transition(task, state, `interrompida: o processo da ponte não está mais ativo${orphan ? ` (PID auditado ${orphan} ainda existe; verifique a identidade e a saída do processo antes de recuperar a reserva)` : ""}`);
       store.saveTask(task);
       const chain = store.chainForTask(task);
       const owner = chain.owner;
       const interrupted = !owner || !isPidAlive(owner.pid);
       store.updateChain(run.runId, chain.chainId, (fresh) => {
         if (interrupted && fresh.latestTaskId === task.taskId && fresh.owner?.nonce === owner?.nonce && fresh.owner?.pid === owner?.pid) {
-          fresh.status = "blocked";
+          fresh.status = state;
           fresh.owner = null;
         }
       });

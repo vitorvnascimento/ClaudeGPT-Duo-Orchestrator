@@ -32,11 +32,15 @@ export function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-/** Procura `sessions/AAAA/MM/DD/rollout-*-<threadId>.jsonl` nos dias próximos ao início da tarefa. */
+/** Busca o rollout desde o início original, incluindo datas locais/UTC na fronteira. */
 export function findRollout(codexHome: string, threadId: string, startedAtMs: number): string | null {
-  if (!THREAD_ID.test(threadId)) return null;
+  if (!THREAD_ID.test(threadId) || !Number.isFinite(startedAtMs) || !Number.isFinite(new Date(startedAtMs).getTime())) return null;
   const days = new Set<string>();
-  for (const t of [startedAtMs - DAY_MS, startedAtMs, Date.now(), Date.now() + DAY_MS]) {
+  // Keep the first day even for long-lived sessions, and bound filesystem probes.
+  const last = Date.now() + 2 * DAY_MS;
+  for (let day = -1; day < 3660; day++) {
+    const t = startedAtMs + day * DAY_MS;
+    if (t > last) break;
     const d = new Date(t);
     // O Codex usa a data local no caminho; UTC cobre fusos em que a data difere.
     days.add([d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("/"));

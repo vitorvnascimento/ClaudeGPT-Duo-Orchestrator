@@ -170,7 +170,9 @@ const writeRollout = (tools = []) => {
     { type: "token_usage_record", payload: { thread_id: thread, response_id: "resp_fake_1", usage: usage } },
     { type: "token_usage_record", payload: { thread_id: thread, response_id: "resp_fake_2", usage: usage } },
   ];
-  writeFileSync(join(dir, `rollout-2026-09-26T18-13-01-${thread}.jsonl`), recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const file = join(dir, `rollout-2026-09-26T18-13-01-${thread}.jsonl`);
+  if (scenario.startsWith("cu-") && resuming && existsSync(file)) return;
+  writeFileSync(file, recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
 };
 const finish = (rep) => {
   const text = JSON.stringify(rep);
@@ -181,6 +183,9 @@ const finish = (rep) => {
 };
 
 switch (scenario) {
+  case "cu-checkpoint":
+  case "cu-no-thread":
+  case "cu-stream-abort":
   case "cu-success":
   case "cu-session-mismatch":
   case "cu-permission":
@@ -190,11 +195,40 @@ switch (scenario) {
   case "cu-unknown":
   case "cu-mismatch":
   case "cu-modified": {
-    emit({ type: "thread.started", thread_id: thread });
+    writeRollout();
+    if (scenario !== "cu-no-thread") emit({ type: "thread.started", thread_id: thread });
     emit({ type: "turn.started" });
     const app = scenario === "cu-sensitive" ? "Mail" : scenario === "cu-unlisted" || scenario === "cu-permission-unlisted" ? "Calculator" : "Finder";
     const call = (id, code, result) => emit({ type: "item.completed", item: { id, type: "mcp_tool_call", server: "cua_repl", tool: "js", arguments: { code }, result } });
     call("app", `let app = await cua.getApp("${app}");`, scenario.startsWith("cu-permission") ? { error: `Computer Use was not approved to use ${app}` } : { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
+    if (scenario === "cu-checkpoint") {
+      const taskFile = join(dirname(schemaPath), "task.json");
+      let observed = false;
+      for (let n = 0; n < 200 && !observed; n++) {
+        await sleep(10);
+        const task = JSON.parse(readFileSync(taskFile, "utf8"));
+        observed = task.state === "running" && task.native.sessionId === thread
+          && task.evidence?.computerUse?.actions.some(action => action.app === "finder");
+      }
+      const slot = JSON.parse(readFileSync(join(process.cwd(), "../../locks/slot-0.json"), "utf8"));
+      log({ cmd: "checkpoint", observed, childRegistered: slot.childPid === process.pid,
+        exclusive: slot.exclusive, isolation: slot.isolation });
+    }
+    if (scenario === "cu-stream-abort") {
+      process.once("SIGTERM", async () => {
+        let observed = false;
+        for (let n = 0; n < 50 && !observed; n++) {
+          await sleep(10);
+          const task = JSON.parse(readFileSync(join(dirname(schemaPath), "task.json"), "utf8"));
+          observed = task.state === "running" && task.evidence?.computerUse?.violations.includes("unparseable_call");
+        }
+        log({ cmd: "violation-checkpoint", observed });
+        process.exit(1);
+      });
+      call("bad", "unknown();", {});
+      await sleep(1500);
+      writeFileSync(join(process.cwd(), "continued-after-violation"), "");
+    }
     process.stderr.write("PRIVATE_STDERR_CANARY");
     if (scenario.startsWith("cu-permission")) break;
     call("action", scenario === "cu-unknown" ? 'await app.click(dynamicIndex);' : 'await app.typeText("PRIVATE_TYPED_CANARY");', { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });

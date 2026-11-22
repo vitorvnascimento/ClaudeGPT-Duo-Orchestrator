@@ -68,7 +68,7 @@ export function buildExecutorPrompt(task: Task, extras: PromptExtras): string {
     lines.push("");
     lines.push("## Native computer use");
     lines.push("Use only cua_repl for UI, never shell, other MCPs, browser automation, or other UI technology. Do not modify repository files or run acceptance commands.");
-    lines.push("The apps list is the stated intention and is audited afterwards, not an enforced allowlist. Use only requested apps when listed. Never access Mail, Messages, Keychain Access, 1Password, Bitwarden, System Settings, Terminal, iTerm, Codex, or ChatGPT unless explicitly named in apps.");
+    lines.push("Use only the requested apps. Duo audits observed calls. Access to denied apps is always forbidden.");
     lines.push(`Requested apps: ${task.apps === undefined ? "(not specified)" : JSON.stringify(task.apps)}.`);
     lines.push('The first cua_repl call must contain only a direct literal binding such as: let app = await cua.getApp("Finder");');
     lines.push("Use one app per call, simple awaited app methods with literal arguments only. No computed properties, variables as arguments, loops, arbitrary JavaScript, or other APIs. After actions observe with getAXState. Use getScreenshot or getAXStateAndScreenshot when necessary.");

@@ -15,7 +15,7 @@ import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } fro
 import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
-import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
+import { buildProfile, probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
@@ -209,6 +209,9 @@ function runGates(
     if (task.model.requested && !/^gemini-/.test(task.model.requested)) return { ok: false, reason: `modelo fora do catálogo gemini-*: ${task.model.requested}` };
     const suffix = /-(low|medium|high|xhigh)$/.exec(task.model.requested ?? "")?.[1];
     if (req.effort && suffix && req.effort !== suffix) return { ok: false, reason: `modelo ${task.model.requested} fixado é incompatível com o esforço pedido (${req.effort}); o esforço do gemini faz parte do id` };
+    // Configuração que a trava do SO não aplica: recusa antes de criar worktree, HOME privado e arquivos do gate.
+    const denyProblem = unsupportedDenyGlob(cfg.scope.deny);
+    if (denyProblem) return { ok: false, reason: denyProblem };
     if (gem.sandbox !== false) {
       const probeResult = (gem.probe ?? probeSandbox)();
       if (!probeResult.ok) return { ok: false, reason: `trava do sistema (sandbox-exec) indisponível: ${probeResult.reason}` };

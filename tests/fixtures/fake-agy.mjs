@@ -18,7 +18,9 @@ if (args[0] === "models") {
   if (process.env.HOME) {
     const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
     mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "conflict"
+    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "partial-apikey"
+      ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\n"
+      : process.env.FAKE_AGY_AUTH === "conflict"
       ? "I1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=consumer, quotaProject=\nI1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: authMethod=api_key, quotaProject=\n"
       : process.env.FAKE_AGY_AUTH === "apikey"
       ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=api_key, quotaProject=\n"

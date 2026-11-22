@@ -1,7 +1,7 @@
 // Perfil sandbox-exec do executor Gemini. Testes com sandbox real só rodam no macOS.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -123,6 +123,15 @@ describe("sandbox real", { skip: !DARWIN }, () => {
       assert.equal(r.ok, false, g);
     }
     assert.ok(buildProfile({ worktreeRoot: "/W", targets: [], denyGlobs: ["**/*.key", ".env"], privateHome: "/H", tmpDir: "/H/tmp" }).ok);
+  });
+  it("macOS normalizes canonical singletons before the sandbox matches (Kelvin sign K is caught by **/*.key)", () => {
+    const wt = tmp("duo-sbx-wt-");
+    mkdirSync(join(wt, "docs"));
+    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: "docs", abs: join(wt, "docs"), isDir: true, missingAncestors: [] }], denyGlobs: ["**/*.key"], privateHome: join(wt, "..", "h3"), tmpDir: join(wt, "..", "h3", "tmp") });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", "echo x > 'docs/b.\u212aey'; echo y > docs/ok.txt", wt);
+    assert.equal(readdirSync(join(wt, "docs")).some((n) => /\.key$/i.test(n.normalize("NFC"))), false);
+    assert.ok(existsSync(join(wt, "docs", "ok.txt")));
   });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });

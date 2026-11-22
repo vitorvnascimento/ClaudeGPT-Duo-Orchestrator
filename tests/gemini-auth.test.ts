@@ -41,6 +41,16 @@ describe("preflight de login do gemini", () => {
     assert.equal(a.ok, false);
     assert.match(a.detail, /conflitantes/);
   });
+  it("a partial log with only the effective API-key signal is api_key, even when agy models fails", () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "partial-apikey", FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+    assert.equal(a.method, "api_key");
+  });
+  it("an unreadable entry in the log dir never throws out of the preflight", () => {
+    const h = home();
+    mkdirSync(join(h, ".gemini", "antigravity-cli", "log", "subdir"), { recursive: true });
+    const a = geminiAuthPreflight(resolved, env(h, { FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+    assert.equal(a.ok, false);
+  });
   it("a stale consumer line from an earlier run does not count", () => {
     const h = home();
     const logDir = join(h, ".gemini", "antigravity-cli", "log");

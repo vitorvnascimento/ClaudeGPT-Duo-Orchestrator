@@ -1,7 +1,7 @@
 // Login do executor Gemini (agy). Não há "status" oficial sem segredo: o sinal vem do log do próprio agy, gerado por
 // um `agy models` (sem inferência) no HOME privado, com o log zerado antes para não ler linhas antigas. Prova o tipo
 // de login (conta Google pelo keyring = assinatura pessoal); se a assinatura está paga, só o aceite do dono cobre.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateHome } from "../state/gemini-state.js";
@@ -31,8 +31,9 @@ function classifyAgyLog(text: string): { method: AuthMethod; detail: string; con
   const authMethod = methods[0] ?? null;
   const detail = `authMethod=${authMethod ?? "?"} effective=${effective ?? "?"}`;
   if (authMethod === "consumer" && effective === "keyring") return { method: "subscription", detail };
-  if (authMethod && /api/.test(authMethod)) return { method: "api_key", detail };
-  if (authMethod && /adc|cloud|enterprise|gateway|business/.test(authMethod)) return { method: "cloud", detail };
+  // Cada sinal decide sozinho quando aponta para login não aceito (log parcial: um deles pode faltar).
+  if ((authMethod && /api/.test(authMethod)) || (effective && /api/.test(effective))) return { method: "api_key", detail };
+  if ((authMethod && /adc|cloud|enterprise|gateway|business/.test(authMethod)) || (effective && /adc|cloud|enterprise|gateway|business|vertex/.test(effective))) return { method: "cloud", detail };
   if (!authMethod && !effective) return { method: "none", detail: "sem sinal de login no log do agy" };
   return { method: "unknown", detail };
 }
@@ -55,7 +56,15 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  const text = existsSync(logDir) ? readdirSync(logDir).map((f) => readFileSync(join(logDir, f), "utf8")).join("\n") : "";
+  // Só arquivos regulares; erro de leitura vira log vazio (sem sinal), nunca exceção no preflight.
+  let text = "";
+  try {
+    if (existsSync(logDir)) {
+      text = readdirSync(logDir).flatMap((f) => {
+        try { const p = join(logDir, f); return lstatSync(p).isFile() ? [readFileSync(p, "utf8")] : []; } catch { return []; }
+      }).join("\n");
+    }
+  } catch { text = ""; }
   const c = classifyAgyLog(text);
   if (!r.ok) {
     const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);

@@ -11,7 +11,6 @@
 - Private HOME per chain (outside `.duo/`), linked only to `~/Library/Keychains`: the owner's `~/.gemini` config, plugins, MCP servers and instructions never load, and the owner's conversations are untouched. `duo gemini-state prune [--older-than <days>]` removes stale state.
 - Inference-free login preflight (`agy models` with a fresh log): requires `authMethod=consumer` from the keyring. Google API-key/cloud variables in the brain environment block delegation.
 - Gemini runs every kind in a worktree, never runs commands (acceptance stays with the bridge), is macOS-only, and is refused for any `agy` version/platform not in the verified list (empty until the real battery passes).
-- The Gemini catalog lists every model `agy models` offers, as the Codex catalog does: Gemini, plus the Claude and GPT-OSS models Antigravity serves. They run on the gemini executor and spend Antigravity quota (`gemini:claude-opus-5-5-high` is not the Claude executor). The brain's own model is still refused through agy. The real battery adds G10, the write boundaries with a non-Gemini model.
 - Quota/capacity fallback considers three accounts (same account first, then claude, codex, gemini), filtered by eligibility before ranking.
 - `limits.maxConcurrentExecutors` keeps 4 as the recommended default but has no upper cap: any integer >= 1, or `null` for no limit. `duo doctor` warns above 4.
 
@@ -22,7 +21,6 @@
 - HOME privado por cadeia (fora do `.duo/`), ligado só a `~/Library/Keychains`: config, plugins, MCPs e instruções do `~/.gemini` do dono nunca carregam, e as conversas dele ficam intactas. `duo gemini-state prune [--older-than <dias>]` limpa estados antigos.
 - Verificação de login sem inferência (`agy models` com log zerado): exige `authMethod=consumer` pelo keyring. Variáveis de API/nuvem do Google no ambiente do cérebro bloqueiam a delegação.
 - O gemini roda todo tipo de tarefa em worktree, nunca roda comandos (o aceite fica com a ponte), só no macOS, e é recusado para versão/plataforma do `agy` fora da lista verificada (vazia até a bateria real passar).
-- O catálogo do Gemini lista todo modelo do `agy models`, como o do Codex: os Gemini e também os Claude e GPT-OSS que o Antigravity serve. Eles rodam no executor gemini e gastam a cota do Antigravity (`gemini:claude-opus-5-5-high` não é o executor Claude). O próprio modelo do cérebro continua recusado pelo agy. A bateria real ganha o G10, as fronteiras de escrita com um modelo não-Gemini.
 - O fallback de cota/capacidade considera três contas (a mesma primeiro, depois claude, codex, gemini), filtradas por elegibilidade antes da ordem.
 - `limits.maxConcurrentExecutors` mantém 4 como padrão recomendado, mas sem teto: qualquer inteiro >= 1, ou `null` para sem limite. O `duo doctor` avisa acima de 4.
 

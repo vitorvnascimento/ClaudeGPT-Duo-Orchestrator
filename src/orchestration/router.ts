@@ -6,7 +6,7 @@
 // Não há ranking fixo de fornecedores: sem evidência suficiente, a recomendação diz isso.
 import { extname, join } from "node:path";
 import { readdirSync } from "node:fs";
-import { describeSource, sameAsBrainModel, sameVendorAsBrain, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
+import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
 import { quotaBlock, quotaStates } from "./quota.js";
@@ -480,21 +480,6 @@ function recommendResult(
       base = { ...base, ...(sel ? { selection: sel } : {}) };
     }
     // Mesmo fornecedor do cérebro: fazer você mesmo se for o seu modelo; senão delegar ao outro modelo do mesmo fornecedor.
-    // Modelo do fornecedor do cérebro servido por outra conta (agy): o mesmo cuidado do mesmo cliente.
-    if (q.brain && chosen.model && chosen.executor !== q.brain && sameVendorAsBrain(q.brain, chosen.executor, chosen.model)) {
-      const own = q.brainModel ? sameAsBrainModel(catalog, q.brain, q.brainModel, chosen.executor, chosen.model) : null;
-      if (own !== false) {
-        return {
-          ...base,
-          decision: { action: "self", executor: q.brain, model: q.brainModel ?? null, confidence, why: [
-            own === true
-              ? `o melhor candidato é o seu próprio modelo servido por outra conta (${label(chosen)}): faça sem delegar`
-              : `o melhor candidato é um modelo do seu fornecedor servido por outra conta (${label(chosen)}); se você já é esse modelo, faça sem delegar; se não, delegue ao ${chosen.executor} com model=${chosen.model} e informe brainModel`,
-            ...why] },
-          explore: null,
-        };
-      }
-    }
     if (q.brain && chosen.executor === q.brain) {
       const sameAsBrain = q.brainModel ? namesOf(chosen, catalog).includes(q.brainModel.toLowerCase()) : null;
       if (sameAsBrain !== false) {

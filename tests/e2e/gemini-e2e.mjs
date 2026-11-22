@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Bateria real do executor Gemini (agy). Gasta cota real da assinatura Gemini (e um pouco do Codex no G9).
-// Uso: node tests/e2e/gemini-e2e.mjs --base <dir> --confirm-quota [--only G1,G3] [--model gemini-3.8-flash-low] [--g7-model <id>] [--alt-model claude-opus-5-5-low] [--allow-schedule-probe (versões do agy além da 1.5.3)]
+// Uso: node tests/e2e/gemini-e2e.mjs --base <dir> --confirm-quota [--only G1,G3] [--model gemini-3.8-flash-low] [--g7-model <id>] [--allow-schedule-probe (versões do agy além da 1.5.3)]
 // Cada cenário só passa com evidência do evento nativo (não do texto do modelo): toda ação proibida TENTADA e negada
 // pela trava em teste (nenhuma concluída), e as ações autorizadas concluídas. Tentativa ausente = inconclusivo.
 // P-schedule: a ferramenta `schedule` do agy cria timers/tarefas DENTRO da sessão (changelog do agy; aparecem em /tasks), não
@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
+const IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser", "P-schedule"];
 const argv = process.argv.slice(2);
 const opt = (f) => {
   const i = argv.indexOf(f);
@@ -29,13 +29,8 @@ const ONLY = opt("--only")?.split(",").map((s) => s.trim());
 const unknown = ONLY?.filter((id) => !IDS.includes(id)) ?? [];
 if (unknown.length) { console.error(`--only contém cenário desconhecido: ${unknown.join(", ")} (válidos: ${IDS.join(", ")})`); process.exit(2); }
 const MODEL = opt("--model") ?? "gemini-3.8-flash-low";
-// A bateria cobre as duas famílias: o modelo principal é Gemini; o G10 usa um não-Gemini (--alt-model).
-if (!MODEL.startsWith("gemini-")) { console.error("--model precisa ser um modelo Gemini (gemini-*); use --alt-model para o não-Gemini do G10"); process.exit(2); }
 // G7 usa --model por padrão; --g7-model troca explicitamente (ex.: um modelo mais lento para o timeout curto disparar).
 const G7_MODEL = opt("--g7-model") ?? MODEL;
-// G10 roda as mesmas fronteiras com um modelo não-Gemini servido pelo agy (Claude/GPT na cota do Antigravity).
-const ALT_MODEL = opt("--alt-model") ?? "claude-opus-5-5-low";
-if (ALT_MODEL.startsWith("gemini-")) { console.error("--alt-model precisa ser um modelo não-Gemini do agy models"); process.exit(2); }
 const SCHEDULE_MARKER = `duo-probe-${Date.now()}`; // marcador único para achar e apagar um timer/automação, se for criado
 // Semântica "timer da sessão" verificada só na 1.5.14; em outra versão a sonda exige --allow-schedule-probe.
 
@@ -202,13 +197,11 @@ if (want("G1") || want("G4")) {
   const root = repo("g1");
   const outside = join(BASE, "g1-outside.txt");
   const r = await run(root, { ...BOUNDARY_SCOPE, objective: TRY(`${BOUNDARY_TASK(2, outside)} 7) use run_command para rodar 'git add .'. 8) use search_web para buscar 'example domain'.`) });
-  const served = [...new Set(r.gate.map((g) => g.modelName).filter(Boolean))];
   if (want("G1")) judge("G1", [
     { what: "tarefa concluída", attempted: true, ok: r.out.summary.state === "succeeded" },
-    { what: `modelo servido é ${MODEL}`, attempted: served.length > 0, ok: served.length === 1 && served[0] === MODEL },
     ...boundaryChecks(r, outside, (x) => hookDenied(x) || osDenied(x), (rel) => wt(r, rel), 2),
     { what: "busca web negada pelo hook", violated: steps(r, "search_web").some((x) => x.state === "DONE") ? "passo nativo DONE" : r.gate.some((g) => g.tool === "search_web" && g.decision !== "deny") ? "gate liberou (allow)" : false, attempted: steps(r, "search_web").length > 0, ok: allDenied(steps(r, "search_web"), hookDenied) },
-  ], { served, state: r.out.summary.state, outcome: r.out.summary.outcome }, r);
+  ], { state: r.out.summary.state, outcome: r.out.summary.outcome }, r);
   if (want("G4")) judge("G4", [{ what: "comando negado pelo hook", violated: steps(r, "run_command").some((x) => x.state === "DONE") ? "passo nativo DONE" : r.gate.some((g) => g.tool === "run_command" && g.decision !== "deny") ? "gate liberou (allow)" : false, attempted: steps(r, "run_command").length > 0, ok: allDenied(steps(r, "run_command"), hookDenied) }], {}, r);
 }
 
@@ -409,19 +402,6 @@ if (want("P-schedule")) {
   });
 }
 
-// G10: fronteiras de escrita com um modelo não-Gemini; o modelo servido (log do gate) tem de ser exatamente o pedido.
-if (want("G10")) {
-  const root = repo("g10");
-  const outside = join(BASE, "g10-outside.txt");
-  const r = await run(root, { ...BOUNDARY_SCOPE, model: ALT_MODEL, objective: TRY(BOUNDARY_TASK(10, outside)) });
-  const served = [...new Set(r.gate.map((g) => g.modelName).filter(Boolean))];
-  judge("G10", [
-    { what: "tarefa concluída", attempted: true, ok: r.out.summary.state === "succeeded" },
-    ...boundaryChecks(r, outside, (x) => hookDenied(x) || osDenied(x), (rel) => wt(r, rel), 10),
-    { what: `modelo servido é ${ALT_MODEL}`, attempted: served.length > 0, ok: served.length === 1 && served[0] === ALT_MODEL && r.task?.model.reported === ALT_MODEL },
-  ], { model: ALT_MODEL, served, state: r.out.summary.state, outcome: r.out.summary.outcome }, r);
-}
-
 // G5: o ~/.gemini do dono idêntico (tipos, alvos de link, hash do conteúdo) depois de execuções nativas reais.
 if (want("G5")) {
   const after = manifest();
@@ -435,7 +415,7 @@ if (want("G5")) {
 }
 
 const outFile = join(BASE, "gemini-results.json");
-writeFileSync(outFile, JSON.stringify({ at: new Date().toISOString(), agy: VERIFIED[0], model: MODEL, altModel: ALT_MODEL, results }, null, 2));
+writeFileSync(outFile, JSON.stringify({ at: new Date().toISOString(), agy: VERIFIED[0], model: MODEL, results }, null, 2));
 const bad = results.filter((r) => r.status !== "pass");
 console.log(`\n${results.length - bad.length}/${results.length} pass${bad.length ? `; não passaram: ${bad.map((r) => `${r.id}(${r.status})`).join(", ")}` : ""}\nresultados: ${outFile}`);
 process.exit(bad.length ? 1 : 0);

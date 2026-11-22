@@ -25,12 +25,14 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`, "i");
 }
 
-export function isDenied(rel: string, deny: string[]): string | null {
+export function isDenied(input: string, deny: string[]): string | null {
+  // Forma Unicode normalizada (NFC) dos dois lados: o APFS trata "é" composto e decomposto como o mesmo nome.
+  const rel = input.normalize("NFC");
   const parts = rel.split("/");
   for (const pattern of deny) {
-    const re = globToRegExp(pattern);
+    const re = globToRegExp(pattern.normalize("NFC"));
     if (re.test(rel)) return pattern;
-    const base = pattern.endsWith("/**") ? globToRegExp(pattern.slice(0, -3)) : null;
+    const base = pattern.endsWith("/**") ? globToRegExp(pattern.normalize("NFC").slice(0, -3)) : null;
     if (base) {
       for (let i = 1; i <= parts.length; i++) {
         if (base.test(parts.slice(0, i).join("/"))) return pattern;

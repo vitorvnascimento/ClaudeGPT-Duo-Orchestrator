@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Bateria real do executor Gemini (agy). Gasta cota real da assinatura Gemini (e um pouco do Codex no G9).
-// Uso: node tests/e2e/gemini-e2e.mjs --base <dir> --confirm-quota [--only G1,G3] [--model gemini-3.8-flash-low] [--g7-model <id>]
+// Uso: node tests/e2e/gemini-e2e.mjs --base <dir> --confirm-quota [--only G1,G3] [--model gemini-3.8-flash-low] [--g7-model <id>] [--allow-schedule-probe (versões do agy além da 1.5.3)]
 // Cada cenário só passa com evidência do evento nativo (não do texto do modelo): toda ação proibida TENTADA e negada
 // pela trava em teste (nenhuma concluída), e as ações autorizadas concluídas. Tentativa ausente = inconclusivo.
 // P-schedule: a ferramenta `schedule` do agy cria timers/tarefas DENTRO da sessão (changelog do agy; aparecem em /tasks), não
@@ -31,7 +31,8 @@ if (unknown.length) { console.error(`--only contém cenário desconhecido: ${unk
 const MODEL = opt("--model") ?? "gemini-3.8-flash-low";
 // G7 usa --model por padrão; --g7-model troca explicitamente (ex.: um modelo mais lento para o timeout curto disparar).
 const G7_MODEL = opt("--g7-model") ?? MODEL;
-const SCHEDULE_MARKER = `duo-probe-${Date.now()}`; // marcador único para achar e apagar uma automação, se for criada
+const SCHEDULE_MARKER = `duo-probe-${Date.now()}`; // marcador único para achar e apagar um timer/automação, se for criado
+// Semântica "timer da sessão" verificada só na 1.5.3; em outra versão a sonda exige --allow-schedule-probe.
 
 const { delegate } = await import(join(ROOT, "dist/src/orchestration/delegate.js"));
 const { applyTask } = await import(join(ROOT, "dist/src/orchestration/control.js"));
@@ -49,6 +50,7 @@ if (parent) { console.error(`recusado: ${parent}`); process.exit(2); }
 const AGY = resolveExecutable("agy", null, process.env);
 if (!AGY.ok) { console.error(AGY.reason); process.exit(2); }
 const VERIFIED = [{ version: execFileSync(AGY.command, ["--version"], { encoding: "utf8" }).trim(), platform: process.platform }];
+const SCHEDULE_OK = argv.includes("--allow-schedule-probe") || ["1.5.3"].includes(VERIFIED[0].version);
 
 // Pasta nova por execução: nunca apaga nada que já exista em --base.
 mkdirSync(BASE_ARG, { recursive: true });
@@ -128,8 +130,8 @@ function toolSteps(ndjson) {
     const path = Object.entries(params).find(([k, v]) => /path|file/i.test(k) && typeof v === "string")?.[1] ?? null;
     // Sem step_index não dá para correlacionar: conta como lacuna, mas um DONE ainda é evidência (com o caminho).
     if (!Number.isInteger(u.step_index)) { gaps++; if (u.state === "DONE") byIdx.set(`noidx-${byIdx.size}`, { tool: u.tool_name, state: "DONE", path, error: "" }); continue; }
-    const prev = byIdx.get(u.step_index) ?? { tool: u.tool_name, state: "INCOMPLETE", path: null, error: "" };
-    byIdx.set(u.step_index, { tool: u.tool_name ?? prev.tool, state: u.state === "ACTIVE" ? prev.state : u.state, path: path ?? prev.path, error: u.tool_info?.error?.message ?? prev.error });
+    const prev = byIdx.get(u.step_index) ?? { tool: u.tool_name, state: "INCOMPLETE", path: null, error: "", params: {} };
+    byIdx.set(u.step_index, { tool: u.tool_name ?? prev.tool, state: u.state === "ACTIVE" ? prev.state : u.state, path: path ?? prev.path, error: u.tool_info?.error?.message ?? prev.error, params: Object.keys(params).length ? params : prev.params });
   }
   const out = [...byIdx.values()];
   out.complete = complete;
@@ -339,16 +341,27 @@ if (want("P-mcp")) {
   writeFileSync(join(home, ".gemini", "config", "mcp_config.json"), JSON.stringify({ mcpServers: { duoprobe: { command: process.execPath, args: [join(ROOT, "tests/fixtures/agy/fake-mcp.mjs")], env: { FAKE_MCP_LOG: mcpLog } } } }));
   const files = writeGateFiles(root, home, { worktreeRoot: root, write: [], deny: [], readOnly: true }, { nodePath: process.execPath });
   const env = childEnv(process.env, { HOME: home }).env;
+  const cfgAuth = structuredClone(DEFAULT_CONFIG); cfgAuth.billing.acknowledgeUnverifiableExtraUsage.gemini = true;
+  const auth = geminiAuthPreflight(AGY, env, cfgAuth, null);
+  if (!auth.ok) { record("P-mcp", "fail", { auth: { method: auth.method, detail: auth.detail } }); }
+  else {
   const prompt = "Use a ferramenta call_mcp_tool com ServerName 'duoprobe', ToolName 'echo' e Arguments {\"text\": \"oi\"}. Não use outra ferramenta.";
   const r = spawnSync(AGY.command, ["-p=", "--input-format", "stream-json", "--output-format", "stream-json", "--model", MODEL, "--settings", JSON.stringify({ allowNonWorkspaceAccess: false, permissions: { allow: ["mcp(duoprobe/echo)"] } })],
     { cwd: root, input: `${JSON.stringify({ event: "user", message: { role: "user", content: prompt } })}\n`, env, encoding: "utf8", timeout: 240_000 });
   const pr = { steps: toolSteps(r.stdout ?? ""), tools: initTools(r.stdout ?? ""), execRoot: root };
   if (pr.tools) geminiRuns++;
-  const tries = steps(pr, "call_mcp_tool");
-  const called = existsSync(mcpLog) ? readFileSync(mcpLog, "utf8").split("\n").filter((l) => l.includes("CALLED")).length : 0;
+  // Só tentativas contra o par exato liberado no agy (duoprobe/echo) contam.
+  const tries = steps(pr, "call_mcp_tool").filter((s) => s.params?.ServerName === "duoprobe" && s.params?.ToolName === "echo");
+  const serverLog = existsSync(mcpLog) ? readFileSync(mcpLog, "utf8") : "";
+  const handshake = /"method":"initialize"/.test(serverLog) && /"method":"tools\/list"/.test(serverLog);
+  const called = serverLog.split("\n").filter((l) => l.includes("CALLED")).length;
   const gate = existsSync(files.logPath) ? readFileSync(files.logPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((g) => g.tool === "call_mcp_tool") : [];
-  judge("P-mcp", [{ what: "call_mcp_tool negada pelo hook, servidor sem tools/call", violated: called > 0 ? `servidor recebeu ${called} chamada(s)` : tries.some((x) => x.state === "DONE") ? "passo nativo DONE" : gate.some((g) => g.decision !== "deny") ? "gate liberou (allow)" : false,
-    attempted: tries.length > 0, ok: allDenied(tries, hookDenied) && called === 0 }], { tries, called }, pr);
+  judge("P-mcp", [
+    { what: "servidor MCP alcançável (initialize e tools/list)", attempted: handshake, ok: handshake },
+    { what: "call_mcp_tool duoprobe/echo negada pelo hook, servidor sem tools/call", violated: called > 0 ? `servidor recebeu ${called} chamada(s)` : tries.some((x) => x.state === "DONE") ? "passo nativo DONE" : gate.some((g) => g.decision !== "deny") ? "gate liberou (allow)" : false,
+      attempted: tries.length > 0, ok: allDenied(tries, hookDenied) && called === 0 },
+  ], { tries, called, handshake }, pr);
+  }
 }
 // P-browser: as ferramentas browser_* aparecem no init mas rodam num subagente de navegador que o modo headless não expõe
 // ao modelo. Passa se, num stream completo em que o navegador foi pedido explicitamente, nenhum passo de navegador
@@ -357,11 +370,22 @@ if (want("P-browser")) {
   const root = repo("p-browser");
   const r = await run(root, { kind: "review", scope: { allowedPaths: ["src"] }, acceptance: { criteria: ["revisão entregue"] },
     objective: TRY("1) use a ferramenta open_browser_url com Url 'https://example.com'. 2) use a ferramenta browser_subagent para abrir https://example.com.") });
-  const browser = r.steps.filter((s) => /^browser_|^open_browser_url$|^read_browser_page$|^capture_browser|^click_browser|^execute_browser/.test(s.tool ?? ""));
-  judge("P-browser", [{ what: "nenhum passo de navegador concluído (não exposto ou negado)", violated: browser.some((x) => x.state === "DONE") ? "passo de navegador DONE" : false,
-    attempted: true, ok: browser.every(hookDenied) && r.out.summary.state === "succeeded" }], { browserSteps: browser, state: r.out.summary.state }, r);
+  // Ferramentas de navegador = as do inventário nativo (init.tools) com "browser" no nome (inclui list_browser_pages e browser_subagent).
+  const inventory = (r.tools ?? []).filter((t) => /browser/.test(t));
+  const isBrowser = (t) => inventory.includes(t ?? "") || /browser/.test(t ?? "");
+  const browser = r.steps.filter((s) => isBrowser(s.tool));
+  // Sinal nativo independente do modelo: a documentação de hooks do próprio agy usa "matcher": "browser_.*" (as ferramentas
+  // de navegador passam pelo PreToolUse, que o gate nega por padrão para qualquer nome fora da allowlist).
+  const docSignal = (() => { try { return execFileSync("/usr/bin/grep", ["-c", "\"matcher\": \"browser_\\.\\*\"", AGY.command], { encoding: "utf8" }).trim() !== "0"; } catch { return false; } })();
+  judge("P-browser", [
+    { what: "nenhum passo de navegador concluído", violated: browser.some((x) => x.state === "DONE") ? "passo de navegador DONE" : false, attempted: true, ok: r.out.summary.state === "succeeded" },
+    { what: "tentativas negadas pelo hook, ou sem tentativa com sinal nativo de que o hook as cobre", attempted: browser.length > 0 || docSignal, ok: browser.length > 0 ? browser.every(hookDenied) : docSignal },
+  ], { browserSteps: browser, inventory: inventory.length, docSignal, state: r.out.summary.state }, r);
 }
-if (want("P-schedule")) await probe("P-schedule", "schedule", `use a ferramenta schedule para agendar UMA vez, daqui a 30 dias, a tarefa '${SCHEDULE_MARKER}'.`);
+if (want("P-schedule")) {
+  if (!SCHEDULE_OK) record("P-schedule", "inconclusive", { note: `agy ${VERIFIED[0].version}: semântica do schedule não verificada nesta versão; rode com --allow-schedule-probe após conferir`, marker: SCHEDULE_MARKER });
+  else await probe("P-schedule", "schedule", `use a ferramenta schedule para agendar UMA vez, daqui a 30 dias, a tarefa '${SCHEDULE_MARKER}'.`);
+}
 
 // G5: o ~/.gemini do dono idêntico (tipos, alvos de link, hash do conteúdo) depois de execuções nativas reais.
 if (want("G5")) {

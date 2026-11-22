@@ -93,8 +93,9 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
     if (typeof name !== "string") return deny("entrada sem toolCall.name");
     if (DONE_TOOLS.has(name)) return { decision: "allow", reason: "duo-gate: entrega do resultado" };
     const paths = pathArgs(call?.args, allow.worktreeRoot).map((p) => canon(p));
-    // Raiz com a mesma canonicalização dos caminhos pedidos (grafia do disco).
-    const root = canon(allow.worktreeRoot);
+    // Raiz fixada na preparação (canônica, gravada na allowlist): trocar a pasta por um link no meio da execução
+    // não move a fronteira de leitura.
+    const root = allow.worktreeRoot;
     if (READ_TOOLS.has(name)) {
       if (!paths.length) return deny(`${name} sem caminho`);
       for (const p of paths) {
@@ -135,8 +136,9 @@ export function resolveGeminiTargets(
   links: string[],
 ): { ok: true; targets: GeminiTarget[] } | { ok: false; reason: string } {
   let root: string;
-  try { root = canonicalPath(worktreeRoot); }
-  catch (e) { return { ok: false, reason: `worktree ilegível (${(e as NodeJS.ErrnoException).code ?? "erro"})` }; }
+  // A raiz tem de existir como diretório (só os alvos abaixo dela podem ser novos).
+  try { root = realpathSync.native(worktreeRoot); if (!statSync(root).isDirectory()) throw Object.assign(new Error("não é diretório"), { code: "ENOTDIR" }); }
+  catch (e) { return { ok: false, reason: `worktree ausente ou ilegível (${(e as NodeJS.ErrnoException).code ?? "erro"})` }; }
   const targets: GeminiTarget[] = [];
   for (const w of writable) {
     const rel = normalizeRel(w.rel);
@@ -198,6 +200,7 @@ export function writeGateFiles(
   const hooks = { "duo-gate": { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command, timeout: opts.timeoutSec ?? 10 }] }] } };
   const hooksPath = join(agents, "hooks.json");
   writeFileSync(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`);
-  writeFileSync(allowlistPath, `${JSON.stringify(allow)}\n`, { mode: 0o600 });
+  // Raiz canônica fixada aqui: o gate compara cada caminho resolvido contra este valor, sem recalcular a raiz.
+  writeFileSync(allowlistPath, `${JSON.stringify({ ...allow, worktreeRoot: realpathSync.native(worktreeRoot) })}\n`, { mode: 0o600 });
   return { hooksPath, allowlistPath, logPath };
 }

@@ -118,6 +118,25 @@ describe("disponibilidade e cota do gemini", () => {
       for (const p of ["claude", "codex"] as const) assert.deepEqual(avail(p), baseline(p), p);
     } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
   });
+  it("version labels never carry unexpected --version text", async () => {
+    const { agyVersionLabel } = await import("../src/adapters/gemini.js");
+    assert.equal(agyVersionLabel("1.5.14+build.7"), "1.5.14+build.7");
+    assert.match(agyVersionLabel("signed in as pessoa@exemplo.com"), /^sha256:[0-9a-f]{16}$/);
+    assert.equal(agyVersionLabel(null), "desconhecida");
+    assert.match(agyVersionLabel(`1.5.14+${"a".repeat(8192)}`), /^sha256:[0-9a-f]{16}$/);
+  });
+  it("inside the Codex sandbox, inconclusive checks are deferred but a disallowed login still blocks", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: "1.5.14", CODEX_SANDBOX: "seatbelt" };
+    const check = async (extra: Record<string, string>) => (await liveAvailability(new Store(sb!.root), loadConfig(sb!.root), { ...env, ...extra }, sb!.authPaths))("gemini");
+    const ok = await check({});
+    assert.equal(ok.available, true, JSON.stringify(ok));
+    assert.ok(ok.reasons.some((r) => /não verificáve/.test(r)));
+    const unreadable = await check({ FAKE_AGY_NO_MODELS: "1" });
+    assert.equal(unreadable.available, true, JSON.stringify(unreadable));
+    const apikey = await check({ FAKE_AGY_AUTH: "apikey" });
+    assert.equal(apikey.available, false, JSON.stringify(apikey));
+  });
   it("a saved gemini exhaustion shows up in quotaStates", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);

@@ -109,7 +109,8 @@ describe("delegação ao gemini", () => {
       const out = await run(s, req(), { FAKE_AGY_VERSION: v }, { sandbox: false });
       assert.equal(out.summary.state, "blocked", v);
       assert.match(String(out.summary.outcome), /não verificada/, v);
-      assert.ok(String(out.summary.outcome).includes(JSON.stringify(v)), String(out.summary.outcome));
+      // Versão simples aparece como está; outra saída vira só um hash (nunca texto cru na task/telemetria).
+      assert.ok(String(out.summary.outcome).includes(/^\d+\.\d+\.\d+/.test(v) ? v : "sha256:"), String(out.summary.outcome));
       assert.equal(agyRuns(s).length, 0, v);
       s.cleanup(); sb = undefined;
     }

@@ -109,6 +109,20 @@ describe("links no caminho pedido", () => {
       if (existsSync(upperRoot)) assert.ok(resolveGeminiTargets(upperRoot, [{ rel: "README.md", isDir: false }], []).ok);
     }
   });
+  it("a missing worktree root is refused before any target is prepared", () => {
+    const base = tmp("duo-gate-wt-");
+    assert.equal(resolveGeminiTargets(join(base, "sumiu"), [{ rel: "src/a.ts", isDir: false }], []).ok, false);
+  });
+  it("the gate root is pinned at setup: replacing the worktree by a link does not move the read boundary", () => {
+    const base = tmp("duo-gate-pin-");
+    const wt = join(base, "wt"); mkdirSync(wt);
+    const other = join(base, "other"); mkdirSync(other); writeFileSync(join(other, "s.txt"), "s");
+    const home = tmp("duo-gate-home-");
+    const files = writeGateFiles(wt, home, { worktreeRoot: wt, write: [], deny: DENY, readOnly: true }, { nodePath: process.execPath });
+    const saved = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as GateAllowlist;
+    fs.renameSync(wt, join(base, "wt-old")); symlinkSync(other, wt);
+    assert.equal(decideToolCall(call("read_file", { Path: join(wt, "s.txt") }), saved).decision, "deny");
+  });
   it("a filesystem error while resolving a target becomes a refusal, not an exception", () => {
     const wt = tmp("duo-gate-wt-");
     writeFileSync(join(wt, "README.md"), "r");

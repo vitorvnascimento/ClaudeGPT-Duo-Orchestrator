@@ -20,6 +20,7 @@ import { parseVersion } from "./capabilities.js";
 import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
+import { chainStateDir, createPrivateHome } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation";
@@ -43,7 +44,7 @@ export type ModelInfo = {
   retirementAt?: string | null;
 };
 
-export type SourceKind = "claude-initialize" | "codex-app-server" | "codex-debug-models" | "none";
+export type SourceKind = "claude-initialize" | "codex-app-server" | "codex-debug-models" | "agy-models" | "none";
 
 export type ProviderCatalog = {
   ok: boolean;
@@ -168,6 +169,36 @@ export function parseCodexAppServerModels(data: Record<string, unknown>[], tools
         retirementAt,
       };
     });
+}
+
+const AGY_EFFORT = /-(low|medium|high|xhigh)$/;
+
+/** Saída de `agy models` (id<TAB>nome). Só ids gemini-*; um ModelInfo por id completo (o esforço faz parte do id). */
+export function parseAgyModels(text: string): ModelInfo[] {
+  const out: ModelInfo[] = [];
+  for (const line of text.split("\n")) {
+    const [id, name] = line.split("\t");
+    if (!id || !/^gemini-[a-z0-9.-]+$/.test(id.trim())) continue;
+    const effort = AGY_EFFORT.exec(id.trim())?.[1];
+    out.push({
+      provider: "gemini", id: id.trim(), aliases: [], displayName: (name ?? id).trim(), description: "",
+      efforts: effort ? [effort] : [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: ["code"],
+    });
+  }
+  return out;
+}
+
+/** Variantes de esforço de um modelo base (só para seleção/exibição; a confirmação usa o id completo). */
+export function geminiVariants(catalog: Catalog, base: string): { id: string; effort: string }[] {
+  const order = ["low", "medium", "high", "xhigh"];
+  return (catalog.providers.gemini?.models ?? [])
+    .filter((m) => m.id.replace(AGY_EFFORT, "") === base && m.efforts[0])
+    .map((m) => ({ id: m.id, effort: m.efforts[0] as string }))
+    .sort((a, b) => order.indexOf(a.effort) - order.indexOf(b.effort));
+}
+
+export function geminiModelId(catalog: Catalog, base: string, effort: string): string | null {
+  return geminiVariants(catalog, base).find((v) => v.effort === effort)?.id ?? null;
 }
 
 export function parseCodexModels(json: unknown, tools: string[]): ModelInfo[] {
@@ -409,6 +440,21 @@ function withLastKnownGood(provider: Provider, fresh: ProviderCatalog, previous:
   return { ...prev, stale: true, staleSince: since, attempts: fresh.attempts ?? (fresh.error ? [fresh.error] : []), error: fresh.error };
 }
 
+/** agy models num HOME privado do projeto (nunca toca o ~/.gemini do usuário). Só roda com o gemini ligado. */
+async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.ProcessEnv, env: NodeJS.ProcessEnv): Promise<ProviderCatalog> {
+  if (!cfg.executors.gemini.enabled) return NOT_DISCOVERED("gemini");
+  const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
+  if (!resolved.ok) return { ok: false, source: "agy models", sourceKind: "none", error: resolved.reason, tools: [], models: [] };
+  const { home } = createPrivateHome(chainStateDir(cwd, "catalog", baseEnv), baseEnv);
+  const r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
+  const models = r.ok ? parseAgyModels(r.stdout) : [];
+  if (!models.length) {
+    const error = (r.stderr || r.error || "agy models sem modelos gemini-*").trim().slice(0, 300);
+    return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
+  }
+  return { ok: true, source: "agy models", sourceKind: "agy-models", stable: true, tools: [], models };
+}
+
 export async function discover(
   cfg: DuoConfig,
   cwd: string,
@@ -417,12 +463,12 @@ export async function discover(
   opts: { appServerTimeoutMs?: number; cliVersions?: Catalog["cliVersions"] } = {},
 ): Promise<Catalog> {
   const { env } = childEnv(baseEnv);
-  const [claude, codex] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs)]);
+  const [claude, codex, gemini] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs), discoverGemini(cfg, cwd, baseEnv, env)]);
   return {
     discoveredAt: new Date().toISOString(),
     cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv),
     ...(inCodexSandbox(baseEnv) ? { discoveredInSandbox: true } : {}),
-    providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous), gemini: withLastKnownGood("gemini", NOT_DISCOVERED("gemini"), previous) },
+    providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous), gemini: withLastKnownGood("gemini", gemini, previous) },
   };
 }
 

@@ -11,7 +11,7 @@ export function tierOf(model: Pick<ModelInfo, "id" | "aliases" | "displayName">,
   for (const rule of cfg.routing.adaptive.tiers) {
     if (names.some((name) => new RegExp(rule.match, "i").test(name))) return { tier: rule.tier, presumed: false };
   }
-  for (const [family, tier] of [["opus|fable|astra", "deep"], ["sonnet|sol|terra", "standard"], ["haiku|luna|mini|nano", "light"]] as const) {
+  for (const [family, tier] of [["opus|fable|astra", "deep"], ["sonnet|sol|terra", "standard"], ["haiku|luna|mini|nano|flash", "light"]] as const) {
     if (names.some((name) => new RegExp(`(?:^|[^a-z0-9])(?:${family})(?:$|[^a-z0-9])`, "i").test(name))) return { tier, presumed: false };
   }
   return { tier: "standard", presumed: true };

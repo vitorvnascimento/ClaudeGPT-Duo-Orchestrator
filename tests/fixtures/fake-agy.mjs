@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+// agy (Antigravity CLI) simulado: `--version`, `--help`, `models` e o modo headless stream-json.
+// O headless reproduz uma gravação real de tests/fixtures/agy/ (FAKE_AGY_SCENARIO) ou um relatório válido.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { log, readStdin, report as fakeReport } from "./fake-common.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const args = process.argv.slice(2);
+const has = (f) => args.includes(f);
+const valueOf = (f) => (args.indexOf(f) >= 0 ? args[args.indexOf(f) + 1] : undefined);
+
+if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(0); }
+if (has("--help")) { process.stdout.write(readFileSync(join(here, "agy", "help-1.5.3.txt"), "utf8")); process.exit(0); }
+if (args[0] === "models") {
+  log({ cmd: "agy-models", home: process.env.HOME });
+  if (process.env.HOME) {
+    const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "apikey"
+      ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=api_key, quotaProject=\n"
+      : "I1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=consumer, quotaProject=\n");
+  }
+  if (process.env.FAKE_AGY_NO_MODELS) { process.stderr.write("Error: Please sign in to view available models.\n"); process.exit(1); }
+  process.stdout.write("Fetching available models...\ngemini-4-argon-high\tGemini 4 Argon (High)\ngemini-4-argon-medium\tGemini 4 Argon (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nclaude-opus-5-5-high\tClaude Opus 5.5 (High)\n");
+  process.exit(0);
+}
+const stdin = await readStdin();
+log({ cmd: "agy-run", args, stdin, home: process.env.HOME, tmpdir: process.env.TMPDIR, cwd: process.cwd() });
+const scenario = process.env.FAKE_AGY_SCENARIO;
+if (scenario) { process.stdout.write(readFileSync(join(here, "agy", `${scenario}.ndjson`), "utf8")); process.exit(0); }
+const model = valueOf("--model") ?? "gemini-x";
+const conv = valueOf("--conversation") ?? "00000000-0000-4000-8000-000000000001";
+// Simula o hook: registra o modelo em uso no log do gate, como o gate real faria.
+const gateLog = process.env.HOME ? join(process.env.HOME, "duo-gate", "gate-log.jsonl") : null;
+if (gateLog && existsSync(dirname(gateLog))) appendFileSync(gateLog, `${JSON.stringify({ tool: "write_file", decision: "allow", modelName: process.env.FAKE_AGY_SERVED_MODEL ?? model })}\n`);
+const report = { ...fakeReport([]), testsRun: [], ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
+const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
+emit({ event: "init", conversation_id: conv, init: { model, cwd: process.cwd(), tools: ["write_file"], permission_mode: "request-review" } });
+emit({ event: "result", result: { conversation_id: conv, status: "SUCCESS", response: JSON.stringify(report), duration_seconds: 0.5, num_turns: 1, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });

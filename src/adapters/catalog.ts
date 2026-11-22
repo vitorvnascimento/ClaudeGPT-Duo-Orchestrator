@@ -565,7 +565,8 @@ export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?
   }
   const env = opts.env ?? process.env;
   const versions = cliVersions(cfg, env);
-  const versionsMatch = valid?.cliVersions && (["claude", "codex", "gemini"] as const).every((p) => (valid.cliVersions[p] ?? null) === versions[p]);
+  // Sem mapa de versões válido (ausente, lista, texto) o cache nunca é reaproveitado.
+  const versionsMatch = !!valid && isObj(valid.cliVersions) && (["claude", "codex", "gemini"] as const).every((p) => (valid.cliVersions[p] ?? null) === versions[p]);
   const upgradeFromSandbox = Boolean(valid?.discoveredInSandbox) && !inCodexSandbox(env);
   if (!opts.refresh && valid && versionsMatch && !upgradeFromSandbox && Date.now() - Date.parse(valid.discoveredAt) < catalogTtlMs(valid)) return withUserModels(valid, cfg, store.projectRoot, env);
   const fresh = await discover(cfg, store.projectRoot, env, valid, { cliVersions: versions });

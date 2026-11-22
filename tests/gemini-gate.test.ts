@@ -95,18 +95,34 @@ describe("links no caminho pedido", () => {
     assert.equal(decideToolCall(call("write_file", { Path: raw, Content: "x" }), a).decision, "deny");
     assert.equal(canonicalPath(`${wt}/missing/new.ts`), join(wt, "missing", "new.ts"), "sem '..' o resto inexistente é literal");
   });
-  it("targets use the on-disk spelling; a symlink redirect inside the worktree is still refused", () => {
+  it("a target spelled differently from the disk is refused with the real spelling; links are refused", () => {
     const wt = tmp("duo-gate-wt-");
     writeFileSync(join(wt, "README.md"), "r");
     symlinkSync("README.md", join(wt, "alias.md"));
     assert.equal(resolveGeminiTargets(wt, [{ rel: "alias.md", isDir: false }], []).ok, false);
+    assert.ok(resolveGeminiTargets(wt, [{ rel: "README.md", isDir: false }], []).ok);
     if (existsSync(join(wt, "readme.md"))) {
       const r = resolveGeminiTargets(wt, [{ rel: "readme.md", isDir: false }], []);
-      assert.ok(r.ok, JSON.stringify(r));
-      assert.equal(r.ok && r.targets[0]?.rel, "README.md");
+      assert.equal(r.ok, false);
+      assert.match(r.ok ? "" : r.reason, /README\.md/);
       const upperRoot = wt.toUpperCase();
       if (existsSync(upperRoot)) assert.ok(resolveGeminiTargets(upperRoot, [{ rel: "README.md", isDir: false }], []).ok);
     }
+  });
+  it("a filesystem error while resolving a target becomes a refusal, not an exception", () => {
+    const wt = tmp("duo-gate-wt-");
+    writeFileSync(join(wt, "README.md"), "r");
+    const r = resolveGeminiTargets(wt, [{ rel: "README.md/child", isDir: false }], []);
+    assert.equal(r.ok, false);
+  });
+  it("a '..' after a link to a missing target is refused too", () => {
+    const wt = tmp("duo-gate-wt-");
+    mkdirSync(join(wt, "docs")); mkdirSync(join(wt, "src"));
+    symlinkSync("../gone", join(wt, "docs", "l"));
+    const raw = `${wt}/docs/l/../src/x.ts`;
+    assert.throws(() => canonicalPath(raw));
+    const a: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src", isDir: true }], deny: DENY, readOnly: false };
+    assert.equal(decideToolCall(call("write_file", { Path: raw, Content: "x" }), a).decision, "deny");
   });
   it("a target whose missing ancestor is a dangling link is refused", () => {
     const wt = tmp("duo-gate-wt-");

@@ -108,6 +108,11 @@ describe("descoberta do gemini", () => {
       const c = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env });
       // Redescoberto (sem CLIs, o último catálogo bom volta marcado como desatualizado), nunca servido como fresco.
       assert.ok(c.providers.claude.source !== "legado" || c.providers.claude.stale === true, JSON.stringify(c.providers.claude));
+      for (const cliVersions of [[], "unknown"]) {
+        writeFileSync(catalogPath(store), JSON.stringify({ ...legacy, cliVersions }));
+        const m = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env });
+        assert.ok(m.providers.claude.source !== "legado" || m.providers.claude.stale === true, JSON.stringify(cliVersions));
+      }
       writeFileSync(catalogPath(store), JSON.stringify({ discoveredAt: new Date().toISOString(), providers: "x" }));
       const r = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env, refresh: true });
       assert.ok(r.providers.gemini);

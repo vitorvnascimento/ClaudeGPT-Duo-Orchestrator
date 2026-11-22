@@ -56,9 +56,10 @@ export function canonicalPath(p: string, depth = 0): string {
       return join(next, ...rest);
     }
     if (st.isSymbolicLink()) {
+      // O alvo do link continua com o resto do caminho: a regra do ".." depois de inexistente vale através do link.
       const target = readlinkSync(next);
-      cur = canonicalPath(isAbsolute(target) ? target : `${cur}${sep}${target}`, depth + 1);
-      continue;
+      const base = isAbsolute(target) ? target : `${cur}${sep}${target}`;
+      return canonicalPath([base, ...parts.slice(i + 1)].join(sep), depth + 1);
     }
     cur = realpathSync.native(next);
   }
@@ -133,7 +134,9 @@ export function resolveGeminiTargets(
   writable: { rel: string; isDir: boolean }[],
   links: string[],
 ): { ok: true; targets: GeminiTarget[] } | { ok: false; reason: string } {
-  const root = canonicalPath(worktreeRoot);
+  let root: string;
+  try { root = canonicalPath(worktreeRoot); }
+  catch (e) { return { ok: false, reason: `worktree ilegível (${(e as NodeJS.ErrnoException).code ?? "erro"})` }; }
   const targets: GeminiTarget[] = [];
   for (const w of writable) {
     const rel = normalizeRel(w.rel);
@@ -148,11 +151,14 @@ export function resolveGeminiTargets(
       try { link = lstatSync(walk).isSymbolicLink(); } catch { break; }
       if (link) return { ok: false, reason: `alvo passa por link: ${rel}` };
     }
-    const abs = canonicalPath(join(root, rel));
+    let abs: string;
+    try { abs = canonicalPath(join(root, rel)); }
+    catch (e) { return { ok: false, reason: `alvo inválido (${(e as NodeJS.ErrnoException).code ?? "erro"}): ${rel}` }; }
     const realRel = relInside(root, abs);
-    // Mesma entrada com a grafia do disco (APFS ignora caixa e forma Unicode): o alvo passa a usar a grafia real.
-    const same = (a: string, b: string) => a.normalize("NFC").toLowerCase() === b.normalize("NFC").toLowerCase();
-    if (realRel === null || !same(realRel, rel)) return { ok: false, reason: `alvo fora da worktree após realpath: ${rel}` };
+    if (realRel === null) return { ok: false, reason: `alvo fora da worktree após realpath: ${rel}` };
+    // Grafia diferente da do disco (APFS ignora caixa e forma Unicode): recusa com a grafia real, para que escopo,
+    // base e verificação do patch usem o mesmo nome que o git registra.
+    if (realRel !== rel) return { ok: false, reason: `alvo com grafia diferente da do disco: use "${realRel}" em vez de "${rel}"` };
     const missingAncestors: string[] = [];
     for (let d = dirname(join(root, rel)); d !== root && !existsSync(d); d = dirname(d)) missingAncestors.unshift(d);
     // Link quebrado como ancestral "inexistente": existsSync diz que não existe, lstat mostra o link.
@@ -161,7 +167,7 @@ export function resolveGeminiTargets(
       try { link = lstatSync(d).isSymbolicLink(); } catch { link = false; }
       if (link) return { ok: false, reason: `ancestral é link: ${d}` };
     }
-    targets.push({ rel: realRel, abs, isDir: w.isDir, missingAncestors });
+    targets.push({ rel, abs, isDir: w.isDir, missingAncestors });
   }
   return { ok: true, targets };
 }

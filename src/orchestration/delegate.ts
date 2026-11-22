@@ -12,7 +12,7 @@ import { isPidAlive, runProcess } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
-import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy } from "../adapters/gemini.js";
+import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
@@ -230,8 +230,8 @@ function runGates(
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
     : req.executor === "gemini" ? probe(resolved, ["--help"], AGY_FLAGS, probeEnv)
     : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
-  if (req.executor === "gemini" && !isVerifiedAgy(caps.version, gem.platform ?? process.platform, gem.verified)) {
-    return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma; rode a sonda de contenção (tests/fixtures/agy/probe) antes de liberar` };
+  if (req.executor === "gemini" && !isVerifiedAgy(caps.rawVersion ?? null, gem.platform ?? process.platform, gem.verified)) {
+    return { ok: false, reason: `versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar` };
   }
   if (caps.missingRequired.length) {
     return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do ${req.executor} não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}` };

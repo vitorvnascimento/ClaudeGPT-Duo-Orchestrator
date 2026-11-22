@@ -92,6 +92,30 @@ describe("delegação ao gemini", () => {
     assert.equal(isVerifiedAgy("1.5.14", "darwin"), true);
     assert.equal(isVerifiedAgy("1.5.15", "darwin"), false);
     assert.equal(isVerifiedAgy("1.5.14", "linux"), false);
+    assert.equal(isVerifiedAgy("1.5.14-rc.1", "darwin"), false);
+  });
+
+  it("the default list admits the exact 1.5.14 build and refuses a 1.5.14 build with metadata", { skip: process.platform !== "darwin" }, async () => {
+    const ok = setup();
+    const good = await run(ok, req(), { FAKE_AGY_VERSION: "1.5.14", FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, { sandbox: false });
+    assert.equal(good.summary.state, "succeeded", JSON.stringify(good.summary));
+    ok.cleanup(); sb = undefined;
+    for (const v of ["1.5.14+build.7", "1.5.14-rc.1", "agy 1.5.14"]) {
+      const s = setup();
+      const out = await run(s, req(), { FAKE_AGY_VERSION: v }, { sandbox: false });
+      assert.equal(out.summary.state, "blocked", v);
+      assert.match(String(out.summary.outcome), /não verificada/, v);
+      assert.ok(String(out.summary.outcome).includes(JSON.stringify(v)), String(out.summary.outcome));
+      assert.equal(agyRuns(s).length, 0, v);
+      s.cleanup(); sb = undefined;
+    }
+  });
+
+  it("a --version probe that exits nonzero is never verified, even printing 1.5.14", { skip: process.platform !== "darwin" }, async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_VERSION: "1.5.14", FAKE_AGY_VERSION_EXIT: "1" }, { sandbox: false });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.equal(agyRuns(s).length, 0);
   });
 
   it("an agy version outside the default verified list is refused", async () => {

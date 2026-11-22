@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { loadSchema, validate } from "../schema.js";
 import type { ExecutorReport } from "../state/types.js";
 import { childEnv } from "../permissions/auth.js";
-import { compareVersions } from "./capabilities.js";
 import { validateGeminiArgv } from "./gemini-argv.js";
 import { writeExecutorSchema } from "./report-schema.js";
 import { SANDBOX_EXEC } from "./sandbox-profile.js";
@@ -31,8 +30,19 @@ function readGateModels(path?: string): string[] {
 
 export const SESSION_GUARD = { allowNonWorkspaceAccess: false, permissions: { deny: ["command(*)"] } };
 
+/** Rótulo curto e de uma linha da saída de --version para mensagens (a comparação usa a saída inteira). */
+export function agyVersionLabel(raw: string | null | undefined): string {
+  if (!raw) return "desconhecida";
+  const first = raw.split(/\r?\n/)[0] ?? "";
+  const cut = first.length > 40 || first.length < raw.length;
+  return `${JSON.stringify(first.slice(0, 40))}${cut ? "…" : ""}`;
+}
+
+export const AGY_UNVERIFIED_HINT = "a saída de agy --version precisa ser exatamente uma versão verificada";
+
 export function isVerifiedAgy(version: string | null, platform: NodeJS.Platform, list: readonly VerifiedAgy[] = GEMINI_VERIFIED): boolean {
-  return !!version && list.some((v) => v.platform === platform && compareVersions(v.version, version) === 0);
+  // Identidade exata: uma prévia com o mesmo número (1.5.14-rc.1) não passou na bateria.
+  return !!version && list.some((v) => v.platform === platform && v.version === version.trim());
 }
 
 export class GeminiAdapter implements ExecutorAdapter {
@@ -45,8 +55,8 @@ export class GeminiAdapter implements ExecutorAdapter {
   plan(input: InvocationInput): InvocationPlan {
     const { caps } = input;
     if (caps.missingRequired.length) throw new Error(`esta versão do agy não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}`);
-    if (!isVerifiedAgy(caps.version, process.platform, this.verified)) {
-      throw new Error(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma (${process.platform}); rode a sonda de contenção (tests/fixtures/agy/probe) antes de liberar`);
+    if (!isVerifiedAgy(caps.rawVersion ?? null, process.platform, this.verified)) {
+      throw new Error(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma (${process.platform}); ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar`);
     }
     if (!input.gemini) throw new Error("executor gemini sem HOME privado preparado pela ponte");
     if (!input.model) throw new Error("executor gemini exige modelo explícito (id gemini-*)");

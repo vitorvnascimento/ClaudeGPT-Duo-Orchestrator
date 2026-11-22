@@ -5,6 +5,8 @@ import type { Resolved } from "./resolve.js";
 
 export type Capabilities = {
   version: string | null;
+  /** Saída completa e aparada de --version (identidade exata para listas de versões verificadas). */
+  rawVersion?: string | null;
   flags: Record<string, boolean>;
   missingRequired: string[];
   divergences: string[];
@@ -74,7 +76,7 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-export function capabilitiesFromHelp(help: string, version: string | null, specs: Record<string, FlagSpec>): Capabilities {
+export function capabilitiesFromHelp(help: string, version: string | null, specs: Record<string, FlagSpec>, rawVersion: string | null = version): Capabilities {
   const flags: Record<string, boolean> = {};
   const missingRequired: string[] = [];
   const divergences: string[] = [];
@@ -89,15 +91,17 @@ export function capabilitiesFromHelp(help: string, version: string | null, specs
       if (!expected && present) divergences.push(`${spec.flag}: presente no --help da ${version}, documentado a partir de ${spec.since}`);
     }
   }
-  return { version, flags, missingRequired, divergences };
+  return { version, rawVersion, flags, missingRequired, divergences };
 }
 
 export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], specs: Record<string, FlagSpec>, env: NodeJS.ProcessEnv): Capabilities & { error?: string } {
   const v = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
   const version = parseVersion(v.stdout + v.stderr);
+  // Mesma regra da bateria: só a saída padrão de um --version bem-sucedido identifica a versão.
+  const rawVersion = v.ok ? v.stdout.trim() || null : null;
   const h = runQuick(resolved.command, [...resolved.prefixArgs, ...helpArgs], { env });
   if (!h.ok && !h.stdout) {
-    return { ...capabilitiesFromHelp("", version, specs), error: h.error ?? (h.stderr.slice(0, 300) || "falha ao ler --help") };
+    return { ...capabilitiesFromHelp("", version, specs, rawVersion), error: h.error ?? (h.stderr.slice(0, 300) || "falha ao ler --help") };
   }
-  return capabilitiesFromHelp(h.stdout + "\n" + h.stderr, version, specs);
+  return capabilitiesFromHelp(h.stdout + "\n" + h.stderr, version, specs, rawVersion);
 }

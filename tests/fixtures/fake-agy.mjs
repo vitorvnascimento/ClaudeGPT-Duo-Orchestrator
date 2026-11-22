@@ -11,7 +11,7 @@ const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const valueOf = (f) => (args.indexOf(f) >= 0 ? args[args.indexOf(f) + 1] : undefined);
 
-if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(0); }
+if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(Number(process.env.FAKE_AGY_VERSION_EXIT ?? 0)); }
 if (has("--help")) { process.stdout.write(readFileSync(join(here, "agy", "help-1.5.3.txt"), "utf8")); process.exit(0); }
 if (args[0] === "models") {
   log({ cmd: "agy-models", home: process.env.HOME });

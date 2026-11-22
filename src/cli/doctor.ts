@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
-import { isVerifiedAgy } from "../adapters/gemini.js";
+import { isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { createPrivateHome } from "../state/gemini-state.js";
 import { probeSandbox } from "../adapters/sandbox-profile.js";
@@ -126,12 +126,12 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     else {
       const caps = probe(resolved, ["--help"], AGY_FLAGS, probeEnv);
       const sandbox = probeSandbox();
-      const verified = isVerifiedAgy(caps.version, process.platform);
+      const verified = isVerifiedAgy(caps.rawVersion ?? null, process.platform);
       const blockers: string[] = [];
       if (process.platform !== "darwin") blockers.push("executor gemini exige macOS nesta versão");
       if (caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
       if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
-      if (!verified) blockers.push(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma`);
+      if (!verified) blockers.push(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}`);
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
       const parent = geminiParentEnvProblem(env);
       if (parent) blockers.push(parent);

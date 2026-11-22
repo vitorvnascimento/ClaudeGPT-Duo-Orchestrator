@@ -86,6 +86,13 @@ describe("disponibilidade e cota do gemini", () => {
     assert.ok(g.reasons.length > 0);
     assert.equal(typeof avail("codex").available, "boolean");
   });
+  it("an odd agy --version output shows up bounded and on one line", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });
+    const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: `1.5.14\n${"x".repeat(5000)}` }, sb.authPaths);
+    const reason = avail("gemini").reasons.find((r) => r.includes("agy")) ?? "";
+    assert.ok(reason.length > 0 && reason.length < 200, reason.slice(0, 300));
+    assert.ok(!reason.includes("\n"));
+  });
   it("a saved gemini exhaustion shows up in quotaStates", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);

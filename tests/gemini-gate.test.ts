@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { decideToolCall, gateHookScriptPath, listDeniedFiles, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
+import { buildInventory, decideToolCall, gateHookScriptPath, listDeniedFiles, resolveGeminiTargets, writeGateFiles, type GateAllowlist, type GateInventory } from "../src/adapters/gemini-gate.js";
 
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
@@ -18,7 +18,7 @@ function call(name: string, args: Record<string, unknown>, modelName = "gemini-3
 
 describe("decideToolCall", () => {
   const wt = "/WT";
-  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false, deniedFiles: [] };
+  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false, inventory: { files: [], blockedDirs: [], opaqueDirs: [] } };
   const canon = (p: string) => p; // caminhos já canônicos no teste puro
   it("allows only exact targets for writes", () => {
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts", Content: "1" }), allow, canon).decision, "allow");
@@ -32,22 +32,6 @@ describe("decideToolCall", () => {
   it("protected dirs are denied in any letter case", () => {
     const wide: GateAllowlist = { ...allow, write: [{ rel: ".", isDir: true }] };
     for (const p of ["/WT/.AGENTS/hooks.json", "/WT/.Git/config", "/WT/.DUO/x"]) assert.equal(decideToolCall(call("write_file", { Path: p }), wide, canon).decision, "deny", p);
-  });
-  it("recursive search is denied when it reaches a denied file of the worktree", () => {
-    const withDenied: GateAllowlist = { ...allow, deniedFiles: ["docs/a.key", "config/.env"] };
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/docs" }), withDenied, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT" }), withDenied, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), withDenied, canon).decision, "allow");
-    const { deniedFiles: _omit, ...noList } = allow;
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), noList, canon).decision, "deny", "sem a lista de negados, a busca recursiva falha fechada");
-  });
-  it("recursive search compares names case-insensitively (APFS) and treats nested repos as opaque", () => {
-    const a: GateAllowlist = { ...allow, deniedFiles: ["Docs/a.key", "vendor/sub/"] };
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/docs" }), a, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/DOCS/inner" }), { ...allow, deniedFiles: ["docs/inner/b.key"] }, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/vendor" }), a, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/vendor/sub/lib" }), a, canon).decision, "deny");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), a, canon).decision, "allow");
   });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");
@@ -73,6 +57,54 @@ describe("decideToolCall", () => {
   it("malformed input → deny", () => {
     for (const bad of [null, 1, "x", {}, { toolCall: null }, { toolCall: { name: 3 } }]) {
       assert.equal(decideToolCall(bad, allow, canon).decision, "deny");
+    }
+  });
+});
+
+describe("busca recursiva pela identidade do sistema de arquivos", () => {
+  function repo(): string {
+    const wt = tmp("duo-gate-wt-");
+    spawnSync("git", ["init", "-q"], { cwd: wt });
+    mkdirSync(join(wt, "Docs", "inner"), { recursive: true }); mkdirSync(join(wt, "src"));
+    writeFileSync(join(wt, "Docs", "inner", "a.key"), "k"); writeFileSync(join(wt, "src", "x.ts"), "1");
+    return wt;
+  }
+  const allowOf = (wt: string, inventory?: GateInventory): GateAllowlist => ({ worktreeRoot: wt, write: [], deny: DENY, readOnly: true, ...(inventory ? { inventory } : {}) });
+  const grep = (p: string) => call("grep_search", { Query: "x", SearchPath: p });
+  it("a search reaching a denied file is denied; a clean dir is allowed; no inventory fails closed", () => {
+    const wt = repo();
+    const a = allowOf(wt, buildInventory(wt, DENY) ?? undefined);
+    for (const p of [wt, join(wt, "Docs"), join(wt, "Docs", "inner")]) assert.equal(decideToolCall(grep(p), a).decision, "deny", p);
+    assert.equal(decideToolCall(grep(join(wt, "src")), a).decision, "allow");
+    assert.equal(decideToolCall(grep(join(wt, "src")), allowOf(wt)).decision, "deny");
+  });
+  it("another spelling of the same dir (case, Unicode form) is still denied", { skip: process.platform !== "darwin" }, () => {
+    const wt = repo();
+    mkdirSync(join(wt, "Caf\u00e9")); writeFileSync(join(wt, "Caf\u00e9", "b.key"), "k");
+    const a = allowOf(wt, buildInventory(wt, DENY) ?? undefined);
+    const lower = join(wt, "docs", "INNER");
+    if (existsSync(lower)) assert.equal(decideToolCall(grep(lower), a).decision, "deny");
+    const nfd = join(wt, "Cafe\u0301");
+    if (existsSync(nfd)) assert.equal(decideToolCall(grep(nfd), a).decision, "deny");
+    const upper = join(wt, "DOCS", "INNER", "A.KEY");
+    if (existsSync(upper)) assert.equal(decideToolCall(call("read_file", { Path: upper }), a).decision, "deny");
+  });
+  it("on a case-sensitive volume a clean sibling that differs only in case stays searchable", () => {
+    const wt = repo();
+    const sibling = join(wt, "docs");
+    if (existsSync(sibling)) return; // volume sem diferença de caixa: mesmo diretório
+    mkdirSync(sibling); writeFileSync(join(sibling, "ok.ts"), "1");
+    assert.equal(decideToolCall(grep(sibling), allowOf(wt, buildInventory(wt, DENY) ?? undefined)).decision, "allow");
+  });
+  it("a nested repository and a populated submodule are opaque", () => {
+    const wt = repo();
+    mkdirSync(join(wt, "vendor", "sub", "lib"), { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: join(wt, "vendor", "sub") });
+    mkdirSync(join(wt, "mods", "m"), { recursive: true }); writeFileSync(join(wt, "mods", "m", "x.txt"), "x");
+    spawnSync("git", ["update-index", "--add", "--cacheinfo", "160000,0123456789012345678901234567890123456789,mods/m"], { cwd: wt });
+    const a = allowOf(wt, buildInventory(wt, DENY) ?? undefined);
+    for (const p of [join(wt, "vendor"), join(wt, "vendor", "sub"), join(wt, "vendor", "sub", "lib"), join(wt, "mods"), join(wt, "mods", "m")]) {
+      assert.equal(decideToolCall(grep(p), a).decision, "deny", p);
     }
   });
 });
@@ -128,7 +160,7 @@ describe("arquivos do hook", () => {
   it("each gate setup gets its own log (no evidence from an earlier attempt)", () => {
     const wt = tmp("duo-gate-wt-");
     const home = tmp("duo-gate-home-");
-    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: DENY, readOnly: true, deniedFiles: [] };
+    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: DENY, readOnly: true };
     const first = writeGateFiles(wt, home, a, { nodePath: process.execPath });
     writeFileSync(first.logPath, '{"tool":"x","decision":"allow","modelName":"gemini-old"}\n');
     const second = writeGateFiles(wt, home, a, { nodePath: process.execPath });
@@ -142,7 +174,7 @@ describe("arquivos do hook", () => {
     const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: ["**/hooks.json"], readOnly: true };
     const files = writeGateFiles(wt, home, a, { nodePath: process.execPath, listDenied: true });
     const saved = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as GateAllowlist;
-    assert.ok(saved.deniedFiles?.includes(".agents/hooks.json"), JSON.stringify(saved.deniedFiles));
+    assert.equal(saved.inventory?.files.length, 1, JSON.stringify(saved.inventory));
   });
   it("listDeniedFiles lists a nested repository as an opaque directory", () => {
     const wt = tmp("duo-gate-wt-");
@@ -151,6 +183,12 @@ describe("arquivos do hook", () => {
     spawnSync("git", ["init", "-q"], { cwd: join(wt, "vendor", "sub") });
     writeFileSync(join(wt, "vendor", "sub", "x.txt"), "x");
     assert.ok(listDeniedFiles(wt, DENY)?.includes("vendor/sub/"));
+  });
+  it("listDeniedFiles lists a tracked submodule (gitlink) as an opaque directory", () => {
+    const wt = tmp("duo-gate-wt-");
+    spawnSync("git", ["init", "-q"], { cwd: wt });
+    spawnSync("git", ["update-index", "--add", "--cacheinfo", "160000,0123456789012345678901234567890123456789,mods/m"], { cwd: wt });
+    assert.ok(listDeniedFiles(wt, DENY)?.includes("mods/m/"), JSON.stringify(listDeniedFiles(wt, DENY)));
   });
   it("listDeniedFiles finds committed and untracked denied files without following links", () => {
     const wt = tmp("duo-gate-wt-");

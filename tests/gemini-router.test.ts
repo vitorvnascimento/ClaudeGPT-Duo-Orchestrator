@@ -106,6 +106,7 @@ describe("disponibilidade e cota do gemini", () => {
   it("a failing probe setup (no usable TMPDIR) only makes gemini unavailable", { skip: process.platform !== "darwin" }, async () => {
     sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
     const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: "1.5.14" };
+    const baseline = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
     const blocker = join(sb.root, "not-a-dir");
     writeFileSync(blocker, "x");
     const saved = process.env.TMPDIR;
@@ -113,7 +114,8 @@ describe("disponibilidade e cota do gemini", () => {
     try {
       const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
       assert.equal(avail("gemini").available, false);
-      assert.equal(typeof avail("codex").available, "boolean");
+      assert.ok(avail("gemini").reasons.some((r) => /tempor|sonda|login/.test(r)), JSON.stringify(avail("gemini")));
+      for (const p of ["claude", "codex"] as const) assert.deepEqual(avail(p), baseline(p), p);
     } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
   });
   it("a saved gemini exhaustion shows up in quotaStates", () => {

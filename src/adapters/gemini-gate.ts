@@ -3,14 +3,20 @@
 // nega, quebra, devolve lixo ou estoura o tempo (verificado no 1.5.3), então o gate só precisa errar para "deny".
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { packageRoot } from "../paths.js";
 import { isDenied, normalizeRel } from "../permissions/scope.js";
 
 export type GeminiTarget = { rel: string; abs: string; isDir: boolean; missingAncestors: string[] };
-/** deniedFiles: arquivos da worktree que casam scope.deny (busca recursiva que os alcança é negada; ausente = nega toda busca). */
-export type GateAllowlist = { worktreeRoot: string; write: { rel: string; isDir: boolean }[]; deny: string[]; readOnly: boolean; deniedFiles?: string[] };
+/**
+ * Inventário por identidade do sistema de arquivos ("dev:ino"), imune a caixa e forma Unicode do caminho pedido:
+ * files = arquivos negados; blockedDirs = pastas que contêm (em qualquer nível) um negado ou uma pasta opaca;
+ * opaqueDirs = repositórios aninhados e submódulos (o git não lista o conteúdo).
+ */
+export type GateInventory = { files: string[]; blockedDirs: string[]; opaqueDirs: string[] };
+/** inventory ausente = toda busca recursiva é negada. */
+export type GateAllowlist = { worktreeRoot: string; write: { rel: string; isDir: boolean }[]; deny: string[]; readOnly: boolean; inventory?: GateInventory };
 export type GateDecision = { decision: "allow" | "deny"; reason: string };
 
 /** Ferramentas de leitura liberadas dentro da worktree. Nomes fora destas listas são negados. */
@@ -57,20 +63,19 @@ function relInside(root: string, abs: string): string | null {
   return r.split(sep).join("/");
 }
 
-/**
- * A busca em rel alcança a entrada f do inventário? Sem diferença de caixa (o APFS padrão ignora caixa e o realpath do
- * Node pode manter a do chamador). Entrada terminada em "/" é opaca (repositório aninhado: conteúdo não listado) e
- * bloqueia também buscas dentro dela.
- */
-function reaches(rel: string, f: string): boolean {
-  const r = rel.toLowerCase();
-  if (r === ".") return true;
-  const entry = f.toLowerCase();
-  if (entry.endsWith("/")) {
-    const base = entry.slice(0, -1);
-    return base === r || base.startsWith(`${r}/`) || r.startsWith(`${base}/`);
+/** Identidade do arquivo/pasta no sistema de arquivos; null se não existe. */
+function ident(p: string): string | null {
+  try { const st = statSync(p); return `${st.dev}:${st.ino}`; } catch { return null; }
+}
+
+/** p e cada ancestral até a raiz da worktree (inclusive). */
+function selfAndAncestors(p: string, root: string): string[] {
+  const out: string[] = [];
+  for (let cur = p; ; cur = dirname(cur)) {
+    out.push(cur);
+    if (cur === root || dirname(cur) === cur || relInside(root, cur) === null) break;
   }
-  return entry === r || entry.startsWith(`${r}/`);
+  return out;
 }
 
 export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: string) => string = canonicalPath): GateDecision {
@@ -88,10 +93,16 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
         if (rel === null) return deny(`leitura fora da worktree: ${p}`);
         const denied = rel !== "." && isDenied(rel, allow.deny);
         if (denied) return deny(`leitura negada (${denied}): ${rel}`);
+        const inv = allow.inventory;
+        const id = ident(p);
+        // Arquivo negado escrito de outro jeito (caixa, forma Unicode): a identidade é a mesma.
+        if (inv && id && inv.files.includes(id)) return deny(`leitura negada (arquivo negado): ${rel}`);
         if (RECURSIVE_CONTENT.has(name)) {
-          if (!allow.deniedFiles) return deny(`${name}: lista de arquivos negados indisponível`);
-          const hit = allow.deniedFiles.find((f) => reaches(rel, f));
-          if (hit) return deny(`${name} em ${rel} alcança arquivo negado (${hit}); busque numa pasta sem arquivos negados`);
+          if (!inv) return deny(`${name}: inventário de arquivos negados indisponível`);
+          if (id && inv.blockedDirs.includes(id)) return deny(`${name} em ${rel} alcança arquivo negado ou repositório aninhado; busque numa pasta sem eles`);
+          if (selfAndAncestors(p, allow.worktreeRoot).some((x) => { const a = ident(x); return !!a && inv.opaqueDirs.includes(a); })) {
+            return deny(`${name} em ${rel}: dentro de repositório aninhado ou submódulo`);
+          }
         }
       }
       // list_dir/find_by_name mostram nomes (não conteúdo) de arquivos negados dentro da pasta; limitação documentada.
@@ -138,13 +149,41 @@ export function resolveGeminiTargets(
 }
 
 /**
- * Inventário da busca recursiva: arquivos da worktree (versionados e não versionados, sem seguir links) que casam
- * scope.deny, mais diretórios opacos ("dir/": repositório aninhado, cujo conteúdo o git não lista). null se o git falhar.
+ * Entradas da worktree para o inventário: arquivos (versionados e não versionados, sem seguir links) que casam
+ * scope.deny, e diretórios opacos com "/" no fim (repositório aninhado e submódulo, modo 160000: o git não lista o
+ * conteúdo). null se o git falhar.
  */
 export function listDeniedFiles(worktreeRoot: string, deny: string[]): string[] | null {
-  const r = spawnSync("git", ["-C", worktreeRoot, "ls-files", "-z", "--cached", "--others"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0 || r.error) return null;
-  return [...new Set(r.stdout.split("\0").filter((f) => f && (f.endsWith("/") || isDenied(f, deny))))];
+  const git = (args: string[]) => spawnSync("git", ["-C", worktreeRoot, "ls-files", "-z", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const staged = git(["--stage"]), others = git(["--others"]);
+  if (staged.status !== 0 || staged.error || others.status !== 0 || others.error) return null;
+  const out = new Set<string>();
+  for (const rec of staged.stdout.split("\0")) {
+    const tab = rec.indexOf("\t");
+    if (tab < 0) continue;
+    const path = rec.slice(tab + 1);
+    if (rec.startsWith("160000 ")) out.add(`${path}/`);
+    else if (isDenied(path, deny)) out.add(path);
+  }
+  for (const f of others.stdout.split("\0")) if (f && (f.endsWith("/") || isDenied(f, deny))) out.add(f);
+  return [...out];
+}
+
+/** Inventário por identidade a partir das entradas acima; null se o git falhar. */
+export function buildInventory(worktreeRoot: string, deny: string[]): GateInventory | null {
+  const entries = listDeniedFiles(worktreeRoot, deny);
+  if (!entries) return null;
+  const root = realpathSync(worktreeRoot);
+  const files = new Set<string>(), blocked = new Set<string>(), opaque = new Set<string>();
+  for (const e of entries) {
+    const abs = join(root, e.replace(/\/$/, ""));
+    const id = ident(abs);
+    if (!id) continue;
+    if (e.endsWith("/")) opaque.add(id); else files.add(id);
+    for (const d of selfAndAncestors(dirname(abs), root)) { const a = ident(d); if (a) blocked.add(a); }
+    if (e.endsWith("/")) blocked.add(id);
+  }
+  return { files: [...files], blockedDirs: [...blocked], opaqueDirs: [...opaque] };
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -174,8 +213,8 @@ export function writeGateFiles(
   const hooksPath = join(agents, "hooks.json");
   writeFileSync(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`);
   // Inventário dos negados com a worktree já final (inclui o .agents/hooks.json gerado acima).
-  const deniedFiles = opts.listDenied ? listDeniedFiles(worktreeRoot, allow.deny) : null;
-  const saved: GateAllowlist = opts.listDenied ? { ...allow, ...(deniedFiles ? { deniedFiles } : {}) } : allow;
+  const inventory = opts.listDenied ? buildInventory(worktreeRoot, allow.deny) : null;
+  const saved: GateAllowlist = opts.listDenied ? { ...allow, ...(inventory ? { inventory } : {}) } : allow;
   writeFileSync(allowlistPath, `${JSON.stringify(saved)}\n`, { mode: 0o600 });
   return { hooksPath, allowlistPath, logPath };
 }

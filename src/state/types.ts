@@ -1,4 +1,5 @@
 import type { CodexRolloutEvidence } from "../adapters/codex-rollout.js";
+import type { ComputerUseEvidence } from "../adapters/computer-use-evidence.js";
 import type { Effort, Tier } from "../adapters/tiers.js";
 import type { BrainProvider, Policy, Provider } from "../config.js";
 
@@ -28,7 +29,8 @@ export type DelegationRequest = {
   /** Modelo do próprio cérebro, quando conhecido (evita delegar ao mesmo modelo). */
   brainModel?: string;
   /** Capacidades exigidas pela subtarefa (ex.: image_generation). */
-  needs?: ("code" | "image_generation")[];
+  needs?: ("code" | "image_generation" | "computer_use")[];
+  apps?: string[];
   isolation?: "in-place" | "worktree";
   scope: { allowedPaths: string[] };
   constraints?: string[];
@@ -44,6 +46,7 @@ export type ExecutorReport = {
   testsRun: { command: string; exitCode: number | null; passed: boolean }[];
   limitations: string[];
   blockedReason: string | null;
+  appsUsed?: string[];
 };
 
 export type AcceptanceResult = {
@@ -82,6 +85,7 @@ export type TaskMetrics = {
 
 export type Verification = {
   filesChangedActual: string[];
+  filesChangedCount?: number;
   outOfScope: string[];
   deniedTouched: string[];
   claimsMismatch: string[];
@@ -133,6 +137,7 @@ export type Chain = {
   taskKey: string | null;
   requestHash: string;
   originalRequestPath: string;
+  snapshotExcludedPaths?: string[];
   floorTier: Tier;
   minTier: Tier;
   minEffort: Effort | null;
@@ -165,7 +170,8 @@ export type Task = {
   brainModel?: string | null;
   /** Extensões de arquivo do escopo (ex.: "ts", "py"): usadas para comparar tarefas no roteador. */
   tags: string[];
-  needs: ("code" | "image_generation")[];
+  needs: ("code" | "image_generation" | "computer_use")[];
+  apps?: string[];
   isolation: "in-place" | "worktree";
   scope: string[];
   constraints: string[];
@@ -177,6 +183,7 @@ export type Task = {
   /** Provas pós-execução registradas pelo próprio cliente (ex.: rollout do Codex) e origem das imagens. */
   evidence?: {
     codex?: CodexRolloutEvidence | null;
+    computerUse?: ComputerUseEvidence;
     images?: { path: string; sha256: string; generatedByExecutorTool: boolean }[];
   };
   effort?: { requested: string | null };
@@ -194,6 +201,7 @@ export type Task = {
   verification: Verification | null;
   metrics: TaskMetrics | null;
   outcome: string | null;
+  blockedReason?: { kind: "app_permission"; app: string };
   limitations: string[];
   retryOf?: string;
   accepted?: { at: string; accepted: boolean; note: string };

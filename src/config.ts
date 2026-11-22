@@ -27,6 +27,7 @@ export type DuoConfig = {
   defaultBrain: BrainProvider;
   policy: Policy;
   quotaPreference: QuotaPreference;
+  computerUse: { enabled: boolean };
   limits: {
     maxDelegationsPerRun: number;
     qualityBudgetAuthorized: boolean;
@@ -97,6 +98,7 @@ export const DEFAULT_CONFIG: DuoConfig = {
   defaultBrain: "claude",
   policy: "economico",
   quotaPreference: "balance",
+  computerUse: { enabled: false },
   limits: {
     maxDelegationsPerRun: 8,
     qualityBudgetAuthorized: false,
@@ -186,6 +188,7 @@ export function loadConfig(projectRoot: string): DuoConfig {
   }
   const cfg = merge(structuredClone(DEFAULT_CONFIG), raw);
   const problems: string[] = [];
+  if (!isObj(cfg.computerUse) || typeof cfg.computerUse.enabled !== "boolean") problems.push("computerUse.enabled (boolean)");
   if (!["claude", "codex"].includes(cfg.defaultBrain)) problems.push("defaultBrain");
   if (!["economico", "equilibrado", "qualidade"].includes(cfg.policy)) problems.push("policy");
   if (!["balance", "preserve-codex", "preserve-claude"].includes(cfg.quotaPreference)) problems.push("quotaPreference");

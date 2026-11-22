@@ -382,7 +382,7 @@ describe("seleção e escalada adaptativas", () => {
 });
 
 describe("esforço explícito nos executores", () => {
-  it("sem effort, argv idênticos ao contrato 0.2.0 dos dois adaptadores", () => {
+  it("sem effort, preserva os argumentos e desliga computer use no Codex", () => {
     const s = setup();
     const input: InvocationInput = {
       resolved: { ok: true, command: "/bin/cli", prefixArgs: [], source: "path" },
@@ -390,12 +390,12 @@ describe("esforço explícito nos executores", () => {
       cfg: loadConfig(s.root), cwd: s.root, kind: "review", prompt: "p", writableAbs: [], denyGlobs: [], acceptanceArgv: [], needs: [],
       model: "fixed-model", resumeSessionId: null, artifactsDir: new Store(s.root).base, env: s.env,
     };
-    // Captura do argv da 0.2.0; apenas caminhos e JSON do schema são normalizados.
+    // Apenas caminhos e JSON do schema são normalizados.
     const expected = {
       claude: ["-p", "--output-format", "stream-json", "--verbose", "--json-schema", "<schema>", "--permission-mode", "dontAsk", "--tools", "Read,Grep,Glob", "--disallowedTools",
         "Bash(claude *)", "Bash(codex *)", "Bash(duo *)", "Bash(npx duo*)", "Bash(npm exec duo*)", "Bash(node *duo-orchestrator*)",
         "Bash(git reset *)", "Bash(git clean *)", "Bash(git stash *)", "Bash(git checkout *)", "Bash(git push *)", "Bash(git commit *)", "--model", "fixed-model"],
-      codex: ["exec", "--json", "--sandbox", "read-only", "--cd", "<cwd>", "--output-schema", "<schema>", "--model", "fixed-model", "-"],
+      codex: ["exec", "--json", "--sandbox", "read-only", "--cd", "<cwd>", "--output-schema", "<schema>", "--model", "fixed-model", "--config", "plugins.unified-computer-use@openai-bundled.enabled=false", "-"],
     };
     for (const p of ["claude", "codex"] as const) {
       for (const patch of [{}, { effort: null }]) {
@@ -1182,6 +1182,21 @@ describe("admissão paralela", () => {
 });
 
 describe("snapshot e verificação da worktree", () => {
+  for (const tracked of [false, true]) it(`excludes the project request from a normal worktree snapshot (tracked=${tracked})`, async () => {
+    const s = setup();
+    const name = "request[1].json";
+    const request = baseRequest("claude", { isolation: "worktree" });
+    s.write(name, JSON.stringify(request));
+    if (tracked) {
+      s.git("add", "--", name);
+      s.git("commit", "-qm", "fixture");
+    }
+    const out = await delegate({ cwd: s.root, requestPath: name, env: s.env, authPaths: s.authPaths });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(existsSync(join(task(s, out.summary.taskId).worktree!, name)), false);
+    assert.deepEqual(JSON.parse(s.read(name)), request);
+  });
+
   it("worktree com escopo sujo agora roda e o patch contém só o trabalho do executor", async () => {
     const s = setup();
     s.write("src/app.ts", "export const app = 1;\n// rascunho\n");
@@ -1259,6 +1274,23 @@ describe("integração paralela", () => {
     assert.equal(applied.ok, false); assert.match(applied.message, /src\/novo.ts/);
     assert.equal(s.read("src/novo.ts"), "cérebro\n");
   });
+});
+
+it("persiste a ponte antes de publicar o slot, inclusive antes de iniciar o executor", async (t) => {
+  const s = setup(), admit = ExecutorSlots.prototype.admit;
+  let checked = false;
+  t.mock.method(ExecutorSlots.prototype, "admit", function (this: ExecutorSlots, req: Parameters<typeof admit>[0], beforePublish: Parameters<typeof admit>[1]) {
+    return admit.call(this, req, () => {
+      beforePublish?.();
+      const saved = new Store(s.root).loadTask(req.runId, req.taskId)!;
+      assert.equal(saved.state, "approved");
+      assert.deepEqual(saved.pids, { bridge: process.pid, child: null });
+      checked = true;
+    });
+  });
+  const out = await run(s, baseRequest("codex", { kind: "review" }));
+  assert.equal(out.summary.state, "succeeded");
+  assert.equal(checked, true);
 });
 
 it("quatro executores verificam patches próprios no mesmo run com deriva externa", async () => {

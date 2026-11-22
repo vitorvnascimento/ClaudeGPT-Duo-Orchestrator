@@ -13,6 +13,9 @@ export type JsonSchema = {
   properties?: Record<string, JsonSchema>;
   additionalProperties?: boolean;
   items?: JsonSchema;
+  if?: JsonSchema;
+  then?: JsonSchema;
+  contains?: JsonSchema;
   minItems?: number;
   maxItems?: number;
   minLength?: number;
@@ -59,6 +62,7 @@ export function validate(schema: JsonSchema, value: unknown, path = "$"): string
       return errors;
     }
   }
+  if (schema.if && schema.then && validate(schema.if, value, path).length === 0) errors.push(...validate(schema.then, value, path));
   if ("const" in schema && value !== schema.const) {
     errors.push(`${path}: deve ser ${JSON.stringify(schema.const)}`);
   }
@@ -75,6 +79,7 @@ export function validate(schema: JsonSchema, value: unknown, path = "$"): string
     if (schema.maximum !== undefined && value > schema.maximum) errors.push(`${path}: maior que ${schema.maximum}`);
   }
   if (Array.isArray(value)) {
+    if (schema.contains && !value.some(item => validate(schema.contains!, item).length === 0)) errors.push(`${path}: item obrigatório ausente`);
     if (schema.minItems !== undefined && value.length < schema.minItems) errors.push(`${path}: mínimo de ${schema.minItems} itens`);
     if (schema.maxItems !== undefined && value.length > schema.maxItems) errors.push(`${path}: máximo de ${schema.maxItems} itens`);
     if (schema.items) value.forEach((item, i) => errors.push(...validate(schema.items as JsonSchema, item, `${path}[${i}]`)));

@@ -44,6 +44,21 @@ it("config/read normaliza sem segredos, filtra env e chama somente initialize/in
   assert.match(codexConflictsFromEffective(eff).conflicts.join(" "), /billing.allowLoopbackProxy/);
 });
 
+it("enumerates plugin identifiers across participating layers without retaining configuration values", async () => {
+  const { options } = setup({ plugins: { _default: { enabled: false }, "effective@market": { enabled: true, config: "PRIVATE_VALUE" } } });
+  const env = { ...options.env, FAKE_CODEX_LAYERS: JSON.stringify([
+    { config: { plugins: { "layer@market": { enabled: true, config: "PRIVATE_VALUE" } } } },
+    { disabledReason: "disabled", config: { plugins: { "disabled@market": { enabled: true } } } },
+  ]) };
+  const eff = await readEffectiveCodexConfig({ ...options, env });
+  assert.deepEqual(eff?.pluginKeys, ["effective@market", "layer@market"]);
+  assert.doesNotMatch(JSON.stringify(eff), /PRIVATE_VALUE/);
+  const missingLayers = await readEffectiveCodexConfig(options);
+  assert.equal(missingLayers?.pluginKeys, null);
+  const malformed = await readEffectiveCodexConfig({ ...options, env: { ...env, FAKE_CODEX_LAYERS: JSON.stringify([{ config: { plugins: [] } }]) } });
+  assert.equal(malformed?.pluginKeys, null);
+});
+
 it("rodada 17: config efetivo bloqueia provider remoto mascarado por duas strings multilinha", async () => {
   const { options, cfg, resolved } = setup({ model_provider: "remote", model_providers: { remote: { ...loopback, base_url: "https://remote.example/v1" } } });
   writeFileSync(join(s.home, ".codex/config.toml"), ['model_provider = "remote"', 'developer_instructions = """', '\\"""', 'model_provider = "openai"', '"""', 'instructions = """', '\\"""', 'model_provider = "openai"', '"""', '[model_providers.remote]', 'base_url = "https://remote.example/v1"', 'requires_openai_auth = true'].join("\n"));

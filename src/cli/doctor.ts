@@ -1,5 +1,5 @@
 // Diagnóstico sem inferência: versões, help, status e schema locais; versões publicadas consultadas anonimamente.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
@@ -14,9 +14,69 @@ import { git, repoRoot } from "../git.js";
 import { cachedCatalog, checkCodexCatalogContract, describeSource } from "../adapters/catalog.js";
 import { cliUpdateWarnings, loadCliLatest, type FetchLike } from "../adapters/cli-latest.js";
 import { Store } from "../state/store.js";
+import { inspectSlots, type SlotInfo } from "../state/slots.js";
 import { authBlockReason, BILLING_ENV, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 
-export type DoctorReport = Record<string, unknown> & { ready: Record<Provider, boolean> };
+export type ComputerUseDiagnostics = {
+  configuredOptIn: boolean;
+  platform: NodeJS.Platform;
+  macosSupported: boolean;
+  plugin: "computer-use@openai-bundled";
+  runtime: "unified-computer-use@openai-bundled";
+  pluginPresent: boolean;
+  runtimePresent: boolean;
+  available: boolean;
+  appEnforcement: "codex-app-approvals";
+  appsEnforcement: "post-execution-detection";
+  reason: string;
+};
+
+export type DoctorReport = Record<string, unknown> & { ready: Record<Provider, boolean>; computerUse?: ComputerUseDiagnostics; executorSlots?: SlotInfo[] };
+
+// Cache evidence only: never load a plugin, MCP, CLI, config contents or UI.
+function cachedPluginPresent(codexHome: string, name: string): boolean {
+  const dir = join(codexHome, "plugins", "cache", "openai-bundled", name);
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((entry) => {
+      if (!entry.isDirectory()) return false;
+      try {
+        return statSync(join(dir, entry.name, ".codex-plugin", "plugin.json")).isFile();
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function computerUseDiagnostics(
+  config: DuoConfig["computerUse"],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ComputerUseDiagnostics {
+  const codexHome = env.CODEX_HOME ?? join(env.HOME ?? env.USERPROFILE ?? homedir(), ".codex");
+  const macosSupported = platform === "darwin";
+  const pluginPresent = cachedPluginPresent(codexHome, "computer-use");
+  const runtimePresent = cachedPluginPresent(codexHome, "unified-computer-use");
+  const missing: string[] = [];
+  if (!macosSupported) missing.push("macOS required");
+  if (!config.enabled) missing.push("project opt-in required (computerUse.enabled=true)");
+  if (!runtimePresent) missing.push("unified-computer-use runtime missing from local cache");
+  return {
+    configuredOptIn: config.enabled,
+    platform,
+    macosSupported,
+    plugin: "computer-use@openai-bundled",
+    runtime: "unified-computer-use@openai-bundled",
+    pluginPresent,
+    runtimePresent,
+    available: missing.length === 0,
+    appEnforcement: "codex-app-approvals",
+    appsEnforcement: "post-execution-detection",
+    reason: `${missing.length ? `Prerequisites missing: ${missing.join("; ")}.` : "Local prerequisites present."} Native boundary: Codex per-app approvals; approval may still block execution. Task apps are AFTER-THE-FACT detection, not prevention. Cache evidence does not verify activation, macOS permissions, any app approval or actual clicks; no UI or inference was invoked.`,
+  };
+}
 
 function hookEvents(file: string): string[] {
   try {
@@ -194,6 +254,8 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     system: { platform: process.platform, arch: process.arch, node: process.version, git: gitVersion.stdout.trim() || "não encontrado" },
     project: { root: root ?? null, isGitRepo: root !== null, config: configError ?? (existsSync(configPath(projectRoot)) ? "ok" : "padrão (sem .duo/config.json)"), duoIgnored: ignored },
     providers,
+    computerUse: computerUseDiagnostics(effectiveCfg.computerUse, env),
+    executorSlots: inspectSlots(projectRoot),
     directions: {
       "claude→codex (Claude cérebro, Codex executor)": ready.codex ? "pronto" : "bloqueado (ver providers.codex.blockers)",
       "codex→claude (Codex cérebro, Claude executor)": ready.claude ? "pronto" : "bloqueado (ver providers.claude.blockers)",
@@ -215,6 +277,18 @@ export function formatDoctor(r: DoctorReport): string {
   lines.push(`duo doctor — ${sys.platform}/${sys.arch} node ${sys.node} | ${sys.git}`);
   const proj = r.project as Record<string, unknown>;
   lines.push(`projeto: ${String(proj.root ?? "(fora de repositório Git)")} | config: ${String(proj.config)}`);
+  for (const slot of r.executorSlots ?? []) {
+    lines.push(`slot ${slot.slot}: ${slot.taskId}, ponte pid ${slot.pid}, exclusive=${slot.exclusive === true}, nonce=${slot.nonce}`);
+    if (slot.exclusive) lines.push("  Reserva órfã: verifique que ponte, executor e descendentes terminaram; então duo doctor --release-slot <nonce> --confirm-executor-stopped. Recuperação compara nascimento da ponte com o slot e recusa filho auditado vivo; nunca mata PID não verificado.");
+  }
+  if (r.computerUse) {
+    const cu = r.computerUse;
+    lines.push(`\n[computer use — prerequisites]\n  configuredOptIn=${cu.configuredOptIn} | platform=${cu.platform} | macosSupported=${cu.macosSupported}`);
+    lines.push(`  ${cu.plugin}: pluginPresent=${cu.pluginPresent} (optional legacy package; local cache only)`);
+    lines.push(`  ${cu.runtime}: runtimePresent=${cu.runtimePresent} (local cache only)`);
+    lines.push(`  available=${cu.available} (prerequisites only) | appEnforcement=${cu.appEnforcement} | appsEnforcement=${cu.appsEnforcement}`);
+    lines.push(`  ${cu.reason}`);
+  }
   for (const [p, info] of Object.entries(r.providers as Record<string, Record<string, unknown>>)) {
     lines.push(`\n[${p}]`);
     if (p === "gemini") {

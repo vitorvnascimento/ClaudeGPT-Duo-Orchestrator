@@ -23,6 +23,11 @@
       }
     },
     "limitations": { "type": "array", "items": { "type": "string" } },
-    "blockedReason": { "type": ["string", "null"] }
+    "blockedReason": { "type": ["string", "null"] },
+    "appsUsed": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" }
+    }
   }
 }

@@ -2,10 +2,11 @@
 // verifica o resultado de forma independente e registra estado e métricas. Não é um segundo cérebro.
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
-import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
+import { collectCodexEvidence, readRolloutEvidence, sha256File } from "../adapters/codex-rollout.js";
+import { canonicalAppId, ComputerUseCollector, sanitizeComputerUseLine } from "../adapters/computer-use-evidence.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { CodexAdapter } from "../adapters/codex.js";
 import { isPidAlive, runProcess } from "../adapters/process.js";
@@ -21,16 +22,18 @@ import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweep
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
+import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { authBlockReason, checkAuth, childEnv, codexConfiguredModel, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import { inScope, isDenied, validateScope, type ScopeEntry } from "../permissions/scope.js";
 import { createStreamRedactor, redact, redactDeep } from "../redact.js";
 import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
-import { newId, readJson, Store, writeJsonAtomic } from "../state/store.js";
+import { newId, Store, writeJsonAtomic } from "../state/store.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
+import { refreshInterrupted } from "./control.js";
 import { buildExecutorPrompt } from "./prompt.js";
 import { extraUsage, selectEffort, tierOf, type Effort, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, TIERS, tierRank } from "./complexity.js";
@@ -87,6 +90,12 @@ function stableHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(sort(value))).digest("hex").slice(0, 16);
 }
 
+function appApprovalInstruction(app: string, taskId: string): string {
+  const resume = `duo delegate --resume ${taskId}`;
+  return `Approve only ${app} in Codex, preferably once if offered, then run ${resume}.\n` +
+    `Aprove somente ${app} no Codex, de preferência uma vez se essa opção estiver disponível, e rode ${resume}.`;
+}
+
 function exitFor(state: TaskState): number {
   return state === "succeeded" ? EXIT.ok : state === "blocked" ? EXIT.blocked : state === "cancelled" ? EXIT.cancelled : EXIT.failed;
 }
@@ -112,18 +121,19 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     brain: req.brain,
     executor: req.executor,
     kind: req.kind,
-    objective: req.objective,
+    objective: req.needs?.includes("computer_use") ? "Computer use task" : req.objective,
     reason: req.reason,
-    rationale: req.rationale,
+    rationale: req.needs?.includes("computer_use") ? "Computer use request" : req.rationale,
     risk: req.risk ?? "medium",
     brainModel: req.brainModel ?? null,
     tags: [],
     needs: req.needs ?? [],
-    isolation: req.isolation ?? "in-place",
+    ...(req.apps !== undefined ? { apps: [...req.apps] } : {}),
+    isolation: req.needs?.includes("computer_use") ? "worktree" : req.isolation ?? "in-place",
     scope: req.scope.allowedPaths,
-    constraints: req.constraints ?? [],
-    acceptanceCriteria: req.acceptance.criteria,
-    acceptanceCommands: req.acceptance.commands ?? [],
+    constraints: req.needs?.includes("computer_use") ? [] : req.constraints ?? [],
+    acceptanceCriteria: req.needs?.includes("computer_use") ? [] : req.acceptance.criteria,
+    acceptanceCommands: req.needs?.includes("computer_use") ? [] : req.acceptance.commands ?? [],
     requestHash: stableHash(hashable),
     base: null,
     model: { requested: req.model ?? cfg.executors[req.executor].model ?? null, reported: null, reportedSource: "unavailable" },
@@ -147,7 +157,7 @@ function newRun(req: DelegationRequest, cfg: DuoConfig): Run {
   return { runId: newId("run"), brain: req.brain, policy: cfg.policy, createdAt: now, updatedAt: now, cancelled: false, invocations: 0, taskIds: [], decisions: [], nextStep: null };
 }
 
-function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+function readRequestFile(cwd: string, requestPath: string): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
   const p = resolve(cwd, requestPath);
   let raw: string;
   try {
@@ -164,7 +174,15 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
   }
   const errors = validate(loadSchema("delegation-request"), parsed);
   if (errors.length) return { ok: false, out: invalid("pedido fora do schema", errors) };
-  const req = parsed as DelegationRequest;
+  return { ok: true, req: parsed as DelegationRequest };
+}
+
+function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean, cfg: DuoConfig): { ok: true; req: DelegationRequest } | { ok: false; out: DelegateOutcome } {
+  const contents = readRequestFile(cwd, requestPath);
+  if (!contents.ok) return contents;
+  const { req } = contents;
+  const cuReason = computerUseBlockReason(req, cfg.computerUse.enabled);
+  if (cuReason) return { ok: false, out: invalid(cuReason) };
   if (req.brain === req.executor && !req.model && (!adaptiveEnabled || req.adaptive === false)) {
     return { ok: false, out: invalid(`delegar ao mesmo cliente (${req.brain}) exige "model" explícito (outro modelo da mesma conta); sem isso, faça você mesmo`) };
   }
@@ -218,7 +236,7 @@ function runGates(
   const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: readOnly });
   if (!scope.ok) return { ok: false, reason: `escopo inválido: ${scope.errors.join("; ")}` };
 
-  for (const c of req.acceptance.commands ?? []) {
+  for (const c of req.needs?.includes("computer_use") ? [] : req.acceptance.commands ?? []) {
     if (!isAllowlisted(c.argv, cfg.acceptance.allowedCommands)) {
       return { ok: false, reason: `comando de aceite "${c.name}" (${c.argv.join(" ")}) não está em acceptance.allowedCommands de .duo/config.json` };
     }
@@ -235,6 +253,11 @@ function runGates(
   }
   if (caps.missingRequired.length) {
     return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do ${req.executor} não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}` };
+  }
+  if (task.needs.includes("computer_use") && task.native.sessionId) {
+    const resumeCaps = probe(resolved, ["exec", "resume", "--help"], CODEX_EXEC_FLAGS, probeEnv);
+    const required = ["json", "config", "enable", "disable", "outputSchema", ...(task.model.requested ? ["model"] : [])];
+    if (required.some((flag) => !resumeCaps.flags[flag])) return { ok: false, reason: "a versão do codex não anuncia as flags necessárias para retomar computer use" };
   }
   if (task.model.requested && !caps.flags.model) return { ok: false, reason: `modelo solicitado, mas esta versão do ${req.executor} não anuncia --model` };
   if (task.effort?.requested && req.executor !== "gemini" && !(req.executor === "claude" ? caps.flags.effort : caps.flags.config)) {
@@ -320,9 +343,25 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     const policy = chainPolicy(chain, { resumeTaskId: task.taskId });
     if (policy.resumeError) return invalid(policy.resumeError);
     if (policy.succeeded) return reused(chain);
-    const saved = readJson<DelegationRequest>(chain.originalRequestPath);
-    if (!saved) return invalid("request.json da cadeia não encontrado");
-    req = saved;
+    if (task.needs.includes("computer_use")) {
+      if (task.state === "running" || task.state === "approved") {
+        refreshInterrupted(store, task.taskId);
+        const interrupted = store.findTask(task.taskId);
+        if (interrupted?.state === "failed") return { exitCode: EXIT.failed, summary: summarize(interrupted) };
+      }
+      if (task.state !== "blocked" || task.blockedReason?.kind !== "app_permission" || !task.native.sessionId) {
+        return invalid("computer use só permite retomada de bloqueio por permissão com sessão nativa registrada", [], EXIT.blocked);
+      }
+    }
+    const saved = readRequestFile(opts.cwd, chain.originalRequestPath);
+    if (!saved.ok) return saved.out;
+    req = saved.req;
+    if (task.needs.includes("computer_use")) {
+      const { runId: _r, taskKey: _k, ...hashable } = req;
+      if (stableHash(hashable) !== task.requestHash) return invalid("pedido original de computer use mudou; retomada recusada", [], EXIT.blocked);
+    }
+    const cuReason = computerUseBlockReason(req, cfg.computerUse.enabled) ?? computerUseBlockReason(task, cfg.computerUse.enabled);
+    if (cuReason) return invalid(cuReason, [], EXIT.blocked);
     if (task.pids.child && isPidAlive(task.pids.child)) {
       return invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`);
     }
@@ -351,7 +390,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     resuming = task.base !== null;
   } else {
     if (!opts.requestPath) return invalid("informe --request <arquivo.json> ou --resume <taskId>");
-    const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false);
+    const parsed = readRequest(opts.cwd, opts.requestPath, cfg.routing.adaptive.enabled && opts.adaptive !== false, cfg);
     if (!parsed.ok) return parsed.out;
     req = parsed.req;
     const existing = req.runId ? store.loadRun(req.runId) : null;
@@ -372,13 +411,26 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (reuse) return reused(reuse);
         for (const prior of matches) {
           if (prior.status === "running") return invalid(`taskKey ${req.taskKey} já está em execução (${prior.latestTaskId})`);
-          if (prior.status === "blocked") return invalid(`taskKey ${req.taskKey} está bloqueada (${prior.latestTaskId}); use duo delegate --resume ${prior.latestTaskId}`);
+          if (prior.status === "blocked") {
+            const last = store.loadTask(run.runId, prior.latestTaskId);
+            const retryBeforeSpawn = last?.state === "blocked" && last.needs.includes("computer_use") &&
+              prior.requestHash === hash && last.invocations === 0 && !last.native.sessionId && !last.blockedReason;
+            if (!retryBeforeSpawn) return invalid(`taskKey ${req.taskKey} está bloqueada (${prior.latestTaskId}); use duo delegate --resume ${prior.latestTaskId}`);
+          }
           task.retryOf = prior.latestTaskId;
         }
         mkdirSync(task.artifactsDir, { recursive: true });
-        writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
+        if (!task.needs.includes("computer_use")) writeJsonAtomic(join(task.artifactsDir, "request.json"), redactDeep(req));
         chain = store.chainForTask(task, { request: req, floor });
-        chain = store.updateChain(run.runId, chain.chainId, (current) => { current.status = "running"; current.owner = owner; });
+        const source = resolve(opts.cwd, opts.requestPath!);
+        const excluded = [source, realpathSync(source)].map(path => relative(projectRoot, path).split(sep).join("/"))
+          .filter(rel => rel && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
+        chain = store.updateChain(run.runId, chain.chainId, (current) => {
+          current.status = "running";
+          current.owner = owner;
+          if (task.needs.includes("computer_use")) current.originalRequestPath = source;
+          if (excluded.length) current.snapshotExcludedPaths = [...new Set(excluded)];
+        });
         pending = chain;
         store.saveTask(task);
         try {
@@ -403,11 +455,25 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
   task = task!;
   chain = chain!;
   try {
-    if (opts.resumeTaskId) store.saveTask(task);
+    if (opts.resumeTaskId) {
+      if (task.needs.includes("computer_use") && task.native.sessionId) {
+        const audit = auditCollector(task, Infinity); // Everything in this preflight belongs to the prior invocation.
+        audit.auditSession(env.CODEX_HOME ?? join(authPaths.home, ".codex"), task.native.sessionId);
+        const evidence = audit.snapshot();
+        if (evidence.violations.length) {
+          task.evidence = { computerUse: evidence };
+          delete task.blockedReason;
+          transition(task, "failed", `a auditoria da sessão original falhou antes da retomada: ${evidence.violations.join(", ")}`);
+          store.saveTask(task);
+          return { exitCode: EXIT.failed, summary: summarize(task) };
+        }
+      }
+      store.saveTask(task);
+    }
     const adaptive = cfg.routing.adaptive.enabled && req.adaptive !== false && opts.adaptive !== false;
     const appendAttempt = (next: Task, reason: ChainAttempt["reason"], tier: Tier, effort: Effort | null = null) => {
       mkdirSync(next.artifactsDir, { recursive: true });
-      writeJsonAtomic(join(next.artifactsDir, "request.json"), redactDeep(req));
+      if (!next.needs.includes("computer_use")) writeJsonAtomic(join(next.artifactsDir, "request.json"), redactDeep(req));
       store.saveTask(next);
       chain = store.updateChain(run.runId, chain.chainId, (fresh) => {
         if (fresh.owner?.nonce !== owner.nonce) throw new Error("reserva da Chain perdida");
@@ -420,7 +486,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       run = store.updateRun(run.runId, (freshRun) => { freshRun.taskIds.push(next.taskId); });
       if (run.cancelled) chain = store.updateChain(run.runId, chain.chainId, (fresh) => { fresh.status = "cancelled"; });
     };
-    if (opts.resumeTaskId && adaptive && task.invocations > 0) {
+    if (opts.resumeTaskId && adaptive && task.invocations > 0 && !task.needs.includes("computer_use")) {
       const policy = chainPolicy(chain, { maxAttempts: cfg.routing.adaptive.maxAttempts });
       if (!policy.canRetry) {
         task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
@@ -624,7 +690,10 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       }
       const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
       const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
-        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null });
+        requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null, exclusive: task.needs.includes("computer_use") }, () => {
+          task.pids = { bridge: process.pid, child: null };
+          store.saveTask(task);
+        });
       if (!acquired.ok) {
         blockTask(task, acquired.reason);
         store.saveTask(task);
@@ -643,12 +712,12 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       try {
         const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
         const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.gemini ? { gemini: opts.gemini } : {}), cleanups });
+        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, excludePaths: chain.snapshotExcludedPaths ?? [], ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.gemini ? { gemini: opts.gemini } : {}), cleanups });
       } finally {
         for (const fn of cleanups) { try { fn(); } catch { /* liberação nunca impede o resultado */ } }
         lock.release();
       }
-      if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
+      if (task.needs.includes("computer_use") || !adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
       if (!chainPolicy(store.loadChain(run.runId, rootId)!, { maxAttempts: cfg.routing.adaptive.maxAttempts }).canRetry) {
         task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
         store.saveTask(task);
@@ -758,14 +827,22 @@ type ExecCtx = {
   chainId: string;
   timeoutSec: number;
   codexHome: string;
+  excludePaths: string[];
   signal?: AbortSignal;
   gemini?: GeminiDelegateOptions;
   /** Liberações registradas pela execução (posse do estado do gemini, pasta da tentativa); a chamadora sempre roda. */
   cleanups?: (() => void)[];
 };
 
+function auditCollector(task: Task, attemptSinceMs: number): ComputerUseCollector {
+  const start = task.history.find(entry => entry.to === "running")?.at ?? task.createdAt;
+  return new ComputerUseCollector({ apps: task.apps, artifactsDir: task.artifactsDir, sinceMs: Date.parse(start),
+    attemptSinceMs, priorEvidence: task.evidence?.computerUse });
+}
+
 async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const { req, task, run, cfg, store, projectRoot, env, lock, entries } = ctx;
+  const computerUse = task.needs.includes("computer_use");
   const scopeRels = entries.map((e) => e.rel);
   const snapshotDir = join(task.artifactsDir, "snapshot");
   const worktreeMode = task.isolation === "worktree";
@@ -797,7 +874,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!existsSync(wt)) {
       const r = worktreeAdd(projectRoot, wt, task.base.head as string);
       if (!r.ok) return block(`falha ao criar worktree: ${redact(r.stderr.slice(0, 300))}`);
-      const snapshot = worktreeSnapshot(projectRoot, wt, { deny: cfg.scope.deny, maxBytes: cfg.limits.maxSnapshotBytes });
+      const snapshot = worktreeSnapshot(projectRoot, wt, { excludePaths: ctx.excludePaths, deny: cfg.scope.deny, maxBytes: cfg.limits.maxSnapshotBytes });
       const drift = diffStates(projectRoot, baseState(task), scopeRels).changed.filter((rel) => !rel.startsWith(".duo/") && inScope(rel, entries));
       if (!snapshot.ok || headCommit(projectRoot) !== task.base.head || drift.length) {
         // Só descarta a cópia recém-criada; nenhum executor chegou a escrever nela.
@@ -807,12 +884,12 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
         return block(snapshot.ok ? `o projeto mudou durante o snapshot: ${drift.join(", ") || "HEAD"}; tente novamente` : `falha no snapshot da worktree: ${redact(snapshot.error)}`);
       }
       task.base.snapshot = snapshot.snapshot;
-      const links = linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks);
+      const links = computerUse ? { linked: [] as string[], failed: [] as string[] } : linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks, ctx.excludePaths);
       task.worktreeLinks = task.executor === "gemini" ? [...links.linked, ".agents"] : links.linked;
       if (links.failed.length) task.limitations.push(`links indisponíveis na worktree: ${links.failed.join(", ")}`);
     } else if (!task.worktree) {
       return block(`worktree com snapshot incompleto: ${wt}; remova a cópia antes de retomar`);
-    } else if (ctx.resuming) {
+    } else if (ctx.resuming && !computerUse) {
       alreadyModified = worktreePatch(wt, (task.base.snapshot ?? task.base.head) as string, task.worktreeLinks).files;
     }
     task.worktree = wt;
@@ -846,7 +923,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     gemPrep = { home, attempt, logPath: files.logPath, profilePath };
   }
 
-  const prompt = buildExecutorPrompt(task, {
+  const promptTask = computerUse ? { ...task, objective: req.objective, constraints: req.constraints ?? [], acceptanceCriteria: req.acceptance.criteria, acceptanceCommands: [] } : task;
+  const prompt = buildExecutorPrompt(promptTask, {
     dirtyInScope: task.base.dirtyInScope,
     resume: ctx.resuming ? { alreadyModified } : null,
     worktree: worktreeMode,
@@ -858,7 +936,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (promptBytes > cfg.limits.maxPromptBytes) {
     return block(`contexto de ${promptBytes} bytes excede limits.maxPromptBytes (${cfg.limits.maxPromptBytes}); reduza o contexto sem remover requisitos`);
   }
-  writeFileSync(join(task.artifactsDir, "prompt.txt"), redact(prompt));
+  if (!computerUse) writeFileSync(join(task.artifactsDir, "prompt.txt"), redact(prompt));
 
   const writes = isWriteKind(task.kind);
   const { env: execEnv } = childEnv(env, { DUO_DEPTH: "1", DUO_TASK_ID: task.taskId, DUO_RUN_ID: run.runId, DUO_ATTEMPT: String(chainPolicy(store.loadChain(run.runId, ctx.chainId)!).attempts) });
@@ -880,6 +958,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     denyGlobs: cfg.scope.deny,
     acceptanceArgv: task.acceptanceCommands.map((c) => c.argv),
     needs: task.needs,
+    ...(task.apps !== undefined ? { apps: task.apps } : {}),
     model: task.model.requested,
     effort: req.effort,
     resumeSessionId: ctx.resuming ? task.native.sessionId : null,
@@ -911,14 +990,21 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!policyReason) fresh.invocations++;
   });
   if (policyReason) return block(`política: ${policyReason}`);
+  if (computerUse) delete task.blockedReason;
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;
-  task.pids = { bridge: process.pid, child: null };
   store.saveTask(task);
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 
-  const parser = gemPrep ? (adapter as GeminiAdapter).parser(gemPrep.logPath) : adapter.parser();
+  const attemptSince = Date.parse(task.history.at(-1)!.at);
+  const previousNativeSessionId = task.native.sessionId;
+  const collector = computerUse ? auditCollector(task, attemptSince) : null;
   const nativeAbort = new AbortController();
+  const parser = collector && adapter instanceof CodexAdapter ? adapter.parser(id => {
+    if (typeof id !== "string" || !/^[0-9a-f-]{16,64}$/i.test(id) || (task.native.sessionId && task.native.sessionId !== id)) {
+      collector.violate("native_session_mismatch");
+    } else task.native.sessionId = id;
+  }, () => collector.violate("unknown_or_incomplete_audit")) : gemPrep ? (adapter as GeminiAdapter).parser(gemPrep.logPath) : adapter.parser();
   let nativeFailure: string | null = null;
   // Identidade única (catalog.ts): estrita para autorizar; alias de família não resolvido nunca vale como pedido exato.
   const sameModel = (executor: Provider, a: string, b: string): boolean => sameModelIdentity(ctx.catalog, executor, a, b, "strict");
@@ -960,6 +1046,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
+  let nextActionCheckpoint = 1;
   let result: Awaited<ReturnType<typeof runProcess>>;
   // No Windows não há SIGTERM tratável: `duo cancel` só marca o run, e a ponte percebe aqui e encerra o executor.
   const cancelWatch = process.platform === "win32"
@@ -969,6 +1056,10 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     }, 300)
     : null;
   try {
+    // Toda execução marca a passagem para o spawn: se a ponte morrer entre o spawn e o registro do pid, a vaga
+    // fica ocupada até recuperação confirmada. Em task comum, um comando que o marcador não aceita não a impede.
+    if (computerUse) lock.markSpawning(plan);
+    else { try { lock.markSpawning(plan); } catch { /* sem marcador: segue como antes */ } }
     result = await runProcess({
       command: plan.command,
       args: plan.args,
@@ -981,11 +1072,21 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       signal: ctx.signal ? AbortSignal.any([ctx.signal, nativeAbort.signal]) : nativeAbort.signal,
       onSpawn: (pid) => {
         gemPrep?.attempt.setChildPid(pid);
+        lock.registerChildPid(pid);
         task.pids.child = pid;
         store.saveTask(task);
       },
       onLine: (line) => {
+        const violations = collector?.violationRevision;
+        const sessionId = task.native.sessionId;
         parser.onLine(line);
+        collector?.onLine(line);
+        if (collector && (collector.actionCount >= nextActionCheckpoint || collector.violationRevision !== violations || task.native.sessionId !== sessionId)) {
+          if (collector.actionCount >= nextActionCheckpoint) nextActionCheckpoint = 2 * collector.actionCount;
+          if (collector.hasViolations) nativeAbort.abort();
+          task.evidence = { computerUse: collector.snapshot() };
+          store.saveTask(task);
+        }
         // Confere cada modelo novo do fluxo principal (init e fallback no meio do turno) assim que aparece.
         const observed = parser.observedModel?.();
         if (ctx.adaptive && observed && observed !== lastObserved && !nativeFailure) {
@@ -994,12 +1095,18 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
           if (nativeFailure) nativeAbort.abort();
         }
         if (loggedBytes < MAX_EVENT_LOG_BYTES) {
-          const safe = sanitizeEventLine(task.executor, line, redactStdout);
+          const safe = computerUse ? sanitizeComputerUseLine(line) : sanitizeEventLine(task.executor, line, redactStdout);
           loggedBytes += safe.length + 1;
           appendFileSync(eventsPath, `${safe}\n`);
         }
       },
       onOversizeLine: () => {
+        if (collector) {
+          collector.violate("unknown_or_incomplete_audit");
+          nativeAbort.abort();
+          task.evidence = { computerUse: collector.snapshot() };
+          store.saveTask(task);
+        }
         // A linha descartada não passou pelo redator, que pode ter perdido o início de um bloco PEM: falha fechado e para o log.
         if (loggedBytes < MAX_EVENT_LOG_BYTES) {
           appendFileSync(eventsPath, `${JSON.stringify({ redacted: "oversize-line", note: "linha acima do limite descartada; log de eventos interrompido" })}\n`);
@@ -1010,6 +1117,12 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   } catch (e) {
     // Falha ao registrar o andamento (ex.: disco cheio): o executor já foi encerrado; a task não pode ficar "running".
     task.pids.child = null;
+    if (computerUse) {
+      delete task.blockedReason;
+      transition(task, "failed", "falha ao auditar o andamento de computer use; detalhes omitidos");
+      store.saveTask(task);
+      return { exitCode: EXIT.failed, summary: summarize(task) };
+    }
     try {
       return block(`falha ao registrar o andamento do executor (${(e as Error).message}); o executor foi encerrado`);
     } catch {
@@ -1018,21 +1131,46 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   } finally {
     if (cancelWatch) clearInterval(cancelWatch);
   }
-  if (result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
+  if (!computerUse && result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;
   const outcome = parser.finish(lastMessage, result.stderrTail);
   gemPrep?.attempt.cleanup();
   releaseClaim?.();
+  const reportedApps = outcome.report?.appsUsed;
+  if (computerUse) {
+    outcome.reportErrors = [];
+    outcome.errorMessage = outcome.errorKind ? "detalhes omitidos" : null;
+    outcome.warnings = [];
+    outcome.unknownTypes = outcome.unknownTypes.length ? ["unknown_event"] : [];
+    if (outcome.report) outcome.report = { status: outcome.report.status, summary: "Relatório de computer use recebido; conteúdo omitido.", filesChanged: [], testsRun: [], limitations: [], blockedReason: outcome.report.blockedReason === null ? null : "Detalhes omitidos.", ...(reportedApps ? { appsUsed: reportedApps.map(canonicalAppId).filter(Boolean) } : {}) };
+    if (outcome.usage) outcome.usage = Object.fromEntries(Object.entries(outcome.usage).filter(([key]) => ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "cache_write_input_tokens"].includes(key)));
+  }
   const lockIntact = lock.intact();
   const cancelledExternally = store.loadRun(run.runId)?.cancelled === true;
 
-  if (outcome.sessionId) task.native.sessionId = outcome.sessionId;
+  const nativeSessionMismatch = computerUse && !!previousNativeSessionId && outcome.sessionId !== previousNativeSessionId;
+  if (outcome.sessionId && !computerUse) task.native.sessionId = outcome.sessionId;
   task.model.reported = outcome.reportedModel;
   task.model.reportedSource = outcome.reportedModel ? "native" : "unavailable";
   // O JSONL do codex exec não informa o modelo; o rollout da própria sessão sim (e traz os IDs de resposta do servidor).
-  const codexEvidence = task.executor === "codex" ? collectCodexEvidence(ctx.codexHome, task.native.sessionId, Date.now() - result.durationMs) : null;
+  const rolloutFile = collector && task.native.sessionId ? collector.auditSession(ctx.codexHome, task.native.sessionId) : null;
+  let codexEvidence: ReturnType<typeof collectCodexEvidence> = null;
   if (task.executor === "codex") {
-    task.evidence = { codex: codexEvidence };
+    if (!computerUse) codexEvidence = collectCodexEvidence(ctx.codexHome, task.native.sessionId, Date.now() - result.durationMs);
+    else if (rolloutFile && task.native.sessionId) {
+      try {
+        codexEvidence = readRolloutEvidence(rolloutFile, task.native.sessionId, ctx.codexHome, true);
+      }
+      catch { /* malformed or disappearing rollout is not model evidence */ }
+    }
+  }
+  if (computerUse && codexEvidence) {
+    if (codexEvidence.model && !/^[A-Za-z0-9._:\[\]-]{1,80}$/.test(codexEvidence.model)) codexEvidence.model = null;
+    if (codexEvidence.sandbox && !["read-only", "workspace-write", "danger-full-access"].includes(codexEvidence.sandbox)) codexEvidence.sandbox = null;
+    if (codexEvidence.effort && !["low", "medium", "high", "xhigh", "max"].includes(codexEvidence.effort)) codexEvidence.effort = null;
+  }
+  if (task.executor === "codex") {
+    if (!computerUse) task.evidence = { codex: codexEvidence };
     if (codexEvidence?.model && !task.model.reported) {
       task.model.reported = codexEvidence.model;
       task.model.reportedSource = "native";
@@ -1081,15 +1219,51 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       }
     }
   }
+  let cuViolations: string[] = [];
+  let cuPermission: { kind: "app_permission"; app: string } | null = null;
+  if (collector) {
+    if (nativeSessionMismatch || (outcome.sessionId && !/^[0-9a-f-]{16,64}$/i.test(outcome.sessionId))) {
+      collector.violate("native_session_mismatch");
+    }
+    const current = collector.finish(reportedApps);
+    const { actions, appsUsed, screenshots } = current;
+    cuViolations = current.violations.filter((v) => v !== "app_permission_denied");
+    cuPermission = current.permission;
+    if (outcome.events.unknown || outcome.events.malformed || result.oversizeLines || result.outputLimitExceeded) cuViolations.push("unknown_or_incomplete_audit");
+    if (!current.actions.some(action => Date.parse(action.at) >= attemptSince) || !current.appsUsed.length) cuViolations.push("missing_auditable_actions");
+    if (!task.native.sessionId) cuViolations.push("missing_native_session");
+    if (!cuPermission && result.exitCode !== 0) cuViolations.push("executor_did_not_exit_cleanly");
+    if (outcome.report) {
+      if (!reportedApps) cuViolations.push("reported_apps_missing");
+      outcome.report.appsUsed = appsUsed;
+    }
+    cuViolations = [...new Set(cuViolations)];
+    task.evidence = { computerUse: { actions, appsUsed, screenshots, permission: cuPermission,
+      violations: cuPermission ? [...cuViolations, "app_permission_denied"] : cuViolations, warnings: [] } };
+    delete task.blockedReason;
+    if (cuPermission && !cuViolations.length && task.native.sessionId) task.blockedReason = cuPermission;
+    if (result.spawnError) result.spawnError = "detalhes omitidos";
+    if (nativeFailure) nativeFailure = "validação do modelo ou cobrança não confirmada; detalhes omitidos";
+  }
   task.executorReport = outcome.report;
   if (loggedBytes >= MAX_EVENT_LOG_BYTES) task.limitations.push("log de eventos truncado em 2 MiB (parsing continuou sobre o stream completo)");
   if (outcome.unknownTypes.length) task.limitations.push(`eventos desconhecidos ignorados: ${outcome.unknownTypes.join(", ")}`);
 
   let verification: Verification;
   try { verification = verify(ctx, execCwd, outcome, lockIntact); }
-  catch (error) { return block((error as Error).message); }
+  catch (error) {
+    if (!computerUse) return block((error as Error).message);
+    task.pids.child = null;
+    task.model.reported = null;
+    task.model.reportedSource = "unavailable";
+    delete task.model.reportedVia;
+    delete task.blockedReason;
+    transition(task, "failed", "falha ao verificar computer use; detalhes omitidos");
+    store.saveTask(task);
+    return { exitCode: EXIT.failed, summary: summarize(task) };
+  }
   task.verification = verification;
-  if (verification.images?.length) {
+  if (!computerUse && verification.images?.length) {
     const generated = new Set((codexEvidence?.generatedImages ?? []).map((g) => g.sha256));
     const images = verification.images.map((img) => {
       const sha256 = sha256File(join(execCwd, img.path));
@@ -1100,17 +1274,22 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
 
   const processOk = !result.timedOut && !result.cancelled && !result.outputLimitExceeded && !result.spawnError && !cancelledExternally;
   const violations = [...verification.outOfScope, ...verification.deniedTouched];
-  if (processOk && !nativeFailure && lockIntact && violations.length === 0 && !outcome.errorKind && outcome.report?.status === "completed" && !verification.staleBase) {
+  if (!computerUse && processOk && !nativeFailure && lockIntact && violations.length === 0 && !outcome.errorKind && outcome.report?.status === "completed" && !verification.staleBase) {
     verification.acceptance = await runAcceptance(task.acceptanceCommands, cfg, execCwd, childEnv(env, { DUO_DEPTH: "1" }).env, ctx.signal);
   }
   for (const w of [...new Set(outcome.warnings)].slice(0, 5)) task.limitations.push(`aviso do ${task.executor}: ${w}`);
-  if (task.model.requested && task.model.reported && !matchesRequest(task.model.reported) && !sameModelIdentity(ctx.catalog, task.executor, task.model.requested, task.model.reported, "loose")) {
+  if (!computerUse && task.model.requested && task.model.reported && !matchesRequest(task.model.reported) && !sameModelIdentity(ctx.catalog, task.executor, task.model.requested, task.model.reported, "loose")) {
     task.limitations.push(`modelo solicitado ${task.model.requested}, mas o cliente informou ${task.model.reported}`);
   }
   if (outcome.rateLimit?.isUsingOverage === true) {
     task.limitations.push(`o cliente ${task.executor} informou uso extra (overage) ativo nesta execução; pode haver cobrança além da assinatura`);
   }
-  if (task.acceptanceCommands.length === 0) task.limitations.push("sem comandos de aceite: verificação limitada a escopo, diff e relatório estruturado");
+  if (task.acceptanceCommands.length === 0) task.limitations.push(computerUse ? "aceite por comandos não executado em computer use" : "sem comandos de aceite: verificação limitada a escopo, diff e relatório estruturado");
+  if (computerUse) {
+    task.model.reported = null;
+    task.model.reportedSource = "unavailable";
+    delete task.model.reportedVia;
+  }
 
   if (task.executor === "codex" && outcome.errorKind === "quota") {
     // Atualiza o escopo do limite após esgotar; a consulta opcional usa apenas o app-server do catálogo.
@@ -1118,7 +1297,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   }
   observeTaskQuota(store, task.executor, outcome, task.model.requested);
   const capacityUntil = outcome.errorKind === "capacity" ? recordCapacity(store, task.executor, task.model.requested ?? task.model.reported ?? null) : null;
-  const [state, reason, verificationFailed] = nativeFailure ? ["failed" as const, nativeFailure, false] : decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
+  const [state, reason, verificationFailed] = computerUse && (!lockIntact || cuViolations.length || (verification.filesChangedCount ?? 0) > 0)
+    ? ["failed" as const, `auditoria de computer use falhou (violações: ${cuViolations.length}; arquivos alterados: ${verification.filesChangedCount ?? 0}); alterações preservadas na worktree`, false]
+    : nativeFailure ? ["failed" as const, nativeFailure, false]
+    : computerUse && cuPermission && !task.native.sessionId ? ["failed" as const, "permissão de aplicativo negada sem sessão nativa para retomada", false]
+    : computerUse && cuPermission && !cancelledExternally && !ctx.signal?.aborted ? ["blocked" as const, appApprovalInstruction(cuPermission.app, task.taskId), false]
+    : decide(task, result, outcome, verification, violations, cancelledExternally, ctx.adaptive);
+  if (state !== "blocked" || !cuPermission) delete task.blockedReason;
   task.pids.child = null;
   task.metrics = {
     wallMs: result.durationMs,
@@ -1165,7 +1350,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     wallMs: result.durationMs,
     acceptanceRan: verification.acceptance.filter((a) => a.ran).length,
     acceptancePassed: verification.acceptance.filter((a) => a.passed).length,
-    filesChanged: verification.filesChangedActual.length,
+    filesChanged: verification.filesChangedCount ?? verification.filesChangedActual.length,
     usage: outcome.usage,
     usageSource: outcome.usage ? "native" : "unavailable",
     costUsdClientEstimate: outcome.costUsd,
@@ -1213,6 +1398,17 @@ function verify(ctx: ExecCtx, execCwd: string, outcome: ParsedOutcome, lockIntac
   let diffPath: string | null = null;
   let patchPath: string | null = null;
   let staleBase = false;
+
+  if (task.needs.includes("computer_use")) {
+    if (!task.worktree) throw new Error("computer use exige worktree para verificar alterações sem persistir conteúdo");
+    const paths = ["--", ".", ":(exclude,literal).duo", ...(task.worktreeLinks ?? []).map((rel) => `:(exclude,literal)${rel}`)];
+    const tracked = git(execCwd, ["diff", "--name-only", "--no-ext-diff", "--no-renames", "-z", (task.base?.snapshot ?? task.base?.head) as string, ...paths]);
+    const untracked = git(execCwd, ["ls-files", "--others", "-z", ...paths]);
+    if (!tracked.ok || !untracked.ok) throw new Error("falha ao verificar alterações da worktree; detalhes omitidos");
+    const changedCount = new Set([...tracked.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean)).size;
+    staleBase = headCommit(projectRoot) !== task.base?.head;
+    return { filesChangedActual: [], filesChangedCount: changedCount, outOfScope: [], deniedTouched: [], claimsMismatch: [], acceptance: [], staleBase, lockIntact, partialWork: changedCount > 0, diffPath: null, patchPath: null };
+  }
 
   if (task.worktree) {
     const p = worktreePatch(execCwd, (task.base?.snapshot ?? task.base?.head) as string, task.worktreeLinks);
@@ -1318,27 +1514,34 @@ function decide(
   if (failedAcceptance.length) {
     return ["failed", `critério de aceite falhou apesar do relatório "completed": ${failedAcceptance.map((a) => `${a.name} (exit ${a.exitCode ?? a.skippedReason ?? "?"})`).join(", ")}`, failedAcceptance.every((a) => a.ran && a.exitCode !== null && !a.outputTail.endsWith("\n[timeout]"))];
   }
-  return ["succeeded", task.worktree ? `concluído e verificado no worktree; integre com duo apply --task-id ${task.taskId}` : "concluído e verificado"];
+  return ["succeeded", task.needs.includes("computer_use") ? "computer use concluído e auditado" : task.worktree ? `concluído e verificado no worktree; integre com duo apply --task-id ${task.taskId}` : "concluído e verificado"];
 }
 
 export function summarize(task: Task): Record<string, unknown> {
   const v = task.verification;
   const next: string[] = [];
-  if (task.state === "succeeded" && task.worktree && !task.applied) next.push(`duo apply --task-id ${task.taskId}`);
+  if (task.state === "succeeded" && task.worktree && !task.applied && !task.needs.includes("computer_use")) next.push(`duo apply --task-id ${task.taskId}`);
   if (task.state === "succeeded" && v?.diffPath) next.push(`revisar o diff: ${v.diffPath}`);
-  if (task.state === "blocked") next.push(`corrigir a causa e retomar: duo delegate --resume ${task.taskId}`);
+  if (task.state === "blocked" && (!task.needs.includes("computer_use") || task.blockedReason)) next.push(task.blockedReason
+    ? appApprovalInstruction(task.blockedReason.app, task.taskId)
+    : `corrigir a causa e retomar: duo delegate --resume ${task.taskId}`);
+  if (task.state === "blocked" && task.needs.includes("computer_use") && task.invocations === 0 && !task.native.sessionId) {
+    next.push(`reenviar o pedido original com runId ${task.runId} após corrigir o bloqueio`);
+  }
   if (task.state === "succeeded" || task.state === "failed") next.push(`registrar decisão: duo accept --task-id ${task.taskId} [--reject] --note "..."`);
   return {
     taskId: task.taskId,
     runId: task.runId,
     state: task.state,
     outcome: task.outcome,
+    ...(task.blockedReason ? { blockedReason: task.blockedReason } : {}),
     brain: task.brain,
     executor: task.executor,
     kind: task.kind,
     summary: task.executorReport?.summary ?? null,
     executorStatus: task.executorReport?.status ?? null,
     filesChanged: v?.filesChangedActual ?? [],
+    ...(v?.filesChangedCount !== undefined ? { filesChangedCount: v.filesChangedCount } : {}),
     outOfScope: v?.outOfScope ?? [],
     deniedTouched: v?.deniedTouched ?? [],
     claimsMismatch: v?.claimsMismatch ?? [],
@@ -1372,5 +1575,6 @@ function summarizeEvidence(e: NonNullable<Task["evidence"]>): Record<string, unk
         }
       : {}),
     ...(e.images ? { images: e.images } : {}),
+    ...(e.computerUse ? { computerUse: e.computerUse } : {}),
   };
 }

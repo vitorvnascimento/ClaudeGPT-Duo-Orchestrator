@@ -11,7 +11,7 @@ import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapte
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
 import { quotaBlock, quotaStates } from "./quota.js";
 import { capacityBlock } from "./capacity.js";
-import { confirmFloor, selectModel } from "./select.js";
+import { confirmFloor, selectModel, supportsNeed } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { executorEligible } from "./alternates.js";
@@ -248,8 +248,8 @@ function candidatesFrom(cfg: DuoConfig, catalog: Catalog | null, needs: Capabili
   const capable = included.filter((c) => {
     // Sem catálogo, só sabemos que o Claude Code não gera imagem raster.
     const caps: Capability[] = c.info ? c.info.capabilities : c.executor === "claude" ? ["code"] : ["code", "image_generation"];
-    const ok = needs.every((n) => caps.includes(n));
-    if (!ok) filteredOut.push(`${key(c.executor, c.model)} (sem ${needs.filter((n) => !caps.includes(n)).join(", ")})`);
+    const ok = needs.every((n) => supportsNeed(c.executor, caps, n));
+    if (!ok) filteredOut.push(`${key(c.executor, c.model)} (sem ${needs.filter((n) => !supportsNeed(c.executor, caps, n)).join(", ")})`);
     return ok;
   });
   return { cands: capable, filteredOut };

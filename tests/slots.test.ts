@@ -71,6 +71,20 @@ it("sem git com commit e outro ativo: bloqueia", () => {
   assert.match(JSON.stringify(slots(p, 4).admit(req({ requested: "in-place", gitReady: false }))), /execução paralela requer um repositório git com ao menos um commit/);
 });
 
+it("markSpawning grava a fase e o timestamp antes do spawn", () => {
+  const p = root(), owner = slots(p, 1);
+  assert.equal(owner.admit(req({ exclusive: true })).ok, true);
+  const before = Date.now();
+  const plan = { command: "codex", args: ["exec", "--cd", p], cwd: p };
+  owner.markSpawning(plan);
+  const saved = readJson<{ phase: string; spawnStartedAt: string; spawnCommand: string; spawnArgs?: unknown; spawnCwd: string }>(join(p, ".duo/locks/slot-0.json"));
+  assert.equal(saved?.phase, "spawning");
+  assert.equal(saved?.spawnCommand, "codex");
+  assert.equal(saved?.spawnArgs, undefined, "argv bruto não deve ser persistido no slot");
+  assert.equal(saved?.spawnCwd, p);
+  assert.ok(saved?.spawnStartedAt && Date.parse(saved.spawnStartedAt) >= before);
+});
+
 const moduleUrl = new URL("../src/state/slots.js", import.meta.url).href;
 function child(p: string, delayDeadGuard = false, max = 1) {
   return spawn(process.execPath, ["--input-type=module", "-e", `

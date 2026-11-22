@@ -4,6 +4,10 @@ import type { DuoConfig, Provider } from "../config.js";
 import { TIERS, tierRank } from "./complexity.js";
 import type { CandidateEval } from "./router.js";
 
+export function supportsNeed(executor: Provider, capabilities: readonly Capability[], need: string): boolean {
+  return need === "computer_use" ? executor === "codex" && process.platform === "darwin" : capabilities.includes(need as Capability);
+}
+
 export type SelectionContext = { candidates: CandidateEval[]; floor: Tier; needs?: Capability[]; allowDowngrade?: boolean; minimumEffort?: Effort };
 export type ModelSelection = { model: string; effort: Effort | null; tier: Tier; reason: string[] };
 
@@ -34,7 +38,7 @@ export function confirmFloor(input: {
   }
   if (floor === "deep" && (!level || level.presumed)) return fail(`não é possível confirmar nível deep de ${model ?? "padrão da CLI desconhecido"} (nível desconhecido/presumido)`);
   if (automatic && info && !automaticModelAllowed(info, cfg)) return fail(`modelo automático ${model} não elegível: uso extra exige ciência e inclusão explícita; include/exclude continuam obrigatórios`);
-  if (input.needs?.some((need) => !info?.capabilities.includes(need as Capability))) return fail(`capacidade exigida não confirmada para ${model}: ${input.needs.join(", ")}`);
+  if (input.needs?.some((need) => !supportsNeed(executor, info?.capabilities ?? [], need))) return fail(`capacidade exigida não confirmada para ${model}: ${input.needs.join(", ")}`);
   let effort = input.effort as Effort | null;
   if (!effort && info && (floor === "deep" || input.minimumEffort)) effort = selectEffort(floor, info, { minimum: input.minimumEffort });
   if (floor === "deep" && (!effort || EFFORTS.indexOf(effort) < EFFORTS.indexOf("high") || !info?.efforts.includes(effort))) {

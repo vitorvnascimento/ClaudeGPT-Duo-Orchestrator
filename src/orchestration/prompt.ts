@@ -64,10 +64,22 @@ export function buildExecutorPrompt(task: Task, extras: PromptExtras): string {
     lines.push("Copy the generated file unchanged: do not resize, convert or re-encode it (no sips, ImageMagick or similar). If the result needs a different size or style, generate it again with the tool instead.");
     lines.push("List the saved file paths in filesChanged. The bridge verifies that a valid image file exists in scope and that it matches the image your tool generated.");
   }
+  if (task.needs.includes("computer_use")) {
+    lines.push("");
+    lines.push("## Native computer use");
+    lines.push("Use only cua_repl for UI, never shell, other MCPs, browser automation, or other UI technology. Do not modify repository files or run acceptance commands.");
+    lines.push("Use only the requested apps. Duo audits observed calls. Access to denied apps is always forbidden.");
+    lines.push(`Requested apps: ${task.apps === undefined ? "(not specified)" : JSON.stringify(task.apps)}.`);
+    lines.push('The first cua_repl call must contain only a direct literal binding such as: let app = await cua.getApp("Finder");');
+    lines.push("Use one app per call, simple awaited app methods with literal arguments only. No computed properties, variables as arguments, loops, arbitrary JavaScript, or other APIs. After actions observe with getAXState. Use getScreenshot or getAXStateAndScreenshot when necessary.");
+    lines.push("On resume the REPL is new: rebind each app with a direct literal cua.getApp before using its handle.");
+    lines.push('If native permission is denied ("Computer Use was not approved to use ..."), stop immediately; do not retry, switch apps, or bypass approval. Finish with blocked status if possible.');
+    lines.push("After the final observation call cua_repl with completion_summary for cleanup. Report appsUsed accurately; never include private screen text, typed values or screenshot content in the final JSON.");
+  }
   lines.push("");
   lines.push("## Acceptance criteria");
   for (const c of task.acceptanceCriteria) lines.push(`- ${c}`);
-  if (task.acceptanceCommands.length) {
+  if (task.acceptanceCommands.length && !task.needs.includes("computer_use")) {
     lines.push("");
     lines.push("The bridge will independently run these commands after you finish (your claims are not trusted without them):");
     for (const c of task.acceptanceCommands) lines.push(`- ${c.name}: ${c.argv.join(" ")}`);

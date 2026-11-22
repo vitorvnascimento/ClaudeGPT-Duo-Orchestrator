@@ -23,7 +23,7 @@ import { resolveExecutable, type Resolved } from "./resolve.js";
 import { chainStateDir, claimChainState, createPrivateHome } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
-export type Capability = "code" | "image_generation";
+export type Capability = "code" | "image_generation" | "computer_use";
 
 export type ModelInfo = {
   provider: Provider;

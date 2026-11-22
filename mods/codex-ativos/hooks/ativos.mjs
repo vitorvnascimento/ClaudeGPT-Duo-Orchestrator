@@ -7,8 +7,12 @@ import path from 'node:path';
 
 const alive = (pid) => {
   if (pid == null) return true; // job ainda sem processo registrado
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
+// Campos vêm de arquivos que um repositório qualquer pode escrever: só texto, sem caracteres de controle
+// (escape de terminal), com tamanho limitado.
+const clean = (v, max = 80) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, max) : '');
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
 const ativos = [];
 
@@ -19,10 +23,10 @@ for (const d of dirs) {
   for (const j of readJson(path.join(root, d, 'state.json'))?.jobs ?? []) {
     if ((j.status !== 'queued' && j.status !== 'running') || !alive(j.pid)) continue;
     ativos.push({
-      id: j.id, kind: j.kindLabel || j.kind || 'Codex',
-      repo: path.basename(j.workspaceRoot || d.replace(/-[0-9a-f]{16}$/, '')),
+      id: clean(j.id), kind: clean(j.kindLabel) || clean(j.kind) || 'Codex',
+      repo: clean(path.basename(clean(j.workspaceRoot, 4096) || d.replace(/-[0-9a-f]{16}$/, ''))),
       startedAt: Date.parse(j.startedAt || j.createdAt) || Date.now(),
-      phase: j.status === 'queued' ? 'na fila' : (j.phase || ''), source: 'codex',
+      phase: j.status === 'queued' ? 'na fila' : clean(j.phase), source: 'codex',
     });
   }
 }
@@ -34,10 +38,10 @@ if (cwd) {
   try { files = fs.readdirSync(locks).filter((f) => /^slot-\d+\.json$/.test(f)); } catch {}
   for (const f of files) {
     const s = readJson(path.join(locks, f));
-    if (!s || !alive(s.pid)) continue;
+    if (!s || !Number.isInteger(s.pid) || s.pid <= 0 || !alive(s.pid)) continue;
     ativos.push({
-      id: s.taskId, kind: `duo ${s.kind ?? ''}`.trim(), repo: path.basename(cwd),
-      startedAt: Date.parse(s.startedAt) || Date.now(), phase: s.isolation ?? '', source: 'duo',
+      id: clean(s.taskId), kind: `duo ${clean(s.kind)}`.trim(), repo: clean(path.basename(cwd)),
+      startedAt: Date.parse(s.startedAt) || Date.now(), phase: clean(s.isolation), source: 'duo',
     });
   }
 }

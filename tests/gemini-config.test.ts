@@ -81,7 +81,7 @@ describe("pedido com executor gemini", () => {
     assert.equal(sb.execCalls().length, 0);
   });
 
-  it("enabled gemini with the default (empty) verified list blocks before invoking", async () => {
+  it("enabled gemini with an agy version outside the verified list blocks before invoking", async () => {
     sb = makeSandbox({ executors: { gemini: { enabled: true } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
     const path = join(sb.root, ".duo", "req-gemini.json");
     writeFileSync(path, JSON.stringify(baseRequest("claude", { executor: "gemini" })));

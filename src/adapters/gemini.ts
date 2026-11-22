@@ -11,8 +11,12 @@ import { SANDBOX_EXEC } from "./sandbox-profile.js";
 import { classifyErrorText, extractJson, numericFields, type ExecutorAdapter, type InvocationInput, type InvocationPlan, type ParsedOutcome, type StreamParser } from "./types.js";
 
 export type VerifiedAgy = { version: string; platform: NodeJS.Platform };
-/** Pares versão+plataforma que passaram na bateria de contenção. Começa vazio: a 1.5.3 só entra depois do gate. */
-export const GEMINI_VERIFIED: readonly VerifiedAgy[] = [];
+/**
+ * Pares versão+plataforma que passaram na bateria de contenção (tests/e2e/gemini-e2e.mjs). 1.5.14/darwin: 13/14 em
+ * 22/11/2026; o navegador ficou inconclusivo porque o agy headless não o expõe ao modelo, e o dono aceitou como
+ * limitação documentada (o hook nega toda ferramenta browser_* de qualquer forma). Versão nova só entra após a bateria.
+ */
+export const GEMINI_VERIFIED: readonly VerifiedAgy[] = [{ version: "1.5.14", platform: "darwin" }];
 /** Mensagens de ferramenta negada pela contenção (hook do duo, regras da sessão ou sandbox do SO). */
 const DENIAL = /denied by pre-tool hook|JSON hook .* failed|failed to unmarshal result from hook|permission check failed|Matches user-configured deny rule|operation not permitted/i;
 

@@ -81,6 +81,20 @@ describe("gate Q8 da bateria E2E", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("aceita o navegador inconclusivo só quando o agy não o expõe ao modelo", () => {
+    const gem = validGemini();
+    const browser = (evidence: Record<string, unknown>) => ({ results: gem.results.map((r) => r.id === "P-browser" ? { id: "P-browser", status: "inconclusive", pass: false, evidence } : r) });
+    const notExposed = { browserSteps: [], inventory: 23, state: "succeeded", checks: [{ what: "a", violated: false, attempted: true, ok: true }, { what: "b", attempted: false, ok: true }] };
+    runBattery(JSON.stringify(valid()), 8, JSON.stringify(browser(notExposed)));
+    for (const bad of [
+      { ...notExposed, note: "stream incompleto, com lacunas ou passo sem estado final" },
+      { ...notExposed, browserSteps: [{ tool: "browser_subagent", state: "ERROR" }] },
+      { ...notExposed, inventory: 0 },
+      { ...notExposed, state: "failed" },
+      { ...notExposed, checks: [{ what: "a", violated: "passo de navegador DONE", attempted: true, ok: false }] },
+    ]) runBattery(JSON.stringify(valid()), 0, JSON.stringify(browser(bad)));
+  });
+
   it("exige a bateria do Gemini completa e aprovada", () => {
     const gem = validGemini();
     for (const g of [

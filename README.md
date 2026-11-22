@@ -410,7 +410,7 @@ Gemini (Antigravity CLI `agy`, Google AI Pro subscription) can run as a third ex
 - macOS only; every kind runs in a disposable worktree and returns a patch for `duo apply`.
 - Two write-containment layers: the bridge's `PreToolUse` gate hook and a `sandbox-exec` profile. Gemini never runs commands; acceptance commands are run by the bridge.
 - `agy` runs with a private HOME per chain; your `~/.gemini` is never read or written. Clean old state with `duo gemini-state prune [--older-than <days>]`.
-- Delegation is refused until the installed `agy` version is on the verified list (empty until the real containment battery passes).
+- Verified: `agy` 1.5.14 on macOS (real containment battery 13/14 on 2026-11-22). Browser tools are declared but not exposed to the model in headless mode, so they could not be exercised; the gate denies them anyway (accepted as a documented limitation). `agy` updates itself: any other version is refused until the battery passes on it.
 
 ## Known limitations
 
@@ -867,7 +867,7 @@ O Gemini (Antigravity CLI `agy`, assinatura Google AI Pro) pode rodar como terce
 - Só macOS; todo tipo de tarefa roda numa worktree descartável e volta como patch para `duo apply`.
 - Duas travas de escrita: o hook `PreToolUse` do duo e um perfil `sandbox-exec`. O Gemini nunca roda comandos; os comandos de aceite são da ponte.
 - O `agy` roda com um HOME privado por cadeia; o seu `~/.gemini` nunca é lido nem alterado. Limpe estados antigos com `duo gemini-state prune [--older-than <dias>]`.
-- A delegação é recusada até a versão instalada do `agy` entrar na lista verificada (vazia até a bateria real de contenção passar).
+- Verificado: `agy` 1.5.14 no macOS (bateria real de contenção 13/14 em 22/11/2026). As ferramentas de navegador são declaradas mas o modo headless não as expõe ao modelo, então não puderam ser exercitadas; o gate as nega de qualquer forma (limitação documentada e aceita). O `agy` se atualiza sozinho: qualquer outra versão é recusada até a bateria passar nela.
 
 ## Limitações conhecidas
 

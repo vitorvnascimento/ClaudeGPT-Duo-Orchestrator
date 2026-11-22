@@ -43,7 +43,7 @@ describe("decideToolCall", () => {
     assert.equal(decideToolCall(call("view_file", { AbsolutePath: "/Users/x/.ssh/id_rsa" }), allow, canon).decision, "deny");
   });
   it("denies every non-file tool seen in the fixtures and unknown tools", () => {
-    for (const name of ["run_command", "search_web", "invoke_subagent", "send_message", "schedule", "run_workflow", "swarm", "call_mcp_tool", "open_browser_url", "read_url_content", "define_subagent", "manage_task", "read_resource", "brand_new_tool"]) {
+    for (const name of ["run_command", "search_web", "invoke_subagent", "send_message", "schedule", "run_workflow", "swarm", "call_mcp_tool", "open_browser_url", "browser_subagent", "list_browser_pages", "browser_navigate", "browser_click", "read_url_content", "define_subagent", "manage_task", "read_resource", "brand_new_tool"]) {
       assert.equal(decideToolCall(call(name, { CommandLine: "ls", Path: "/WT/src/ok.ts" }), allow, canon).decision, "deny", name);
     }
   });

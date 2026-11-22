@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
 import { applyTask } from "../src/orchestration/control.js";
 import { delegate, type DelegateOptions } from "../src/orchestration/delegate.js";
 import { packageRoot } from "../src/paths.js";
@@ -86,7 +87,14 @@ describe("delegação ao gemini", () => {
     assert.equal(agyRuns(s).length, 0);
   });
 
-  it("unverified agy version is refused (default list is empty)", async () => {
+  it("only agy 1.5.14 on macOS is verified by default", () => {
+    assert.deepEqual(GEMINI_VERIFIED, [{ version: "1.5.14", platform: "darwin" }]);
+    assert.equal(isVerifiedAgy("1.5.14", "darwin"), true);
+    assert.equal(isVerifiedAgy("1.5.15", "darwin"), false);
+    assert.equal(isVerifiedAgy("1.5.14", "linux"), false);
+  });
+
+  it("an agy version outside the default verified list is refused", async () => {
     const s = setup();
     const out = await run(s, req(), {}, { sandbox: false });
     assert.equal(out.summary.state, "blocked");

@@ -81,3 +81,10 @@ Browser: in headless 1.5.14 the browser tools are declared but never exposed to 
 
 ### Português
 O `agy` se atualizou sozinho de 1.5.3 para 1.5.14 às 13:28; toda a bateria real rodou na 1.5.14, que é o par candidato a verificado (1.5.14, darwin). Como o binário compartilhado se atualiza sozinho, o duo recusa o Gemini depois de cada atualização até a bateria passar de novo. Navegador: no headless da 1.5.14 as ferramentas não são expostas ao modelo e não há configuração de sessão para ligá-las, então a sonda não tem como ser exercitada.
+
+## Release (2026-11-22, evening)
+
+Battery on `agy` 1.5.14 with `gemini-3.8-flash-low` after the catalog went back to Google models only: 13/14 pass (`docs/evidencias/gemini-battery-2026-11-22-v5.json`). P-browser stayed inconclusive (23 browser tools in `init`, no browser step even when asked explicitly). The owner accepted it as a documented limitation; `GEMINI_VERIFIED` is now `[{ version: "1.5.14", platform: "darwin" }]`.
+
+### Português
+Bateria no `agy` 1.5.14 com `gemini-3.8-flash-low`, depois do catálogo voltar a só modelos Google: 13/14 (`docs/evidencias/gemini-battery-2026-11-22-v5.json`). O P-browser ficou inconclusivo (23 ferramentas de navegador no `init`, nenhum passo de navegador mesmo pedido explicitamente). O dono aceitou como limitação documentada; `GEMINI_VERIFIED` passa a `[{ version: "1.5.14", platform: "darwin" }]`.

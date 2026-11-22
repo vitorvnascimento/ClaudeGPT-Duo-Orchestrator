@@ -2,6 +2,7 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -18,7 +19,7 @@ function call(name: string, args: Record<string, unknown>, modelName = "gemini-3
 
 describe("decideToolCall", () => {
   const wt = "/WT";
-  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false, inventory: { files: [], blockedDirs: [], opaqueDirs: [] } };
+  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false, inventory: { files: [], blockedDirs: [], opaqueDirs: [], entries: [] } };
   const canon = (p: string) => p; // caminhos já canônicos no teste puro
   it("allows only exact targets for writes", () => {
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts", Content: "1" }), allow, canon).decision, "allow");
@@ -86,8 +87,42 @@ describe("busca recursiva pela identidade do sistema de arquivos", () => {
     if (existsSync(lower)) assert.equal(decideToolCall(grep(lower), a).decision, "deny");
     const nfd = join(wt, "Cafe\u0301");
     if (existsSync(nfd)) assert.equal(decideToolCall(grep(nfd), a).decision, "deny");
-    const upper = join(wt, "DOCS", "INNER", "A.KEY");
-    if (existsSync(upper)) assert.equal(decideToolCall(call("read_file", { Path: upper }), a).decision, "deny");
+  });
+  it("a direct read that misses the textual rule (Unicode form) is denied by identity", { skip: process.platform !== "darwin" }, () => {
+    const wt = repo();
+    mkdirSync(join(wt, "Caf\u00e9")); writeFileSync(join(wt, "Caf\u00e9", "secret.txt"), "s");
+    const deny = ["Caf\u00e9/secret.txt"];
+    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny, readOnly: true, inventory: buildInventory(wt, deny) ?? undefined };
+    const nfd = join(wt, "Cafe\u0301", "secret.txt");
+    if (!existsSync(nfd)) return;
+    assert.equal(decideToolCall(call("read_file", { Path: nfd }), a).decision, "deny");
+  });
+  it("a top-level dir whose name starts with two dots is inside the worktree", () => {
+    const wt = repo();
+    rmSync(join(wt, "Docs"), { recursive: true, force: true });
+    mkdirSync(join(wt, "..cache")); writeFileSync(join(wt, "..cache", "a.key"), "k");
+    const a = allowOf(wt, buildInventory(wt, DENY) ?? undefined);
+    assert.equal(decideToolCall(grep(wt), a).decision, "deny");
+    assert.equal(decideToolCall(grep(join(wt, "..cache")), a).decision, "deny");
+    assert.equal(decideToolCall(call("read_file", { Path: join(wt, "..cache", "ok.txt") }), a).decision, "allow");
+  });
+  it("a blocked dir replaced during the attempt is still denied by path", () => {
+    const wt = repo();
+    const a = allowOf(wt, buildInventory(wt, DENY) ?? undefined);
+    fs.renameSync(join(wt, "Docs"), join(wt, "Old"));
+    mkdirSync(join(wt, "Docs", "inner"), { recursive: true }); writeFileSync(join(wt, "Docs", "inner", "a.key"), "k");
+    assert.equal(decideToolCall(grep(join(wt, "Docs")), a).decision, "deny");
+  });
+  it("a denied entry that cannot be identified (other than missing) makes the inventory unavailable", () => {
+    const wt = repo();
+    const inv = buildInventory(wt, DENY, { stat: (p) => { if (p.endsWith("a.key")) { const e = new Error("EIO") as NodeJS.ErrnoException; e.code = "EIO"; throw e; } return fs.statSync(p, { bigint: true }); } });
+    assert.equal(inv, null);
+  });
+  it("inventory keys keep full inode precision (bigint)", () => {
+    const wt = repo();
+    const inv = buildInventory(wt, DENY);
+    const st = fs.statSync(join(wt, "Docs", "inner", "a.key"), { bigint: true });
+    assert.ok(inv?.files.includes(`${st.dev}:${st.ino}`));
   });
   it("on a case-sensitive volume a clean sibling that differs only in case stays searchable", () => {
     const wt = repo();

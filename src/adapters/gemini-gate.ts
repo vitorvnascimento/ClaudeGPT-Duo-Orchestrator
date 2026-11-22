@@ -12,9 +12,10 @@ export type GeminiTarget = { rel: string; abs: string; isDir: boolean; missingAn
 /**
  * Inventário por identidade do sistema de arquivos ("dev:ino"), imune a caixa e forma Unicode do caminho pedido:
  * files = arquivos negados; blockedDirs = pastas que contêm (em qualquer nível) um negado ou uma pasta opaca;
- * opaqueDirs = repositórios aninhados e submódulos (o git não lista o conteúdo).
+ * opaqueDirs = repositórios aninhados e submódulos (o git não lista o conteúdo); entries = os mesmos itens por caminho
+ * (git ls-files), que continuam valendo se uma pasta for trocada no meio da tentativa (inode novo).
  */
-export type GateInventory = { files: string[]; blockedDirs: string[]; opaqueDirs: string[] };
+export type GateInventory = { files: string[]; blockedDirs: string[]; opaqueDirs: string[]; entries: string[] };
 /** inventory ausente = toda busca recursiva é negada. */
 export type GateAllowlist = { worktreeRoot: string; write: { rel: string; isDir: boolean }[]; deny: string[]; readOnly: boolean; inventory?: GateInventory };
 export type GateDecision = { decision: "allow" | "deny"; reason: string };
@@ -59,13 +60,27 @@ function pathArgs(args: unknown, worktreeRoot: string): string[] {
 function relInside(root: string, abs: string): string | null {
   const r = relative(root, abs);
   if (r === "") return ".";
-  if (r.startsWith("..") || isAbsolute(r)) return null;
+  // Fora só com um componente ".." de verdade: "..cache" é uma pasta válida dentro da worktree.
+  if (isAbsolute(r) || r === ".." || r.startsWith(`..${sep}`)) return null;
   return r.split(sep).join("/");
 }
 
 /** Identidade do arquivo/pasta no sistema de arquivos; null se não existe. */
-function ident(p: string): string | null {
-  try { const st = statSync(p); return `${st.dev}:${st.ino}`; } catch { return null; }
+type BigStat = { dev: bigint; ino: bigint };
+const bigStat = (p: string): BigStat => statSync(p, { bigint: true });
+/** Identidade com precisão total (bigint: inodes podem passar de 2^53). */
+function ident(p: string, stat: (p: string) => BigStat = bigStat): string | null {
+  try { const st = stat(p); return `${st.dev}:${st.ino}`; } catch { return null; }
+}
+
+/** A busca em rel alcança a entrada e (caminho exato do git; "dir/" é opaca e bloqueia também dentro dela)? */
+function reachesPath(rel: string, e: string): boolean {
+  if (rel === ".") return true;
+  if (e.endsWith("/")) {
+    const base = e.slice(0, -1);
+    return base === rel || base.startsWith(`${rel}/`) || rel.startsWith(`${base}/`);
+  }
+  return e === rel || e.startsWith(`${rel}/`);
 }
 
 /** p e cada ancestral até a raiz da worktree (inclusive). */
@@ -99,6 +114,8 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
         if (inv && id && inv.files.includes(id)) return deny(`leitura negada (arquivo negado): ${rel}`);
         if (RECURSIVE_CONTENT.has(name)) {
           if (!inv) return deny(`${name}: inventário de arquivos negados indisponível`);
+          const byPath = inv.entries.find((e) => reachesPath(rel, e));
+          if (byPath) return deny(`${name} em ${rel} alcança arquivo negado ou repositório aninhado (${byPath}); busque numa pasta sem eles`);
           if (id && inv.blockedDirs.includes(id)) return deny(`${name} em ${rel} alcança arquivo negado ou repositório aninhado; busque numa pasta sem eles`);
           if (selfAndAncestors(p, allow.worktreeRoot).some((x) => { const a = ident(x); return !!a && inv.opaqueDirs.includes(a); })) {
             return deny(`${name} em ${rel}: dentro de repositório aninhado ou submódulo`);
@@ -169,21 +186,33 @@ export function listDeniedFiles(worktreeRoot: string, deny: string[]): string[] 
   return [...out];
 }
 
-/** Inventário por identidade a partir das entradas acima; null se o git falhar. */
-export function buildInventory(worktreeRoot: string, deny: string[]): GateInventory | null {
+/**
+ * Inventário por identidade e por caminho a partir das entradas acima. Falha fechado (null) se o git falhar ou se uma
+ * entrada existente ou um ancestral não puder ser identificado; entrada ausente (ENOENT) fica só pelo caminho.
+ */
+export function buildInventory(worktreeRoot: string, deny: string[], opts: { stat?: (p: string) => BigStat } = {}): GateInventory | null {
+  const stat = opts.stat ?? bigStat;
   const entries = listDeniedFiles(worktreeRoot, deny);
   if (!entries) return null;
   const root = realpathSync(worktreeRoot);
   const files = new Set<string>(), blocked = new Set<string>(), opaque = new Set<string>();
+  const strict = (p: string): string | null | undefined => {
+    try { const st = stat(p); return `${st.dev}:${st.ino}`; }
+    catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null; }
+  };
   for (const e of entries) {
     const abs = join(root, e.replace(/\/$/, ""));
-    const id = ident(abs);
-    if (!id) continue;
-    if (e.endsWith("/")) opaque.add(id); else files.add(id);
-    for (const d of selfAndAncestors(dirname(abs), root)) { const a = ident(d); if (a) blocked.add(a); }
-    if (e.endsWith("/")) blocked.add(id);
+    const id = strict(abs);
+    if (id === null) return null;
+    if (id === undefined) continue;
+    if (e.endsWith("/")) { opaque.add(id); blocked.add(id); } else files.add(id);
+    for (const d of selfAndAncestors(dirname(abs), root)) {
+      const a = strict(d);
+      if (!a) return null;
+      blocked.add(a);
+    }
   }
-  return { files: [...files], blockedDirs: [...blocked], opaqueDirs: [...opaque] };
+  return { files: [...files], blockedDirs: [...blocked], opaqueDirs: [...opaque], entries };
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

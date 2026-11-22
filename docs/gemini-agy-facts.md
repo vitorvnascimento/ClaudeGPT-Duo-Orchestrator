@@ -4,6 +4,9 @@ Task 0 of `docs/superpowers/plans/2026-11-22-gemini-executor.md`. Redacted nativ
 
 **Gate result: STOP.** `rule-syntax` cannot confine writes to exact targets, and `state-relocation`, `extensions-off` and `auth-signal` are unproven. Per the plan, implementation waits for the owner's decision.
 
+## verified versions
+None. 1.5.3 failed the gate, so the verified list starts empty.
+
 ## stdin-form — POSITIVE
 `agy -p= --input-format stream-json --output-format stream-json --model <id> [...]` with one NDJSON line on stdin:
 `{"event":"user","message":{"role":"user","content":"<prompt>"}}`.
@@ -12,8 +15,8 @@ Task 0 of `docs/superpowers/plans/2026-11-22-gemini-executor.md`. Redacted nativ
 ## stream-events — POSITIVE
 Output events: `init` (`conversation_id`, `model`, `cwd`, `tools` [60 names], `permission_mode`), `step_update` (`step_index`, `state` ACTIVE/DONE/ERROR, `step_type` user_input/agent_response/tool, `text_delta`, `tool_name`, `tool_info.parameters`, `tool_info.error.message`, `usage`), `result` (`conversation_id`, `status`, `response`, `duration_seconds`, `num_turns`, `usage`, `denied_actions`, `error`, `finished_reason`).
 
-## settings-merge — POSITIVE (replace)
-With `--settings '{"permissions":{"allow":["write_file(ok.txt)"]}}'`, `ls` (allowed in the owner's global settings) was denied: `permission check failed for unsandboxed "ls"`, `denied_actions:[{"action":"command"}]`. Session settings **replace** the owner's `permissions.allow`.
+## settings-merge — UNPROVEN
+With `--mode accept-edits` and `--settings '{"permissions":{"allow":["write_file(ok.txt)"]}}'`, `ls` was denied (`permission check failed for unsandboxed "ls"`). But the control pair in the default mode ran `ls` **both** without `--settings` (`control-ls-no-override.ndjson`) and with `allow:[]` (`control-ls-empty-allow.ndjson`). So the denial came from the mode, not from replacing the owner's list, and in the default mode `ls` runs even with an empty allowlist. Replacement of inherited rules is not established.
 
 ## rule-syntax / deny-rules — NEGATIVE for file-level confinement
 - In the default mode and in `--mode accept-edits`, **writes inside the workspace need no permission**: with `allow:["write_file(ok.txt)"]`, `other.txt` and `sub/deep.txt` were also written. `allow` rules do not restrict.
@@ -41,4 +44,4 @@ No non-secret command or output distinguishing the Google-account login from oth
 
 ## Português (resumo)
 
-Fatos verificados no `agy` 1.5.3. Funcionam: prompt por stdin (`-p=` + stream-json com `{"event":"user",...}`), eventos de saída, e `--settings` que substitui (não mescla) a lista de permissões do Vitor. Não funcionam ou não estão provados: as regras de sessão não conseguem limitar a escrita ao arquivo autorizado (dentro da pasta tudo é liberado; `deny` só aceita caminho literal ou `*`, sem glob); mover o estado do `agy` para uma pasta privada via HOME perde o login (fica no Keychain), e outras variáveis não foram testadas; para as 60 ferramentas (navegador, web, MCP, mensagens, agendamento, subagentes) **não encontrei** flag de desligar, e não testei quais delas exigem permissão no modo headless; o modelo que respondeu não aparece; **não encontrei** sinal de login sem segredo (não está provado que não existe); o modo `plan` sem a trava do sistema não foi testado contra escrita. Pelo plano, a implementação para aqui até o Vitor decidir.
+Fatos verificados no `agy` 1.5.3. Funcionam: prompt por stdin (`-p=` + stream-json com `{"event":"user",...}`) e eventos de saída. Não está provado que `--settings` substitui a lista de permissões do Vitor: no modo padrão o `ls` rodou com e sem a lista vazia. Não funcionam ou não estão provados: as regras de sessão não conseguem limitar a escrita ao arquivo autorizado (dentro da pasta tudo é liberado; `deny` só aceita caminho literal ou `*`, sem glob); mover o estado do `agy` para uma pasta privada via HOME perde o login (fica no Keychain), e outras variáveis não foram testadas; para as 60 ferramentas (navegador, web, MCP, mensagens, agendamento, subagentes) **não encontrei** flag de desligar, e não testei quais delas exigem permissão no modo headless; o modelo que respondeu não aparece; **não encontrei** sinal de login sem segredo (não está provado que não existe); o modo `plan` sem a trava do sistema não foi testado contra escrita. Pelo plano, a implementação para aqui até o Vitor decidir.

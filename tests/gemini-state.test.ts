@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { attemptTmpDir, chainStateDir, createPrivateHome, geminiStateRoot, listGeminiStates, pruneGeminiStates, sweepStaleAttempts, type ChainClass } from "../src/state/gemini-state.js";
@@ -228,7 +229,7 @@ describe("HOME privado concorrente", () => {
     const env = fakeEnv();
     const project = tmp("duo-gs-proj-");
     const mod = join(process.cwd(), "dist", "src", "state", "gemini-state.js");
-    const code = `import(${JSON.stringify(mod)}).then((m) => { const d = m.chainStateDir(${JSON.stringify(project)}, "c1", process.env); m.createPrivateHome(d, process.env); })`;
+    const code = `import(${JSON.stringify(pathToFileURL(mod).href)}).then((m) => { const d = m.chainStateDir(${JSON.stringify(project)}, "c1", process.env); m.createPrivateHome(d, process.env); })`;
     const runs = await Promise.all(Array.from({ length: 8 }, () => new Promise<number>((res) => {
       const c = spawn(process.execPath, ["-e", code], { env: { ...env, PATH: process.env.PATH }, stdio: "ignore" });
       c.on("exit", (code) => res(code ?? 1));

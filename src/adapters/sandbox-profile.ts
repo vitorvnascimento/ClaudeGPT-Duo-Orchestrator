@@ -17,10 +17,20 @@ export function sbplQuote(s: string): string {
 }
 
 const reEscape = (s: string) => s.replace(/[.^$|?*+()[\]{}\\/]/g, "\\$&");
-const ci = (s: string) => s.replace(/[a-z]/gi, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`);
+/**
+ * Cada caractere em todas as grafias que o APFS trata como iguais: original, minúscula, maiúscula (letras titlecase
+ * como "ǅ" não são nenhuma das duas) e a forma decomposta (NFD) de cada uma. ASCII vira classe [aA]; o resto vira
+ * alternativa (x|y): o regex do perfil trabalha em bytes UTF-8, e uma classe casaria bytes soltos.
+ */
+const ci = (s: string) => [...s.normalize("NFC")].map((c) => {
+  if (/^[a-z]$/i.test(c)) return `[${c.toLowerCase()}${c.toUpperCase()}]`;
+  const forms = new Set([c, c.toLowerCase(), c.toUpperCase()].flatMap((x) => [x, x.normalize("NFD")]));
+  return forms.size === 1 ? c : `(${[...forms].map((x) => x.replace(/[.^$|?*+()[\]{}\\/]/g, "\\$&")).join("|")})`;
+}).join("");
 
 /** Glob do scope.deny → regex SBPL ancorada no root (sem flag i: letras viram classes [aA]). */
-export function globToSbplRegex(root: string, glob: string): string {
+export function globToSbplRegex(root: string, input: string): string {
+  const glob = [...input.normalize("NFC")];
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i] as string;
@@ -52,7 +62,8 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
   // Sempre, inclusive com alvos só de arquivo: um alvo que caia numa pasta protegida ou negada nunca ganha escrita.
   const denies: string[] = [];
   for (const d of PROTECTED) denies.push(`(regex ${sbplQuote(`^${reEscape(root)}/(.*/)?${ci(reEscape(d))}(/.*)?$`)})`);
-  for (const g of p.denyGlobs) {
+  // Cada caractere do padrão já casa as duas formas Unicode e qualquer caixa (ver ci): vale por componente.
+  for (const g of new Set(p.denyGlobs.map((x) => x.normalize("NFC")))) {
     denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
     if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
   }

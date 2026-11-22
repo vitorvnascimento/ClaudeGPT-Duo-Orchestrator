@@ -93,6 +93,31 @@ describe("descoberta do gemini", () => {
       assert.ok(c.providers.gemini);
     } finally { rmSync(base, { recursive: true, force: true }); }
   });
+  it("a legacy cache without version metadata is never reused; a malformed provider map is rediscovered", async () => {
+    const { loadCatalog, catalogPath } = await import("../src/adapters/catalog.js");
+    const { Store } = await import("../src/state/store.js");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-cache-")));
+    try {
+      mkdirSync(join(base, "proj", ".duo"), { recursive: true });
+      const store = new Store(join(base, "proj"));
+      const env = { PATH: "/nonexistent", HOME: join(base, "home") };
+      const legacy = { discoveredAt: new Date().toISOString(), providers: {
+        claude: { ok: true, source: "legado", tools: [], models: [{ provider: "claude", id: "velho", aliases: [], displayName: "velho", description: "", efforts: [], contextWindow: null, vendorRecommended: false, legacy: false, capabilities: ["code"] }] },
+        codex: { ok: true, source: "legado", tools: [], models: [] } } };
+      writeFileSync(catalogPath(store), JSON.stringify(legacy));
+      const c = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env });
+      // Redescoberto (sem CLIs, o último catálogo bom volta marcado como desatualizado), nunca servido como fresco.
+      assert.ok(c.providers.claude.source !== "legado" || c.providers.claude.stale === true, JSON.stringify(c.providers.claude));
+      for (const cliVersions of [[], "unknown"]) {
+        writeFileSync(catalogPath(store), JSON.stringify({ ...legacy, cliVersions }));
+        const m = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env });
+        assert.ok(m.providers.claude.source !== "legado" || m.providers.claude.stale === true, JSON.stringify(cliVersions));
+      }
+      writeFileSync(catalogPath(store), JSON.stringify({ discoveredAt: new Date().toISOString(), providers: "x" }));
+      const r = await loadCatalog(store, structuredClone(DEFAULT_CONFIG), { env, refresh: true });
+      assert.ok(r.providers.gemini);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
   it("unexpected agy --version output is cached as a digest, not as text", async () => {
     const { loadCatalog, catalogPath } = await import("../src/adapters/catalog.js");
     const { Store } = await import("../src/state/store.js");

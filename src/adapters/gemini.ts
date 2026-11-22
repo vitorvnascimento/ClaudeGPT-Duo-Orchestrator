@@ -1,5 +1,6 @@
 // Executor Gemini via Antigravity CLI (agy). Contenção (emenda A do spec): gate PreToolUse na worktree,
 // HOME privado por cadeia e perfil sandbox-exec. O adaptador só monta a chamada; a ponte prepara os três.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { loadSchema, validate } from "../schema.js";
 import type { ExecutorReport } from "../state/types.js";
@@ -33,9 +34,8 @@ export const SESSION_GUARD = { allowNonWorkspaceAccess: false, permissions: { de
 /** Rótulo curto e de uma linha da saída de --version para mensagens (a comparação usa a saída inteira). */
 export function agyVersionLabel(raw: string | null | undefined): string {
   if (!raw) return "desconhecida";
-  const first = raw.split(/\r?\n/)[0] ?? "";
-  const cut = first.length > 40 || first.length < raw.length;
-  return `${JSON.stringify(first.slice(0, 40))}${cut ? "…" : ""}`;
+  // Só uma versão simples aparece como está; qualquer outra saída (banner, conta) vira um hash, como no catálogo.
+  return raw.length <= 40 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$/.test(raw) ? raw : `sha256:${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;
 }
 
 export const AGY_UNVERIFIED_HINT = "a saída de agy --version precisa ser exatamente uma versão verificada";

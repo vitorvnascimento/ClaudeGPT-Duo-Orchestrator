@@ -199,6 +199,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
   }
   // Gemini: elegível (ligado, macOS, versão verificada) e binário com versão verificada; login fica para o preflight da delegação.
   const gReasons: string[] = [];
+  const gNotes: string[] = [];
   if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform: process.platform })) gReasons.push("gemini desligado, fora do macOS ou sem versão verificada do agy");
   else {
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, env);
@@ -208,7 +209,14 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env });
       const v = r.ok ? r.stdout.trim() || null : null;
       if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
-      else {
+      else if (Boolean(env.CODEX_SANDBOX) || env.CODEX_SANDBOX_NETWORK_DISABLED === "1") {
+        // Dentro do sandbox do Codex o sandbox-exec aninhado não é verificável e o Keychain pode não ser legível:
+        // inconclusivo é adiado (o delegate repete fora do sandbox); login identificado como não aceito bloqueia.
+        gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
+        const login = geminiLoginProbe(resolved, env, cfg);
+        if (login.method === "api_key" || login.method === "cloud") gReasons.push(`login do agy: ${login.method} (${login.detail})`);
+        else if (!login.ok) gNotes.push("login do agy não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
+      } else {
         // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).
         const sbx = probeSandbox();
         if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
@@ -222,7 +230,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
     const blocked = quotaBlock(quotaStates(store).gemini);
     if (blocked) gReasons.push(blocked);
   }
-  cache.set("gemini", { available: gReasons.length === 0, reasons: gReasons });
+  cache.set("gemini", { available: gReasons.length === 0, reasons: [...gReasons, ...gNotes] });
   return (executor) => cache.get(executor) ?? { available: false, reasons: [`${executor}: sem verificação de disponibilidade`] };
 }
 

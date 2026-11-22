@@ -258,7 +258,7 @@ export function releaseOrphanSlot(
       catch { return { ok: false, message: "não foi possível confirmar a ausência do Codex; reserva preservada" }; }
       // No Windows não há tabela de processos verificável aqui: vale a confirmação explícita do operador
       // (--confirm-executor-stopped), senão uma queda nessa janela travaria o projeto para sempre.
-      if (!inspected.ok && process.platform !== "win32") return { ok: false, message: `${inspected.reason}; reserva preservada` };
+      if (!inspected.ok && (process.platform !== "win32" || !launch.spawnCommand || !launch.spawnCwd)) return { ok: false, message: `${inspected.reason}; reserva preservada` };
       if (!inspected.ok) {
         removeWithRetry(path);
         refreshMirror(projectRoot);

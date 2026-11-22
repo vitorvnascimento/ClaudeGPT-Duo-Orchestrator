@@ -984,6 +984,11 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (authReason) { gemPrep?.attempt.cleanup(); return block(`autenticação/cobrança: ${authReason}`); }
   writeJsonAtomic(join(task.artifactsDir, "invocation.json"), redactDeep({ command: plan.command, args: plan.args, cwd: plan.cwd, enforced: plan.enforced }));
 
+  // Toda execução marca a passagem para o spawn antes de contar a invocação: se a ponte morrer entre o spawn e o
+  // registro do pid, a vaga fica ocupada até recuperação confirmada. Sem o marcador (vaga perdida, falha ao gravar)
+  // o executor não sobe e nenhuma invocação é cobrada.
+  try { lock.markSpawning(plan); }
+  catch (error) { gemPrep?.attempt.cleanup(); return block(`vaga do executor indisponível antes do spawn: ${(error as Error).message}`); }
   let policyReason: string | null = null;
   store.updateRun(run.runId, (fresh) => {
     policyReason = policyBlockReason(req, cfg, fresh);
@@ -1056,9 +1061,6 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     }, 300)
     : null;
   try {
-    // Toda execução marca a passagem para o spawn: se a ponte morrer entre o spawn e o registro do pid, a vaga
-    // fica ocupada até recuperação confirmada. Sem o marcador (vaga perdida, falha ao gravar) o executor não sobe.
-    lock.markSpawning(plan);
     result = await runProcess({
       command: plan.command,
       args: plan.args,

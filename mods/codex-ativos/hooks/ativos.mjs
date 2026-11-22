@@ -23,17 +23,25 @@ const clean = (v, max = 80) => {
 // Só arquivo regular e pequeno (nunca FIFO, /dev/zero por link etc.).
 const MAX_BYTES = 256 * 1024;
 const readJson = (p) => {
+  let fd;
   try {
-    const st = fs.lstatSync(p);
+    // Abre uma vez, sem seguir link e sem bloquear (FIFO), e confere o próprio descritor.
+    fd = fs.openSync(p, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    const st = fs.fstatSync(fd);
     if (!st.isFile() || st.size > MAX_BYTES) return null;
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
+    const buf = Buffer.alloc(MAX_BYTES + 1);
+    let n = 0, r;
+    while (n <= MAX_BYTES && (r = fs.readSync(fd, buf, n, buf.length - n, null)) > 0) n += r;
+    if (n > MAX_BYTES) return null; // cresceu depois do fstat
+    return JSON.parse(buf.toString('utf8', 0, n));
   } catch { return null; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
 };
 const ativos = [];
 
 const root = path.join(process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'codex-openai-codex'), 'state');
 let dirs = [];
-try { dirs = fs.readdirSync(root).slice(0, 200); } catch {}
+try { dirs = fs.readdirSync(root); } catch {}
 for (const d of dirs) {
   const jobs = readJson(path.join(root, d, 'state.json'))?.jobs;
   for (const j of Array.isArray(jobs) ? jobs.slice(0, 200) : []) {
@@ -58,7 +66,7 @@ if (cwd) {
   try { files = fs.readdirSync(locks).filter((f) => /^slot-\d{1,4}\.json$/.test(f)).slice(0, 64); } catch {}
   for (const f of files) {
     const s = readJson(path.join(locks, f));
-    if (!s || !alive(s.pid) || !KINDS.has(s.kind) || !ISOLATIONS.has(s.isolation) || typeof s.taskId !== 'string' || !TASK_ID.test(s.taskId)) continue;
+    if (!s || !Number.isInteger(s.pid) || !alive(s.pid) || !KINDS.has(s.kind) || !ISOLATIONS.has(s.isolation) || typeof s.taskId !== 'string' || !TASK_ID.test(s.taskId)) continue;
     ativos.push({
       id: s.taskId, kind: `duo ${s.kind}`, repo: clean(path.basename(cwd)),
       startedAt: Date.parse(s.startedAt) || Date.now(), phase: s.isolation, source: 'duo',
@@ -67,4 +75,4 @@ if (cwd) {
 }
 
 ativos.sort((a, b) => a.startedAt - b.startedAt);
-process.stdout.write(JSON.stringify(ativos.slice(0, 50)));
+process.stdout.write(JSON.stringify(ativos));

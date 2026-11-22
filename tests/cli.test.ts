@@ -295,3 +295,23 @@ it("status --json lista slots ativos", () => {
   } finally { slots.release(); }
   assert.deepEqual(JSON.parse(cli(s, ["status", "--json"]).stdout).slots, []);
 });
+
+describe("recommend com computer use", () => {
+  it("recusa com o computer use desligado e com image_generation junto; a telemetria não guarda o texto do pedido", () => {
+    sb = makeSandbox();
+    const s = sb;
+    const off = cli(s, ["recommend", "--kind", "investigate", "--needs", "computer_use", "--json"]);
+    assert.notEqual(off.status, 0);
+    assert.match(off.stderr, /computerUse\.enabled/);
+    const cfgPath = join(s.root, ".duo", "config.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    writeFileSync(cfgPath, JSON.stringify({ ...cfg, computerUse: { enabled: true } }));
+    const both = cli(s, ["recommend", "--kind", "investigate", "--needs", "computer_use,image_generation", "--json"]);
+    assert.notEqual(both.status, 0);
+    assert.match(both.stderr, /image_generation/);
+    const req = s.request({ ...baseRequest("codex", { objective: "Digite SEGREDO-DIGITADO na Calculadora." }), kind: "investigate", needs: ["computer_use"], apps: ["Calculator"] });
+    cli(s, ["recommend", "--request", req, "--json"]);
+    const tel = join(s.root, ".duo", "telemetry.jsonl");
+    assert.doesNotMatch(existsSync(tel) ? readFileSync(tel, "utf8") : "", /SEGREDO-DIGITADO/);
+  });
+});

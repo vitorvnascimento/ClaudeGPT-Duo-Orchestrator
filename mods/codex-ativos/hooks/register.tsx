@@ -6,6 +6,7 @@ import type { Ativo, Leitura } from '../types'
 // Troque o shape quando os campos de Ativo mudarem: valores antigos sobrevivem a um reload.
 const leitura = atom({ plugin: 'codex-ativos', key: 'leitura' } as const, null, { shape: 'leitura-1' })
 const PERIODO_MS = 5000
+const MAX_LINHAS = 10 // o total no cabeçalho é sempre o real
 
 function duracao(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -52,11 +53,12 @@ export const register: Register = on => {
         <Text bold>
           {n === 1 ? '1 subagente ativo' : `${n} subagentes ativos`}
         </Text>
-        {l.ativos.map(a => (
+        {l.ativos.slice(0, MAX_LINHAS).map(a => (
           <Text key={`${a.source}:${a.id}`} dimColor>
             {`  ${a.kind} · ${a.repo} · ${duracao(l.at - a.startedAt)}${a.phase ? ` · ${a.phase}` : ''}`}
           </Text>
         ))}
+        {n > MAX_LINHAS ? <Text dimColor>{`  e mais ${n - MAX_LINHAS}`}</Text> : null}
       </Box>
     )
   })

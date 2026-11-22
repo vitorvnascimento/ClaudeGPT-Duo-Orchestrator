@@ -22,12 +22,17 @@ cp.spawnSync = (file) => {
 cp.spawn = cp.execFileSync = () => { throw new Error("processo inesperado"); };
 syncBuiltinESMExports();`;
 
-function runBattery(content: string, expectedScore: number) {
+const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser"];
+const validGemini = () => ({ results: GEMINI_IDS.map((id) => ({ id, status: "pass", pass: true })) });
+
+function runBattery(content: string, expectedScore: number, gemini: string | null = JSON.stringify(validGemini())) {
   const root = mkdtempSync(join(tmpdir(), "duo-q8-"));
   try {
     const fixture = join(root, "battery.json"), base = join(root, "run");
     writeFileSync(fixture, content);
-    const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(process.cwd(), "tests/e2e/quality-test.mjs"), "--confirm-quota", "--base", base, "--only", "Q8", "--battery", fixture], {
+    const gemFixture = join(root, "gemini.json");
+    if (gemini !== null) writeFileSync(gemFixture, gemini);
+    const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(process.cwd(), "tests/e2e/quality-test.mjs"), "--confirm-quota", "--base", base, "--only", "Q8", "--battery", fixture, ...(gemini !== null ? ["--gemini-battery", gemFixture] : [])], {
       encoding: "utf8",
       env: { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
     });
@@ -64,6 +69,18 @@ describe("gate Q8 da bateria E2E", () => {
       [...valid().slice(0, 16), { id: "P1", pass: false }],
       [...valid().slice(0, 16), { id: "P1", ok: false, pass: true }],
     ]) runBattery(JSON.stringify(input), 0);
+  });
+
+  it("exige a bateria do Gemini completa e aprovada", () => {
+    runBattery(JSON.stringify(valid()), 0, null);
+    const gem = validGemini();
+    for (const g of [
+      { results: gem.results.slice(0, 12) },
+      { results: [...gem.results.slice(0, 12), { id: "P-browser", status: "inconclusive", pass: false }] },
+      { results: [...gem.results.slice(0, 12), { id: "X1", status: "pass", pass: true }] },
+      { results: [...gem.results, { id: "G1", status: "pass", pass: true }] },
+    ]) runBattery(JSON.stringify(valid()), 0, JSON.stringify(g));
+    runBattery(JSON.stringify(valid()), 0, "{");
   });
 
   it("recusa estruturas e aprovações inválidas", () => {

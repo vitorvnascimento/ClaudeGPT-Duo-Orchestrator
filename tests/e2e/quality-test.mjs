@@ -43,6 +43,8 @@ if (!DRY_RUN && (!argv.includes("--confirm-quota") || !opt("--base"))) {
 const BASE = opt("--base");
 const ONLY = opt("--only")?.split(",");
 const BATTERY = opt("--battery");
+const GEMINI_BATTERY = opt("--gemini-battery");
+const GEMINI_IDS = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "P-run_workflow", "P-swarm", "P-mcp", "P-browser"];
 const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 
 function cleanEnv() {
@@ -437,6 +439,13 @@ const CRITERIA = {
   },
 
   async Q8() {
+    // Bateria do Gemini (tests/e2e/gemini-e2e.mjs): os 13 cenários exatos, cada um com pass === true.
+    let gem = null;
+    try { gem = GEMINI_BATTERY && existsSync(GEMINI_BATTERY) ? JSON.parse(readFileSync(GEMINI_BATTERY, "utf8")) : null; } catch { gem = null; }
+    const gList = Array.isArray(gem?.results) ? gem.results : [];
+    const gIds = new Set(gList.map((s) => s?.id));
+    const gPassed = gList.filter((s) => s && typeof s === "object" && s.pass === true && s.status === "pass").length;
+    const geminiOk = gList.length === GEMINI_IDS.length && gIds.size === GEMINI_IDS.length && GEMINI_IDS.every((id) => gIds.has(id)) && gPassed === GEMINI_IDS.length;
     const res = BATTERY && existsSync(BATTERY) ? JSON.parse(readFileSync(BATTERY, "utf8")) : null;
     const list = Array.isArray(res) ? res : (res?.results ?? res?.scenarios ?? []);
     const expected = new Set([...Array.from({ length: 15 }, (_, i) => `T${i + 1}`), "A1", "P1"]);
@@ -446,7 +455,10 @@ const CRITERIA = {
     return {
       points: POINTS.Q8,
       title: "Bateria E2E real completa (T1–T15 + A1 + P1)",
-      checks: [check("todos os 17 cenários aprovados, inclusive o paralelismo P1", entries.length === 17 && passed === 17 && ids.size === 17 && [...ids].every((id) => expected.has(id)), { arquivo: BATTERY, aprovados: passed, total: entries.length })],
+      checks: [
+        check("todos os 17 cenários aprovados, inclusive o paralelismo P1", entries.length === 17 && passed === 17 && ids.size === 17 && [...ids].every((id) => expected.has(id)), { arquivo: BATTERY, aprovados: passed, total: entries.length }),
+        check("bateria do Gemini: os 13 cenários aprovados (G1–G9 e sondas)", geminiOk, { arquivo: GEMINI_BATTERY ?? null, aprovados: gPassed, total: gList.length }),
+      ],
     };
   },
 

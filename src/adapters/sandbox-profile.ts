@@ -76,7 +76,9 @@ export function probeSandbox(opts: { sandboxExec?: string } = {}): { ok: true } 
   const exe = opts.sandboxExec ?? SANDBOX_EXEC;
   if (process.platform !== "darwin") return { ok: false, reason: "sandbox-exec só existe no macOS" };
   if (!existsSync(exe)) return { ok: false, reason: `${exe} não encontrado` };
-  const base = canonicalPath(mkdtempSync(join(tmpdir(), "duo-sbx-probe-")));
+  let base: string;
+  try { base = canonicalPath(mkdtempSync(join(tmpdir(), "duo-sbx-probe-"))); }
+  catch (e) { return { ok: false, reason: `sem diretório temporário para a sonda (${(e as NodeJS.ErrnoException).code ?? "erro"})` }; }
   try {
     const wt = join(base, "wt");
     mkdirSync(wt);
@@ -89,7 +91,9 @@ export function probeSandbox(opts: { sandboxExec?: string } = {}): { ok: true } 
     if (!existsSync(join(wt, "ok.txt"))) return { ok: false, reason: "a sonda não conseguiu gravar o alvo autorizado" };
     if (existsSync(join(wt, "other.txt")) || existsSync(join(base, "outside.txt"))) return { ok: false, reason: "a sonda gravou fora do alvo: o sandbox não está contendo escrita" };
     return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `sonda do sandbox falhou (${(e as NodeJS.ErrnoException).code ?? "erro"})` };
   } finally {
-    rmSync(base, { recursive: true, force: true });
+    try { rmSync(base, { recursive: true, force: true }); } catch { /* limpeza best-effort */ }
   }
 }

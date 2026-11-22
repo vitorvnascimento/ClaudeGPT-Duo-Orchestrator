@@ -41,6 +41,14 @@ describe("decideToolCall", () => {
     const { deniedFiles: _omit, ...noList } = allow;
     assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), noList, canon).decision, "deny", "sem a lista de negados, a busca recursiva falha fechada");
   });
+  it("recursive search compares names case-insensitively (APFS) and treats nested repos as opaque", () => {
+    const a: GateAllowlist = { ...allow, deniedFiles: ["Docs/a.key", "vendor/sub/"] };
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/docs" }), a, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/DOCS/inner" }), { ...allow, deniedFiles: ["docs/inner/b.key"] }, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/vendor" }), a, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/vendor/sub/lib" }), a, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), a, canon).decision, "allow");
+  });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts" }), { ...allow, readOnly: true }, canon).decision, "deny");
@@ -126,6 +134,23 @@ describe("arquivos do hook", () => {
     const second = writeGateFiles(wt, home, a, { nodePath: process.execPath });
     assert.notEqual(second.logPath, first.logPath);
     assert.equal(existsSync(second.logPath) ? readFileSync(second.logPath, "utf8") : "", "");
+  });
+  it("the denied inventory is taken after the gate files exist (generated hooks.json included)", () => {
+    const wt = tmp("duo-gate-wt-");
+    const home = tmp("duo-gate-home-");
+    spawnSync("git", ["init", "-q"], { cwd: wt });
+    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: ["**/hooks.json"], readOnly: true };
+    const files = writeGateFiles(wt, home, a, { nodePath: process.execPath, listDenied: true });
+    const saved = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as GateAllowlist;
+    assert.ok(saved.deniedFiles?.includes(".agents/hooks.json"), JSON.stringify(saved.deniedFiles));
+  });
+  it("listDeniedFiles lists a nested repository as an opaque directory", () => {
+    const wt = tmp("duo-gate-wt-");
+    spawnSync("git", ["init", "-q"], { cwd: wt });
+    mkdirSync(join(wt, "vendor", "sub"), { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: join(wt, "vendor", "sub") });
+    writeFileSync(join(wt, "vendor", "sub", "x.txt"), "x");
+    assert.ok(listDeniedFiles(wt, DENY)?.includes("vendor/sub/"));
   });
   it("listDeniedFiles finds committed and untracked denied files without following links", () => {
     const wt = tmp("duo-gate-wt-");

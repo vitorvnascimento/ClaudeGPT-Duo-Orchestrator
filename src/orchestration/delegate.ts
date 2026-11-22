@@ -14,7 +14,7 @@ import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
 import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
-import { listDeniedFiles, resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
+import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
@@ -120,7 +120,7 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     tags: [],
     needs: req.needs ?? [],
     // Gemini só roda em worktree: nasce assim, para que um bloqueio antes da admissão continue retomável.
-    isolation: req.isolation ?? (req.executor === "gemini" ? "worktree" : "in-place"),
+    isolation: req.executor === "gemini" ? "worktree" : req.isolation ?? "in-place",
     scope: req.scope.allowedPaths,
     constraints: req.constraints ?? [],
     acceptanceCriteria: req.acceptance.criteria,
@@ -836,9 +836,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     for (const target of t.targets) for (const d of target.missingAncestors) mkdirSync(d, { recursive: true });
     const attempt = attemptTmpDir(chainDir);
     ctx.cleanups?.push(() => attempt.cleanup());
-    // Arquivos negados presentes na worktree: a busca recursiva que os alcança é negada (sem a lista, toda busca é negada).
-    const deniedFiles = listDeniedFiles(execCwd, cfg.scope.deny) ?? undefined;
-    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind), ...(deniedFiles ? { deniedFiles } : {}) }, { nodePath: process.execPath });
+    // listDenied: inventário dos arquivos negados (busca recursiva que os alcança é negada; sem a lista, toda busca é negada).
+    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath, listDenied: true });
     let profilePath: string | null = null;
     if (ctx.gemini?.sandbox !== false) {
       const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path });

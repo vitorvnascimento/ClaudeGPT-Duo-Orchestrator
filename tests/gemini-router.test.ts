@@ -1,6 +1,7 @@
 // Roteador, doctor e limpeza de estado com o gemini presente.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { parseAgyModels, type Catalog } from "../src/adapters/catalog.js";
@@ -101,6 +102,19 @@ describe("disponibilidade e cota do gemini", () => {
     const bad = await liveAvailability(new Store(sb.root), loadConfig(sb.root), { ...env, FAKE_AGY_AUTH: "apikey" }, sb.authPaths);
     assert.equal(bad("gemini").available, false);
     assert.ok(bad("gemini").reasons.some((r) => /login/.test(r)), JSON.stringify(bad("gemini")));
+  });
+  it("a failing probe setup (no usable TMPDIR) only makes gemini unavailable", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: "1.5.14" };
+    const blocker = join(sb.root, "not-a-dir");
+    writeFileSync(blocker, "x");
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = blocker;
+    try {
+      const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
+      assert.equal(avail("gemini").available, false);
+      assert.equal(typeof avail("codex").available, "boolean");
+    } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
   });
   it("a saved gemini exhaustion shows up in quotaStates", () => {
     sb = makeSandbox();

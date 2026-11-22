@@ -11,7 +11,7 @@ import { Store } from "../src/state/store.js";
 import { baseRequest, makeSandbox, type Sandbox } from "./helpers.js";
 
 const FAKE_AGY = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
-const VERIFIED = [{ version: "1.5.3", platform: process.platform }];
+const VERIFIED = [{ version: "1.5.3", platform: "darwin" as const }];
 let sb: Sandbox | undefined;
 afterEach(() => { sb?.cleanup(); sb = undefined; });
 
@@ -176,6 +176,15 @@ describe("delegação ao gemini", () => {
   it("a gemini task blocked before admission is still resumable (born in a worktree)", async () => {
     const s = setup();
     const blocked = await run(s, req(), { FAKE_AGY_VERSION: "1.5.2" });
+    assert.equal(blocked.summary.state, "blocked", JSON.stringify(blocked.summary));
+    assert.equal(task(s, blocked.summary.taskId).isolation, "worktree");
+    const out = await resume(s, String(blocked.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+  });
+
+  it("an explicit in-place gemini request is persisted as worktree and stays resumable", async () => {
+    const s = setup();
+    const blocked = await run(s, req({ isolation: "in-place" }), { FAKE_AGY_VERSION: "1.5.2" });
     assert.equal(blocked.summary.state, "blocked", JSON.stringify(blocked.summary));
     assert.equal(task(s, blocked.summary.taskId).isolation, "worktree");
     const out = await resume(s, String(blocked.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });

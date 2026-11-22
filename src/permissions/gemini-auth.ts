@@ -66,12 +66,13 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
 
 /** Login sem inferência (agy models) num HOME temporário só desta checagem (não disputa logs nem a limpeza das cadeias). */
 export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig): { ok: boolean; method: string; detail: string } {
-  const tmpHome = mkdtempSync(join(tmpdir(), "duo-agy-login-"));
+  let tmpHome: string | null = null;
   try {
+    tmpHome = mkdtempSync(join(tmpdir(), "duo-agy-login-"));
     const { home } = createPrivateHome(tmpHome, env);
     const a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null);
     return { ok: a.method === "subscription", method: a.method, detail: a.detail };
   } catch (e) {
     return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})` };
-  } finally { rmSync(tmpHome, { recursive: true, force: true }); }
+  } finally { if (tmpHome) try { rmSync(tmpHome, { recursive: true, force: true }); } catch { /* limpeza best-effort */ } }
 }

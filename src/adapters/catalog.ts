@@ -7,6 +7,7 @@
 // Se todas as fontes de uma conta falharem, vale o último catálogo bom (marcado como desatualizado) e, por fim,
 // `routing.candidates` da config. A resposta de cada fonte é validada: formato inesperado cai para a próxima.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -500,7 +501,9 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
     if (resolved.ok) {
       const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
-      versions.gemini = r.ok ? r.stdout.trim() || null : null;
+      // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.
+      const out = r.ok ? r.stdout.trim() : "";
+      versions.gemini = !out ? null : /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$/.test(out) ? out : `sha256:${createHash("sha256").update(out).digest("hex").slice(0, 16)}`;
     }
   }
   return versions;

@@ -78,6 +78,21 @@ describe("descoberta do gemini", () => {
       assert.equal(calls(), 2, "versão nova do agy: redescobre");
     } finally { rmSync(base, { recursive: true, force: true }); }
   });
+  it("unexpected agy --version output is cached as a digest, not as text", async () => {
+    const { loadCatalog, catalogPath } = await import("../src/adapters/catalog.js");
+    const { Store } = await import("../src/state/store.js");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-cache-")));
+    try {
+      const home = join(base, "home"); mkdirSync(join(home, "Library", "Keychains"), { recursive: true });
+      mkdirSync(join(base, "proj", ".duo"), { recursive: true });
+      const store = new Store(join(base, "proj"));
+      const cfg = structuredClone(DEFAULT_CONFIG); cfg.executors.gemini.enabled = true; cfg.executors.gemini.command = [FAKE];
+      await loadCatalog(store, cfg, { env: { PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: home, FAKE_AGY_VERSION: "1.5.14\nsigned in as pessoa@exemplo.com" } });
+      const saved = readFileSync(catalogPath(store), "utf8");
+      assert.doesNotMatch(saved, /pessoa@exemplo/);
+      assert.match(saved, /sha256:/);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
   it("a failed agy models never stores raw stderr, only the failure class", async () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-disc-")));
     try {
@@ -95,6 +110,7 @@ describe("descoberta do gemini", () => {
       const home = join(base, "home"); mkdirSync(join(home, "Library"), { recursive: true });
       // O diretório de estado vira arquivo: o setup do HOME do catálogo falha.
       writeFileSync(join(home, "Library", "Application Support"), "x");
+      writeFileSync(join(base, "xdg-file"), "x");
       const cfg = structuredClone(DEFAULT_CONFIG); cfg.executors.gemini.enabled = true; cfg.executors.gemini.command = [FAKE];
       const c = await discover(cfg, base, { PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: home, XDG_STATE_HOME: join(base, "xdg-file") });
       assert.equal(c.providers.gemini.ok, false);

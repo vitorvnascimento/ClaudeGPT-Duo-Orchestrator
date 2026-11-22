@@ -2,6 +2,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -171,6 +172,23 @@ describe("prune validado", () => {
     assert.ok(existsSync(join(victim, "keep.txt")), "alvo do link intacto");
     assert.ok(existsSync(foreign), "hash alheio intacto");
     assert.ok(removed.includes(real));
+  });
+});
+
+describe("pasta do projeto redirecionada", () => {
+  it("a symlinked project-hash dir never lets removal reach the relocated tree", async () => {
+    const { removeChainStateSafe, projectStateDir } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    const dir = chainStateDir(project, "c1", env);
+    const projDir = projectStateDir(project, env);
+    const relocated = tmp("duo-gs-reloc-");
+    // Move a árvore para fora e deixa um link no lugar da pasta do projeto.
+    fs.cpSync(projDir, join(relocated, "p"), { recursive: true });
+    rmSync(projDir, { recursive: true, force: true });
+    symlinkSync(join(relocated, "p"), projDir);
+    assert.equal(removeChainStateSafe(dir, project, "c1", env), false);
+    assert.ok(existsSync(join(relocated, "p", "c1", "owner.json")));
   });
 });
 

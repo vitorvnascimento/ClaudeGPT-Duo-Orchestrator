@@ -57,6 +57,22 @@ function relInside(root: string, abs: string): string | null {
   return r.split(sep).join("/");
 }
 
+/**
+ * A busca em rel alcança a entrada f do inventário? Sem diferença de caixa (o APFS padrão ignora caixa e o realpath do
+ * Node pode manter a do chamador). Entrada terminada em "/" é opaca (repositório aninhado: conteúdo não listado) e
+ * bloqueia também buscas dentro dela.
+ */
+function reaches(rel: string, f: string): boolean {
+  const r = rel.toLowerCase();
+  if (r === ".") return true;
+  const entry = f.toLowerCase();
+  if (entry.endsWith("/")) {
+    const base = entry.slice(0, -1);
+    return base === r || base.startsWith(`${r}/`) || r.startsWith(`${base}/`);
+  }
+  return entry === r || entry.startsWith(`${r}/`);
+}
+
 export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: string) => string = canonicalPath): GateDecision {
   const deny = (reason: string): GateDecision => ({ decision: "deny", reason: `duo-gate: ${reason}` });
   try {
@@ -74,7 +90,7 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
         if (denied) return deny(`leitura negada (${denied}): ${rel}`);
         if (RECURSIVE_CONTENT.has(name)) {
           if (!allow.deniedFiles) return deny(`${name}: lista de arquivos negados indisponível`);
-          const hit = allow.deniedFiles.find((f) => rel === "." || f === rel || f.startsWith(`${rel}/`));
+          const hit = allow.deniedFiles.find((f) => reaches(rel, f));
           if (hit) return deny(`${name} em ${rel} alcança arquivo negado (${hit}); busque numa pasta sem arquivos negados`);
         }
       }
@@ -121,11 +137,14 @@ export function resolveGeminiTargets(
   return { ok: true, targets };
 }
 
-/** Arquivos da worktree (versionados e não versionados, sem seguir links) que casam scope.deny; null se o git falhar. */
+/**
+ * Inventário da busca recursiva: arquivos da worktree (versionados e não versionados, sem seguir links) que casam
+ * scope.deny, mais diretórios opacos ("dir/": repositório aninhado, cujo conteúdo o git não lista). null se o git falhar.
+ */
 export function listDeniedFiles(worktreeRoot: string, deny: string[]): string[] | null {
   const r = spawnSync("git", ["-C", worktreeRoot, "ls-files", "-z", "--cached", "--others"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0 || r.error) return null;
-  return [...new Set(r.stdout.split("\0").filter((f) => f && isDenied(f, deny)))];
+  return [...new Set(r.stdout.split("\0").filter((f) => f && (f.endsWith("/") || isDenied(f, deny))))];
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -139,7 +158,7 @@ export function writeGateFiles(
   worktreeRoot: string,
   privateHome: string,
   allow: GateAllowlist,
-  opts: { nodePath: string; hookScript?: string; timeoutSec?: number },
+  opts: { nodePath: string; hookScript?: string; timeoutSec?: number; listDenied?: boolean },
 ): { hooksPath: string; allowlistPath: string; logPath: string } {
   const gateDir = join(privateHome, "duo-gate");
   mkdirSync(gateDir, { recursive: true, mode: 0o700 });
@@ -147,7 +166,6 @@ export function writeGateFiles(
   // Log próprio de cada preparação: retomada ou retentativa nunca confirmam o modelo com evidência de outra tentativa.
   const logPath = join(gateDir, `gate-log-${Date.now()}-${randomBytes(4).toString("hex")}.jsonl`);
   writeFileSync(logPath, "", { mode: 0o600 });
-  writeFileSync(allowlistPath, `${JSON.stringify(allow)}\n`, { mode: 0o600 });
   const agents = join(worktreeRoot, ".agents");
   rmSync(agents, { recursive: true, force: true });
   mkdirSync(agents, { recursive: true });
@@ -155,5 +173,9 @@ export function writeGateFiles(
   const hooks = { "duo-gate": { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command, timeout: opts.timeoutSec ?? 10 }] }] } };
   const hooksPath = join(agents, "hooks.json");
   writeFileSync(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`);
+  // Inventário dos negados com a worktree já final (inclui o .agents/hooks.json gerado acima).
+  const deniedFiles = opts.listDenied ? listDeniedFiles(worktreeRoot, allow.deny) : null;
+  const saved: GateAllowlist = opts.listDenied ? { ...allow, ...(deniedFiles ? { deniedFiles } : {}) } : allow;
+  writeFileSync(allowlistPath, `${JSON.stringify(saved)}\n`, { mode: 0o600 });
   return { hooksPath, allowlistPath, logPath };
 }

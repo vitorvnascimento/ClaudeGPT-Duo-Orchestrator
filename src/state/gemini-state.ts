@@ -157,6 +157,9 @@ export function chainStatePath(projectRoot: string, chainId: string, env: NodeJS
 function validChainDir(dir: string, projectRoot: string, chainId: string, env: NodeJS.ProcessEnv): string | null {
   try {
     const expected = chainStatePath(projectRoot, chainId, env);
+    // Nenhum nível pode ser link: nem a cadeia, nem a pasta do projeto (hash), que tem de ser filha real da raiz confiável.
+    const projDir = projectStateDir(projectRoot, env);
+    if (!lstatSync(projDir).isDirectory() || dirname(realpathSync(projDir)) !== realpathSync(geminiStateRoot(env))) return null;
     if (lstatSync(dir).isSymbolicLink() || lstatSync(expected).isSymbolicLink()) return null;
     const real = realpathSync(dir);
     if (dirname(real) !== realpathSync(projectStateDir(projectRoot, env)) || real !== realpathSync(expected)) return null;

@@ -1085,7 +1085,7 @@ export function authBlockReason(a: AuthCheck): string | null {
   if (a.method !== "subscription") {
     const hint =
       a.method === "none"
-        ? `faça login pelo fluxo oficial (${a.provider === "claude" ? "`claude` e depois /login" : "`codex login`"})`
+        ? `faça login pelo fluxo oficial (${a.provider === "claude" ? "`claude` e depois /login" : a.provider === "gemini" ? "`agy` e entre com a conta Google" : "`codex login`"})`
         : "confirme pelo status oficial que o login ativo é a assinatura";
     return `método de autenticação do ${a.provider} = ${a.method} (${a.detail}); ${hint}. Nenhum fallback de cobrança é usado.`;
   }

@@ -10,6 +10,19 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-22-gemini-executor-design.md` (read it first; this plan does not repeat its rationale).
 
+## Amendment A (after Task 0, owner-approved) — read before any task
+
+Spec Amendment A supersedes. Concrete task changes:
+- **Task 3** becomes the **gate**: `src/adapters/gemini-gate.ts` with `resolveGeminiTargets(...)` (unchanged), `gateAllowlist(targets, worktreeRoot, write): GateAllowlist`, `writeGateFiles(worktreeRoot, privateHome, allowlist): { hooksJson: string; gateScript: string }` and the gate script `dist/gemini-gate.mjs` (decision function `decideToolCall(input, allowlist): { decision: "allow" | "deny"; reason: string }`, unit-tested directly; script = thin stdin/stdout wrapper, logs `{tool, path, decision, modelName}` to the private HOME). Session settings shrink to the guard JSON in Amendment A. Tests: allow only exact targets; deny sibling, `.agents/`, every non-file tool name in the fixtures, reads outside the worktree; malformed input → deny.
+- **Task 4**: `buildProfile` gains `privateHome`; probe unchanged.
+- **Task 5** becomes **private HOME**: `createPrivateHome(chainDir): { home, tmpDir }` (0700, `Library/Keychains` symlink, seeded `config.json` with swarm off), plus the lifecycle functions already listed (the "state dir" is this HOME).
+- **Task 6**: env `HOME=<private home>`, `TMPDIR`; argv per stdin-form; settings = guard JSON; worktree required for every kind.
+- **Task 7**: `reportedModel` from the gate log's `modelName` (Amendment A).
+- **Task 9**: `geminiAuthPreflight(home, profile): { ok: true } | { ok: false; reason }` parsing the fresh log for `authMethod=consumer` + `effective: keyring`; never store the line.
+- **Task 10**: Gemini allowed only on `darwin`; every kind forced to worktree; preflight before every invocation.
+- **Task 14**: G-scenarios replay `tests/fixtures/agy/probe/README.md` through the real adapter, plus coverage probes for `schedule`, `run_workflow`, `swarm`, MCP and browser (each must end denied by the gate or unavailable; `schedule` checked for no created automation).
+- Rulings in the ledger record any further deviation.
+
 ## Global Constraints
 
 - No runtime dependencies. No API-key billing path. Never pass `--dangerously-skip-permissions`, `--remote-agent`, `--remote-control`, `--add-dir`, `--new-project` to `agy`.

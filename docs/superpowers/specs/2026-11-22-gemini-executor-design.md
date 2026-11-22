@@ -2,6 +2,20 @@
 
 Date: 2026-11-22. Status: draft for the owner's approval. Items marked *(builder's call)* were decided by Claude, not by the owner.
 
+## Amendment A (22/11/2026, after Task 0 — approved by the owner: "Aprovo, siga")
+
+Evidence: `docs/gemini-agy-facts.md` and `tests/fixtures/agy/` (recipe in `tests/fixtures/agy/probe/README.md`). This amendment **supersedes** the sections below wherever they disagree.
+
+- **Client layer = bridge gate hook, not `--settings` rules.** Every Gemini task (reads included) runs in a bridge-controlled disposable worktree. The bridge replaces the worktree's `.agents/` with its own `.agents/hooks.json` declaring one `PreToolUse` hook (`matcher: "*"`) that runs the bridge's gate script. The gate reads a per-attempt allowlist (authorized write targets, readable root = the worktree) from the private HOME, allows only file read tools inside the worktree and `write_file`/`edit_file` on exact authorized targets, and **denies everything else** (commands, web, messages, subagents, schedules, workflows, swarm, MCP, browser). Writes to `.agents/` are denied by both layers and `.agents/` is excluded from the patch. The gate fails closed (crash, invalid output, timeout all deny — verified), and its own log lives in the private HOME.
+- `--settings` keeps `{"allowNonWorkspaceAccess": false, "permissions": {"deny": ["command(*)"]}}` as an extra guard only.
+- **Private HOME per chain** (replaces "task-private state"): a 0700 dir outside `.duo/` containing `Library/Keychains` → symlink to the real `~/Library/Keychains` (keeps the login; verified), a pre-seeded `.gemini/config/config.json` with `plugins.swarm.enabled=false`, the gate allowlist/log, and the per-attempt `TMPDIR`. `agy` runs with `HOME=<that dir>`; the owner's `~/.gemini` is never read or written (verified: unchanged under the exact profile).
+- **OS profile** (exact §5 policy, verified): writes only to authorized targets (literal/subpath), the private HOME, its `TMPDIR`, `/dev/null`, `/dev/tty`, `/dev/fd/*`. Read tasks: no target.
+- **Auth preflight (inference-free):** before any model call, run `agy models` under the same HOME/profile with an emptied `log/` dir; require a fresh `authMethod=consumer` and `authenticated via keyring (effective: keyring)`; never persist the line (it holds the email). This proves the login method only; entitlement stays the owner's acknowledgment.
+- **Served model:** the gate log records the hook input `modelName` (agy: "the name of the model actually in use"). The adapter uses it as `reportedModel` (native, session-level evidence; a mismatch with the request is treated like today's model mismatch). If absent, `reportedModel` stays null and the earlier rules apply.
+- **Platforms:** Gemini is **macOS-only** in this version, all kinds. Non-macOS stays disabled until a real per-platform check, including hook coverage of the unverified tools, passes.
+- **Unverified tools** (`schedule`, `run_workflow`, `swarm`, MCP, browser): the real battery must show each denied by the gate or unavailable before release; `schedule` is probed only with the gate in place and the result checked for a created automation.
+- **Verified versions:** `GEMINI_VERIFIED` starts empty; `{version: "1.5.3", platform: "darwin"}` is added only when the battery's G-scenarios pass on it.
+
 ## Intent
 
 The owner pays for Gemini (Google AI Pro) and wants its new models (Gemini 4 Neon/Argon/Hydrogen, Gemini 3.8 Flash) working inside the duo the same way Codex and Claude do. The goal is more executor capacity and model choice **on subscriptions only**, never a paid API key. Gemini joins as an **executor only**; brains stay Claude or Codex.

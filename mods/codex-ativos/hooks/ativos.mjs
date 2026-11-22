@@ -12,7 +12,12 @@ const alive = (pid) => {
 };
 // Campos vêm de arquivos que um repositório qualquer pode escrever: só texto, sem caracteres de controle
 // (escape de terminal), com tamanho limitado.
-const clean = (v, max = 80) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, max) : '');
+const clean = (v, max = 80) => {
+  if (typeof v !== 'string') return '';
+  // Controles C0/C1 (escape de terminal) e de direção bidi (reordenam a linha); texto RTL comum fica.
+  const t = [...v.replace(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/gu, '')]; // por code point: nunca parte um par substituto
+  return t.slice(0, max).join('');
+};
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
 const ativos = [];
 
@@ -24,7 +29,7 @@ for (const d of dirs) {
     if ((j.status !== 'queued' && j.status !== 'running') || !alive(j.pid)) continue;
     ativos.push({
       id: clean(j.id), kind: clean(j.kindLabel) || clean(j.kind) || 'Codex',
-      repo: clean(path.basename(clean(j.workspaceRoot, 4096) || d.replace(/-[0-9a-f]{16}$/, ''))),
+      repo: clean(path.basename(typeof j.workspaceRoot === 'string' && j.workspaceRoot ? j.workspaceRoot : d.replace(/-[0-9a-f]{16}$/, ''))),
       startedAt: Date.parse(j.startedAt || j.createdAt) || Date.now(),
       phase: j.status === 'queued' ? 'na fila' : clean(j.phase), source: 'codex',
     });

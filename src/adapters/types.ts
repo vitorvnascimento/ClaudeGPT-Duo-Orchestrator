@@ -46,6 +46,8 @@ export type ErrorKind =
   | "error_envelope"
   | "incomplete_stream"
   | "invalid_report"
+  /** O executor parou numa ação negada pela contenção (gate ou sandbox) sem entregar relatório. */
+  | "permission_denied"
   | "unknown";
 
 /** Estado de limite informado pelo próprio cliente no stream (observado após a execução, não é pré-verificação). */
@@ -86,7 +88,8 @@ export interface StreamParser {
   onLine(line: string): void;
   /** Modelo nativo já observado, disponível antes do término no Claude system/init. */
   observedModel?(): string | null;
-  finish(lastMessage: string | null): ParsedOutcome;
+  /** stderrTail: fim do stderr (limitado), para classificar cota/login que só aparecem ali. */
+  finish(lastMessage: string | null, stderrTail?: string): ParsedOutcome;
 }
 
 export interface ExecutorAdapter {

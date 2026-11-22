@@ -923,7 +923,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   }
   if (result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;
-  const outcome = parser.finish(lastMessage);
+  const outcome = parser.finish(lastMessage, result.stderrTail);
   const lockIntact = lock.intact();
   const cancelledExternally = store.loadRun(run.runId)?.cancelled === true;
 
@@ -1193,6 +1193,7 @@ function decide(
   if (o.errorKind === "capacity") {
     return ["blocked", `o ${task.executor} está sem capacidade para ${task.model.requested ?? "o modelo padrão"} agora (${o.errorMessage ?? "sem detalhe"}). ${adaptive ? "A ponte procura um modelo equivalente disponível." : "Tente de novo em alguns minutos ou escolha outro modelo do mesmo nível."}${partial}`];
   }
+  if (o.errorKind === "permission_denied") return ["failed", `o executor parou numa ação negada pela contenção e não entregou relatório: ${o.errorMessage ?? ""}${partial}`];
   if (o.errorKind === "auth") return ["blocked", `falha de autenticação no ${task.executor}: ${o.errorMessage ?? ""}. Nenhum método alternativo de cobrança foi tentado.`];
   if (o.errorKind === "model_unavailable") {
     const hint = /or newer is required|version_too_old/i.test(o.errorMessage ?? "") ? ` Atualize a CLI (${task.executor === "claude" ? "claude update" : "npm install -g @openai/codex"}) ou ajuste executors.${task.executor}.model.` : "";

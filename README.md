@@ -399,6 +399,19 @@ Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in 
 
 Details in [docs/compatibilidade.md](docs/compatibilidade.md).
 
+## Gemini executor (opt-in)
+
+Gemini (Antigravity CLI `agy`, Google AI Pro subscription) can run as a third executor, never as a brain. Enable it in `.duo/config.json`:
+
+```json
+{ "executors": { "gemini": { "enabled": true } }, "billing": { "acknowledgeUnverifiableExtraUsage": { "gemini": true } } }
+```
+
+- macOS only; every kind runs in a disposable worktree and returns a patch for `duo apply`.
+- Two write-containment layers: the bridge's `PreToolUse` gate hook and a `sandbox-exec` profile. Gemini never runs commands; acceptance commands are run by the bridge.
+- `agy` runs with a private HOME per chain; your `~/.gemini` is never read or written. Clean old state with `duo gemini-state prune [--older-than <days>]`.
+- Delegation is refused until the installed `agy` version is on the verified list (empty until the real containment battery passes).
+
 ## Known limitations
 
 - The Codex executor can **read** any file readable by the user: the sandbox restricts writing and network access, not reading. The Claude executor has deny rules for protected paths, but the client enforces them, not the operating system.
@@ -842,6 +855,19 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 | Linux | **Não testado** |
 
 Detalhes em [docs/compatibilidade.md](docs/compatibilidade.md).
+
+## Executor Gemini (opcional)
+
+O Gemini (Antigravity CLI `agy`, assinatura Google AI Pro) pode rodar como terceiro executor, nunca como cérebro. Ligue em `.duo/config.json`:
+
+```json
+{ "executors": { "gemini": { "enabled": true } }, "billing": { "acknowledgeUnverifiableExtraUsage": { "gemini": true } } }
+```
+
+- Só macOS; todo tipo de tarefa roda numa worktree descartável e volta como patch para `duo apply`.
+- Duas travas de escrita: o hook `PreToolUse` do duo e um perfil `sandbox-exec`. O Gemini nunca roda comandos; os comandos de aceite são da ponte.
+- O `agy` roda com um HOME privado por cadeia; o seu `~/.gemini` nunca é lido nem alterado. Limpe estados antigos com `duo gemini-state prune [--older-than <dias>]`.
+- A delegação é recusada até a versão instalada do `agy` entrar na lista verificada (vazia até a bateria real de contenção passar).
 
 ## Limitações conhecidas
 

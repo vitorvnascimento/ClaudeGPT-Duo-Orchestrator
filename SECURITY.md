@@ -85,11 +85,27 @@ Every MCP server named by the effective configuration is disabled in the Codex e
 
 ---
 
+## Gemini executor (agy)
+
+- Two independent write-containment layers, each verified alone against a sibling file with the real `agy` 1.5.3 (recipe: `tests/fixtures/agy/probe/README.md`): the bridge's `PreToolUse` gate hook and a per-task `sandbox-exec` profile. The gate denies every non-file tool (commands, web, messages, subagents, schedules, workflows, swarm, MCP, browser) and fails closed on crash, invalid output or timeout.
+- Not yet verified as denied: `schedule`, `run_workflow`, `swarm`, MCP and browser tools; the release battery must show each denied or unavailable. Until then the verified-version list stays empty and delegation is refused.
+- Session settings (`allowNonWorkspaceAccess:false`, `command(*)` denied) are an extra guard only; on `agy` 1.5.3 they cannot confine writes to a single file.
+- The `agy` state lives in a private HOME per chain outside `.duo/` (raw conversations are not redacted there); it is removed on apply/accept and by `duo gemini-state prune`. Removal validates the path structure and owner before deleting.
+- Login evidence is the method (`authMethod=consumer` via keyring), not proof that the subscription is paid; that stays the owner's acknowledgment.
+- The OS profile starts from `(allow default)` with writes denied; a deny-default profile is a follow-up.
+
 ## Português
 
 Projeto pessoal e local. Não expõe serviço de rede, não recebe credenciais e não publica nada.
 
-## Princípios
+## Princípios## Executor Gemini (agy)
+
+- Duas travas independentes de escrita, cada uma verificada sozinha contra um arquivo vizinho com o `agy` 1.5.3 real (receita: `tests/fixtures/agy/probe/README.md`): o hook `PreToolUse` do duo e um perfil `sandbox-exec` por tarefa. O gate nega toda ferramenta que não seja de arquivo e falha fechado.
+- Ainda não verificados como negados: `schedule`, `run_workflow`, `swarm`, MCP e navegador; a bateria de release precisa mostrar cada um negado ou indisponível. Até lá a lista de versões verificadas fica vazia e a delegação é recusada.
+- O estado do `agy` fica num HOME privado por cadeia, fora do `.duo/` (conversas brutas, sem redação); é apagado no apply/accept e por `duo gemini-state prune`, sempre validando caminho e dono.
+- O sinal de login prova o método (`authMethod=consumer` pelo keyring), não que a assinatura está paga.
+
+
 
 1. **Credenciais ficam com os clientes oficiais.** A ponte nunca lê `~/.codex/auth.json`, `~/.claude/.credentials.json`, o Keychain nem variáveis de token. Ela só consulta `claude auth status` e `codex login status` e guarda apenas o método (`subscription`, `api_key`…), nunca e-mail, organização ou trechos de chave. A descoberta de modelos (`duo models`) usa o `initialize` do Claude e os métodos de leitura `model/list`, `modelProvider/capabilities/read` e `account/rateLimits/read` do `codex app-server`. Ela descarta o campo `account` e todas as notificações do servidor (como `account/updated`), e grava em `.duo/models.json` a lista de modelos, as ferramentas e, quando disponível, uma observação de cota sanitizada.
 2. **Um cérebro, profundidade 1.** O executor não pode chamar o cérebro, outro executor ou a própria ponte.

@@ -102,3 +102,10 @@ O executor pode ser o **mesmo cliente do cérebro** quando `model` indica outro 
 ## Pedidos paralelos
 
 Para disparar em segundo plano (`duo delegate --request a.json &`), informe `isolation: "worktree"` em todos os pedidos, use `taskKey` distinto e reutilize o `runId` existente da orquestração. Até 4 executores simultâneos (configurável 1..4, padrão 4); `maxDelegationsPerRun` tem padrão 8 no mesmo run, incluindo retentativas. Uma tarefa in-place é exclusiva; isolamento forçado em worktree fica fixo na cadeia. A worktree inclui alterações não commitadas dentro de `maxSnapshotBytes`, sem caminhos negados nem `.duo/`. Dependências usam `worktreeLinks: ["node_modules"]` por padrão. Aplique patches aprovados um a um com `duo apply`, na ordem do cérebro; rejeição exige nova execução na base atual. `duo status --json` inclui os `slots` ativos.
+
+## Executor Gemini
+
+- `executor: "gemini"` só existe com `executors.gemini.enabled=true` e a ciência de cobrança; nunca é cérebro.
+- Roda sempre em worktree (o resultado volta como patch para `duo apply`), só no macOS, e não executa comandos: os comandos de aceite são da ponte. Não peça ao Gemini para rodar testes.
+- O modelo é um id completo `gemini-*` com o esforço no fim (ex.: `gemini-4-argon-high`); não combine com um `effort` diferente.
+- Enquanto a versão do `agy` não estiver na lista verificada, a delegação é recusada com a mensagem "não verificada".

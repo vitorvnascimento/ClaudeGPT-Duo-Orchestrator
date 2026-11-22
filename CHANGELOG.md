@@ -2,6 +2,26 @@
 
 **English** · [Português](#português)
 
+## Unreleased — Gemini executor
+
+### English
+
+- New opt-in executor `gemini` (Antigravity CLI `agy`, Google AI Pro subscription only). Disabled by default (`executors.gemini.enabled=false`); needs `billing.acknowledgeUnverifiableExtraUsage.gemini=true`. Executor only, never brain.
+- Containment, two independent layers verified on macOS with the real `agy` 1.5.3: a bridge `PreToolUse` gate hook (`.agents/hooks.json` in a disposable worktree) that allows only file reads inside the worktree and writes to the authorized targets, and fails closed; and a `sandbox-exec` profile that allows writes only to those targets, a private HOME and its TMPDIR (hard links, Apple Events and LaunchServices denied).
+- Private HOME per chain (outside `.duo/`), linked only to `~/Library/Keychains`: the owner's `~/.gemini` config, plugins, MCP servers and instructions never load, and the owner's conversations are untouched. `duo gemini-state prune [--older-than <days>]` removes stale state.
+- Inference-free login preflight (`agy models` with a fresh log): requires `authMethod=consumer` from the keyring. Google API-key/cloud variables in the brain environment block delegation.
+- Gemini runs every kind in a worktree, never runs commands (acceptance stays with the bridge), is macOS-only, and is refused for any `agy` version/platform not in the verified list (empty until the real battery passes).
+- Quota/capacity fallback considers three accounts (same account first, then claude, codex, gemini), filtered by eligibility before ranking.
+
+### Português
+
+- Novo executor opcional `gemini` (Antigravity CLI `agy`, só pela assinatura Google AI Pro). Desligado por padrão; exige `billing.acknowledgeUnverifiableExtraUsage.gemini=true`. Só executor, nunca cérebro.
+- Contenção com duas travas independentes verificadas no macOS com o `agy` 1.5.3 real: um hook `PreToolUse` do duo (`.agents/hooks.json` numa worktree descartável) que só libera leitura na worktree e escrita nos alvos autorizados, falhando fechado; e um perfil `sandbox-exec` que só libera escrita nesses alvos, num HOME privado e no TMPDIR dele (hard links, Apple Events e LaunchServices negados).
+- HOME privado por cadeia (fora do `.duo/`), ligado só a `~/Library/Keychains`: config, plugins, MCPs e instruções do `~/.gemini` do dono nunca carregam, e as conversas dele ficam intactas. `duo gemini-state prune [--older-than <dias>]` limpa estados antigos.
+- Verificação de login sem inferência (`agy models` com log zerado): exige `authMethod=consumer` pelo keyring. Variáveis de API/nuvem do Google no ambiente do cérebro bloqueiam a delegação.
+- O gemini roda todo tipo de tarefa em worktree, nunca roda comandos (o aceite fica com a ponte), só no macOS, e é recusado para versão/plataforma do `agy` fora da lista verificada (vazia até a bateria real passar).
+- O fallback de cota/capacidade considera três contas (a mesma primeiro, depois claude, codex, gemini), filtradas por elegibilidade antes da ordem.
+
 ## 0.4.0 — 2026-11-07
 
 ### English

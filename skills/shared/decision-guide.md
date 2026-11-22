@@ -64,3 +64,10 @@ Por padrão, até 8 invocações delegadas por run (incluindo retentativas) e 4 
 ## Execução paralela
 
 Para subtarefas independentes, use `isolation: "worktree"`, `taskKey` distinto e o mesmo `runId` existente. Dispare `duo delegate --request a.json &` e `duo delegate --request b.json &`, depois `wait`. Qualquer tarefa in-place é exclusiva. Se houver conversão para worktree, a cadeia mantém esse isolamento. A worktree inclui o trabalho não commitado do cérebro, sem caminhos negados nem `.duo/`, dentro de `maxSnapshotBytes`. Integre patches aprovados um a um com `duo apply`, na ordem escolhida pelo cérebro. Apply rejeitado exige tarefa nova na base atual; não force a integração. Consulte os slots com `duo status`.
+
+## Executor Gemini
+
+- `executor: "gemini"` só existe com `executors.gemini.enabled=true` e a ciência de cobrança; nunca é cérebro.
+- Roda sempre em worktree (o resultado volta como patch para `duo apply`), só no macOS, e não executa comandos: os comandos de aceite são da ponte. Não peça ao Gemini para rodar testes.
+- O modelo é um id completo `gemini-*` com o esforço no fim (ex.: `gemini-4-argon-high`); não combine com um `effort` diferente.
+- Enquanto a versão do `agy` não estiver na lista verificada, a delegação é recusada com a mensagem "não verificada".

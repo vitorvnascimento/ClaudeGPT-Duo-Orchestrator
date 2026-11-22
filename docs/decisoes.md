@@ -67,6 +67,10 @@ Treat a Codex provider as official-equivalent only with literal `requires_openai
 
 Provider defaults and inference URLs were checked through Context7 against [Codex ModelProviderInfo](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs).
 
+## Gemini executor — 2026-11-22
+
+The spike showed that `agy` session rules cannot confine writes to a single file (allow does not restrict inside the workspace; deny accepts only literal paths or `*`). Amendment A, approved by the owner, replaced them with a workspace `PreToolUse` gate hook plus a private HOME per chain (with `Library/Keychains` linked), keeping the `sandbox-exec` layer. Gemini is executor-only, macOS-only, worktree-only and command-free; acceptance commands stay with the bridge. Evidence: `docs/gemini-agy-facts.md`, `tests/fixtures/agy/`.
+
 ## Consulted references (25/09/2026)
 
 The `developers.openai.com/codex/*` URLs redirected (308) to `learn.chatgpt.com/docs/*`.
@@ -151,6 +155,10 @@ Considere um provedor Codex equivalente ao oficial apenas com `requires_openai_a
 O `config/read` serializa campos null/default implícitos. Inspecione as camadas habilitadas para distingui-los das chaves declaradas, sem reter valores de credenciais; evidência ausente ou malformada não pode ocultar campo inseguro. O fallback TOML mantém a análise conservadora de camadas/confiança e recusa sintaxe que não consegue verificar. Testes cobrem as variações aceitas e recusadas nos dois leitores. A decisão é integrar todas estas correções na v0.4.0, publicada em 07/11/2026 após o gate da release.
 
 Defaults do provedor e URLs de inferência conferidos via Context7 em [Codex ModelProviderInfo](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs).
+
+## Executor Gemini — 2026-11-22
+
+O spike mostrou que as regras de sessão do `agy` não limitam a escrita a um arquivo. A emenda A, aprovada pelo Vitor, trocou-as por um hook `PreToolUse` do duo no workspace e um HOME privado por cadeia (com `Library/Keychains` ligado), mantendo a trava `sandbox-exec`. O Gemini é só executor, só macOS, só worktree e sem comandos; o aceite fica com a ponte. Evidências: `docs/gemini-agy-facts.md`, `tests/fixtures/agy/`.
 
 ## Referências consultadas (25/09/2026)
 

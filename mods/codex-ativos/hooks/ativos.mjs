@@ -12,11 +12,14 @@ const alive = (pid) => {
 };
 // Campos vêm de arquivos que um repositório qualquer pode escrever: só texto, sem caracteres de controle
 // (escape de terminal), com tamanho limitado.
+const BAD = /^(?:[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control})$/u;
 const clean = (v, max = 80) => {
   if (typeof v !== 'string') return '';
-  // Controles C0/C1 (escape de terminal) e de direção bidi (reordenam a linha); texto RTL comum fica.
-  const t = [...v.replace(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/gu, '')]; // por code point: nunca parte um par substituto
-  return t.slice(0, max).join('');
+  // Controles C0/C1 (escape de terminal) e de direção bidi (reordenam a linha) saem; texto RTL comum fica.
+  // Percorre por code point (nunca parte um par substituto) e para ao juntar `max`.
+  let out = '', n = 0;
+  for (const ch of v) { if (BAD.test(ch)) continue; out += ch; if (++n >= max) break; }
+  return out;
 };
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
 const ativos = [];

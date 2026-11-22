@@ -13,6 +13,7 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
 import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy } from "../adapters/gemini.js";
+import { alternateProviders } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
@@ -492,9 +493,11 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         // Retomada de tentativa que nunca invocou, travada por cota/capacidade: se o fornecedor atual não tem modelo
         // equivalente livre, usa o outro (mesma regra do fallback de cota: nível >= minTier, esforço >= minEffort).
         if (!chosen && autoUnavailable && task.invocations === 0) {
-          const other: Provider = task.executor === "claude" ? "codex" : "claude";
-          const alt = selectFor(other);
-          if (alt && !(req.brain === other && req.brainModel && sameBaseModel(catalog, other, alt.model, req.brainModel))) {
+          const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
+          const other = alternateProviders(task.executor, eligibility, { sameFirst: false })
+            .find((p) => { const a = selectFor(p); return a && !(req.brain === p && req.brainModel && sameBaseModel(catalog, p, a.model, req.brainModel)); });
+          const alt = other ? selectFor(other) : null;
+          if (other && alt) {
             task.executor = other;
             // Sessão nativa pertence ao cliente anterior: o novo fornecedor começa uma sessão própria.
             // Base, worktree e snapshot continuam (o trabalho e o contexto do pedido são os mesmos).
@@ -656,7 +659,8 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         const currentTier = chainPolicy(store.loadChain(run.runId, rootId)!).floor;
         const evals = await availableCandidates(currentTier);
         // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
-        const providers: Provider[] = capacity || exhausted?.affectedModels ? [task.executor, task.executor === "claude" ? "codex" : "claude"] : [task.executor === "claude" ? "codex" : "claude"];
+        const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
+        const providers = alternateProviders(task.executor, eligibility, { sameFirst: Boolean(capacity || exhausted?.affectedModels) });
         let next: { executor: Provider; selected: ModelSelection } | null = null;
         for (const executor of providers) {
           const selected = selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });

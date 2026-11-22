@@ -214,7 +214,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
         // inconclusivo é adiado (o delegate repete fora do sandbox); login identificado como não aceito bloqueia.
         gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
         const login = geminiLoginProbe(resolved, env, cfg);
-        if (login.method === "api_key" || login.method === "cloud") gReasons.push(`login do agy: ${login.method} (${login.detail})`);
+        if (login.method === "api_key" || login.method === "cloud" || login.conflict) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
         else if (!login.ok) gNotes.push("login do agy não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
       } else {
         // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).

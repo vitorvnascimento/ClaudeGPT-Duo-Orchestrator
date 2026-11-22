@@ -17,20 +17,12 @@ export function sbplQuote(s: string): string {
 }
 
 const reEscape = (s: string) => s.replace(/[.^$|?*+()[\]{}\\/]/g, "\\$&");
-/**
- * Cada caractere em todas as grafias que o APFS trata como iguais: original, minúscula, maiúscula (letras titlecase
- * como "ǅ" não são nenhuma das duas) e a forma decomposta (NFD) de cada uma. ASCII vira classe [aA]; o resto vira
- * alternativa (x|y): o regex do perfil trabalha em bytes UTF-8, e uma classe casaria bytes soltos.
- */
-const ci = (s: string) => [...s.normalize("NFC")].map((c) => {
-  if (/^[a-z]$/i.test(c)) return `[${c.toLowerCase()}${c.toUpperCase()}]`;
-  const forms = new Set([c, c.toLowerCase(), c.toUpperCase()].flatMap((x) => [x, x.normalize("NFD")]));
-  return forms.size === 1 ? c : `(${[...forms].map((x) => x.replace(/[.^$|?*+()[\]{}\\/]/g, "\\$&")).join("|")})`;
-}).join("");
+// Caixa ASCII, igual ao gate (regex com flag i). Padrões fora do ASCII são recusados em buildProfile: a equivalência
+// de caixa e de forma Unicode do APFS não tem mapeamento por letra que case igual nas duas camadas (Σ/ς, ß/SS).
+const ci = (s: string) => s.replace(/[a-z]/gi, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`);
 
 /** Glob do scope.deny → regex SBPL ancorada no root (sem flag i: letras viram classes [aA]). */
-export function globToSbplRegex(root: string, input: string): string {
-  const glob = [...input.normalize("NFC")];
+export function globToSbplRegex(root: string, glob: string): string {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i] as string;
@@ -46,12 +38,24 @@ export function globToSbplRegex(root: string, input: string): string {
 }
 
 /** gateLog: único arquivo gravável da pasta duo-gate do HOME privado (allowlist e perfil ficam só leitura). */
+/**
+ * Padrões de scope.deny que a trava do SO não aplica com a mesma semântica do gate: caracteres fora do ASCII (caixa e
+ * forma Unicode do APFS) e "?" (no perfil casa um byte; no gate, um caractere já normalizado). null = todos aplicáveis.
+ * Usado na elegibilidade (o roteador escolhe outra conta) e de novo ao montar o perfil.
+ */
+export function unsupportedDenyGlob(globs: readonly string[]): string | null {
+  const g = globs.find((x) => /[^\x20-\x7e]/.test(x) || x.includes("?"));
+  return g === undefined ? null : `padrão de scope.deny não aplicável pela trava do SO do gemini: ${JSON.stringify(g)} (use só ASCII, sem "?")`;
+}
+
 export type ProfileInput = { worktreeRoot: string; targets: GeminiTarget[]; denyGlobs: string[]; privateHome: string; tmpDir: string; gateLog?: string };
 
 export function buildProfile(p: ProfileInput): { ok: true; profile: string } | { ok: false; reason: string } {
   const all = [p.worktreeRoot, p.privateHome, p.tmpDir, ...(p.gateLog ? [p.gateLog] : []), ...p.targets.map((t) => t.abs), ...p.denyGlobs];
   const bad = all.find((s) => CONTROL.test(s));
   if (bad !== undefined) return { ok: false, reason: `caminho com caractere de controle não é aceito no perfil: ${JSON.stringify(bad)}` };
+  const unsupported = unsupportedDenyGlob(p.denyGlobs);
+  if (unsupported) return { ok: false, reason: unsupported };
   const root = canonicalPath(p.worktreeRoot);
   const allows = [
     ...p.targets.map((t) => `(${t.isDir ? "subpath" : "literal"} ${sbplQuote(canonicalPath(t.abs))})`),
@@ -62,8 +66,7 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
   // Sempre, inclusive com alvos só de arquivo: um alvo que caia numa pasta protegida ou negada nunca ganha escrita.
   const denies: string[] = [];
   for (const d of PROTECTED) denies.push(`(regex ${sbplQuote(`^${reEscape(root)}/(.*/)?${ci(reEscape(d))}(/.*)?$`)})`);
-  // Cada caractere do padrão já casa as duas formas Unicode e qualquer caixa (ver ci): vale por componente.
-  for (const g of new Set(p.denyGlobs.map((x) => x.normalize("NFC")))) {
+  for (const g of p.denyGlobs) {
     denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
     if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
   }

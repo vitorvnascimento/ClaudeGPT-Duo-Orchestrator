@@ -8,6 +8,19 @@ const V = [{ version: "1.5.3", platform: "darwin" as const }];
 function cfg(enabled: boolean): DuoConfig { const c = structuredClone(DEFAULT_CONFIG); c.executors.gemini.enabled = enabled; return c; }
 const ctx = (over: Partial<Parameters<typeof executorEligible>[1]> = {}) => ({ kind: "implement" as const, fixedIsolation: null, cfg: cfg(true), platform: "darwin" as const, verified: V, ...over });
 
+describe("elegibilidade do gemini com scope.deny não aplicável", () => {
+  it("a deny glob the OS profile cannot enforce makes gemini ineligible", async () => {
+    const { DEFAULT_CONFIG } = await import("../src/config.js");
+    const cfg = structuredClone(DEFAULT_CONFIG); cfg.executors.gemini.enabled = true;
+    const ctx = { kind: "implement" as const, fixedIsolation: null, cfg, platform: "darwin" as const, verified: [{ version: "1.5.14", platform: "darwin" as const }] };
+    assert.equal(executorEligible("gemini", ctx), true);
+    for (const g of ["?.txt", "**/Caf\u00e9/**"]) {
+      const c2 = structuredClone(cfg); c2.scope.deny = [...c2.scope.deny, g];
+      assert.equal(executorEligible("gemini", { ...ctx, cfg: c2 }), false, g);
+    }
+  });
+});
+
 describe("alternativas", () => {
   it("gemini disabled → behaviour identical to v0.4.0", () => {
     assert.deepEqual(alternateProviders("claude", ctx({ cfg: cfg(false) }), { sameFirst: false }), ["codex"]);

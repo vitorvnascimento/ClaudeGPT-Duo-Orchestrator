@@ -117,26 +117,12 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     assert.equal(existsSync(join(home, "duo-gate", "profile.sb")), false);
     assert.equal(existsSync(join(home, "ok.txt")), true);
   });
-  it("a non-ASCII deny glob is enforced by the OS in both Unicode forms and any case", () => {
-    const wt = tmp("duo-sbx-wt-");
-    mkdirSync(join(wt, "docs"));
-    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: "docs", abs: join(wt, "docs"), isDir: true, missingAncestors: [] }], denyGlobs: ["**/Caf\u00e9/**"], privateHome: join(wt, "..", "h2"), tmpDir: join(wt, "..", "h2", "tmp") });
-    assert.ok(r.ok);
-    for (const name of ["Caf\u00e9", "Cafe\u0301", "CAF\u00c9"]) {
-      sh(r.ok ? r.profile : "", `mkdir -p 'docs/${name}' && echo x > 'docs/${name}/s.txt'`, wt);
-      assert.equal(existsSync(join(wt, "docs", name, "s.txt")), false, name);
+  it("a deny glob outside ASCII is refused before invocation (the OS layer cannot match it like the gate)", () => {
+    for (const g of ["**/Caf\u00e9/**", "Ma\u00dfe/*", "\u03a3/x", "?.txt", "docs/a?b"]) {
+      const r = buildProfile({ worktreeRoot: "/W", targets: [], denyGlobs: [g], privateHome: "/H", tmpDir: "/H/tmp" });
+      assert.equal(r.ok, false, g);
     }
-    sh(r.ok ? r.profile : "", "echo ok > docs/livre.txt", wt);
-    assert.ok(existsSync(join(wt, "docs", "livre.txt")));
-  });
-  it("deny regexes match mixed Unicode forms per component and titlecase letters", () => {
-    const toRe = (g: string) => new RegExp(globToSbplRegex("/W", g).replace(/\\\//g, "/"));
-    const mixed = "docs/Caf\u00e9/Cafe\u0301/s.txt";
-    for (const p of [mixed, mixed.normalize("NFC"), mixed.normalize("NFD"), "docs/CAF\u00c9/cafe\u0301/s.txt"]) {
-      assert.ok(toRe("docs/Caf\u00e9/Caf\u00e9/*").test(`/W/${p}`), p);
-    }
-    assert.ok(toRe("\u01c5x").test("/W/\u01c5x"), "titlecase casa a si mesma");
-    assert.ok(toRe("\u01c5x").test("/W/\u01c4X") && toRe("\u01c5x").test("/W/\u01c6x"));
+    assert.ok(buildProfile({ worktreeRoot: "/W", targets: [], denyGlobs: ["**/*.key", ".env"], privateHome: "/H", tmpDir: "/H/tmp" }).ok);
   });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });

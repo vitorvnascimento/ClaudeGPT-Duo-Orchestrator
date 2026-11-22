@@ -35,6 +35,12 @@ describe("preflight de login do gemini", () => {
     assert.equal(a.method, "api_key");
     assert.notEqual(authBlockReason(a), null);
   });
+  it("conflicting login signals in one log are unknown, never subscription", () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "conflict" }), ack(true), null);
+    assert.equal(a.method, "unknown");
+    assert.equal(a.ok, false);
+    assert.match(a.detail, /conflitantes/);
+  });
   it("a stale consumer line from an earlier run does not count", () => {
     const h = home();
     const logDir = join(h, ".gemini", "antigravity-cli", "log");

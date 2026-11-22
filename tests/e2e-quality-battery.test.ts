@@ -83,10 +83,26 @@ describe("gate Q8 da bateria E2E", () => {
 
   it("aceita o navegador inconclusivo só quando o agy não o expõe ao modelo", () => {
     const gem = validGemini();
-    const browser = (evidence: Record<string, unknown>) => ({ results: gem.results.map((r) => r.id === "P-browser" ? { id: "P-browser", status: "inconclusive", pass: false, evidence } : r) });
-    const notExposed = { browserSteps: [], inventory: 23, state: "succeeded", checks: [{ what: "a", violated: false, attempted: true, ok: true }, { what: "b", attempted: false, ok: true }] };
+    const APPROVED = { version: "1.5.14", platform: "darwin" };
+    const browser = (evidence: Record<string, unknown>, agy: unknown = APPROVED) => ({ agy, results: gem.results.map((r) => r.id === "P-browser" ? { id: "P-browser", status: "inconclusive", pass: false, evidence } : r) });
+    const notExposed = { browserSteps: [], inventory: 23, state: "succeeded", checks: [
+      { what: "nenhum passo de navegador concluído", violated: false, attempted: true, ok: true },
+      { what: "tentativas de navegador negadas pelo hook", attempted: false, ok: true },
+    ] };
     runBattery(JSON.stringify(valid()), 8, JSON.stringify(browser(notExposed)));
+    // A exceção vale só para o par aprovado (versão exata e plataforma).
+    for (const agy of [null, { version: "1.5.15", platform: "darwin" }, { version: "1.5.14-rc.1", platform: "darwin" }, { version: "1.5.14", platform: "linux" }]) {
+      runBattery(JSON.stringify(valid()), 0, JSON.stringify(browser(notExposed, agy)));
+    }
     for (const bad of [
+      { ...notExposed, checks: [] },
+      { ...notExposed, checks: [null] },
+      { ...notExposed, checks: [{ ok: false }] },
+      { ...notExposed, checks: [notExposed.checks[0]] },
+      { ...notExposed, checks: [{ ...notExposed.checks[0], ok: false }, notExposed.checks[1]] },
+      { ...notExposed, checks: [notExposed.checks[0], { ...notExposed.checks[1], attempted: true }] },
+      { ...notExposed, checks: [notExposed.checks[0], { ...notExposed.checks[1], ok: false }] },
+      { ...notExposed, checks: [notExposed.checks[0], { what: notExposed.checks[1]!.what, attempted: false }] },
       { ...notExposed, note: "stream incompleto, com lacunas ou passo sem estado final" },
       { ...notExposed, browserSteps: [{ tool: "browser_subagent", state: "ERROR" }] },
       { ...notExposed, inventory: 0 },

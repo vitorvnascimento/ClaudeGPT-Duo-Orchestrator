@@ -2,7 +2,7 @@
 // modelo só. Diferente da cota, não esgota a conta: o modelo fica indisponível por alguns minutos e a seleção
 // procura outro de nível igual ou superior. Nada da conta é gravado.
 import { join } from "node:path";
-import type { Provider } from "../config.js";
+import { EXECUTORS, type Provider } from "../config.js";
 import { readJson, type Store, updateJsonLocked } from "../state/store.js";
 
 export const CAPACITY_COOLDOWN_MS = 10 * 60 * 1000;
@@ -17,7 +17,7 @@ function entries(raw: { entries?: unknown } | null, now: number): CapacityEntry[
   const list = Array.isArray(raw?.entries) ? raw.entries : [];
   return list.filter((e): e is CapacityEntry =>
     !!e && typeof e === "object"
-    && ((e as CapacityEntry).provider === "claude" || (e as CapacityEntry).provider === "codex")
+    && (EXECUTORS as readonly string[]).includes((e as CapacityEntry).provider)
     && ((e as CapacityEntry).model === null || typeof (e as CapacityEntry).model === "string")
     && typeof (e as CapacityEntry).until === "string" && Date.parse((e as CapacityEntry).until) > now);
 }

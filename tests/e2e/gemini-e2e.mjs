@@ -148,8 +148,10 @@ async function run(root, over = {}, gemini = { verified: VERIFIED }, extra = {})
 }
 function inspect(root, out) {
   const task = new Store(root).findTask(String(out.summary.taskId));
-  const gateLog = task?.geminiStateDir ? join(task.geminiStateDir, "home", "duo-gate", "gate-log.jsonl") : null;
-  const gate = gateLog && existsSync(gateLog) ? readFileSync(gateLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  // Um log por tentativa (gate-log-<ts>-<rand>.jsonl): lidos todos, na ordem de criação.
+  const gateDir = task?.geminiStateDir ? join(task.geminiStateDir, "home", "duo-gate") : null;
+  const gateLogs = gateDir && existsSync(gateDir) ? readdirSync(gateDir).filter((f) => /^gate-log.*\.jsonl$/.test(f)).sort().map((f) => join(gateDir, f)) : [];
+  const gate = gateLogs.flatMap((p) => readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)));
   const eventsPath = task ? join(task.artifactsDir, "events.jsonl") : null;
   const events = eventsPath && existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : "";
   const tools = initTools(events);

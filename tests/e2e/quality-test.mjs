@@ -456,14 +456,25 @@ const CRITERIA = {
     try { gem = GEMINI_BATTERY && existsSync(GEMINI_BATTERY) ? JSON.parse(readFileSync(GEMINI_BATTERY, "utf8")) : null; } catch { gem = null; }
     const gList = Array.isArray(gem?.results) ? gem.results : [];
     const gIds = new Set(gList.map((s) => s?.id));
-    // Navegador fora do alcance do modelo (agy headless): inconclusivo aceito como limitação documentada só com stream
-    // completo (sem nota de lacuna), inventário de navegador presente, nenhum passo de navegador e nenhuma violação.
-    const browserNotExposed = (s) => s?.id === "P-browser" && s.status === "inconclusive" && s.evidence && typeof s.evidence === "object"
-      && s.evidence.note === undefined && Array.isArray(s.evidence.browserSteps) && s.evidence.browserSteps.length === 0
-      && typeof s.evidence.inventory === "number" && s.evidence.inventory > 0 && s.evidence.state === "succeeded"
-      && Array.isArray(s.evidence.checks) && s.evidence.checks.every((c) => !c?.violated);
-    const gPassed = gList.filter((s) => s && typeof s === "object" && (s.pass === true && s.status === "pass" || browserNotExposed(s))).length;
-    const geminiOk = gList.length === GEMINI_IDS.length && gIds.size === GEMINI_IDS.length && GEMINI_IDS.every((id) => gIds.has(id)) && gPassed === GEMINI_IDS.length;
+    // Navegador fora do alcance do modelo (agy headless): inconclusivo aceito como limitação documentada só no par
+    // aprovado pelo dono (versão exata + plataforma), com stream completo (sem nota de lacuna), inventário de navegador
+    // presente, nenhum passo de navegador e exatamente os dois checks da bateria com o resultado esperado.
+    const BROWSER_WAIVER = [{ version: "1.5.14", platform: "darwin" }];
+    const waived = BROWSER_WAIVER.some((w) => gem?.agy?.version === w.version && gem?.agy?.platform === w.platform);
+    const checkOf = (list, what) => list.filter((c) => c && typeof c === "object" && c.what === what);
+    const browserNotExposed = (s) => {
+      const e = s?.evidence;
+      if (!waived || s?.id !== "P-browser" || s.status !== "inconclusive" || !e || typeof e !== "object") return false;
+      if (e.note !== undefined || !Array.isArray(e.browserSteps) || e.browserSteps.length !== 0) return false;
+      if (typeof e.inventory !== "number" || e.inventory <= 0 || e.state !== "succeeded" || !Array.isArray(e.checks) || e.checks.length !== 2) return false;
+      const done = checkOf(e.checks, "nenhum passo de navegador concluído"), denied = checkOf(e.checks, "tentativas de navegador negadas pelo hook");
+      return done.length === 1 && done[0].violated === false && done[0].attempted === true && done[0].ok === true
+        && denied.length === 1 && !denied[0].violated && denied[0].attempted === false && denied[0].ok === true;
+    };
+    const isPass = (s) => s && typeof s === "object" && s.pass === true && s.status === "pass";
+    const gPassed = gList.filter(isPass).length;
+    const gWaived = gList.filter((s) => !isPass(s) && browserNotExposed(s)).length;
+    const geminiOk = gList.length === GEMINI_IDS.length && gIds.size === GEMINI_IDS.length && GEMINI_IDS.every((id) => gIds.has(id)) && gPassed + gWaived === GEMINI_IDS.length;
     const res = BATTERY && existsSync(BATTERY) ? JSON.parse(readFileSync(BATTERY, "utf8")) : null;
     const list = Array.isArray(res) ? res : (res?.results ?? res?.scenarios ?? []);
     const expected = new Set([...Array.from({ length: 15 }, (_, i) => `T${i + 1}`), "A1", "P1"]);
@@ -475,7 +486,7 @@ const CRITERIA = {
       title: "Bateria E2E real completa (T1–T15 + A1 + P1)",
       checks: [
         check("todos os 17 cenários aprovados, inclusive o paralelismo P1", entries.length === 17 && passed === 17 && ids.size === 17 && [...ids].every((id) => expected.has(id)), { arquivo: BATTERY, aprovados: passed, total: entries.length }),
-        check("bateria do Gemini: os 14 cenários aprovados (G1–G9 e sondas, inclusive schedule; navegador não exposto aceito como limitação)", geminiOk, { arquivo: GEMINI_BATTERY ?? null, aprovados: gPassed, total: gList.length }),
+        check("bateria do Gemini: os 14 cenários aprovados (G1–G9 e sondas, inclusive schedule; navegador não exposto aceito como limitação)", geminiOk, { arquivo: GEMINI_BATTERY ?? null, agy: gem?.agy ?? null, aprovados: gPassed, inconclusivosAceitos: gWaived, total: gList.length }),
       ],
     };
   },

@@ -35,10 +35,11 @@ export function globToSbplRegex(root: string, glob: string): string {
   return `^${reEscape(root)}/${re}$`;
 }
 
-export type ProfileInput = { worktreeRoot: string; targets: GeminiTarget[]; denyGlobs: string[]; privateHome: string; tmpDir: string };
+/** gateLog: único arquivo gravável da pasta duo-gate do HOME privado (allowlist e perfil ficam só leitura). */
+export type ProfileInput = { worktreeRoot: string; targets: GeminiTarget[]; denyGlobs: string[]; privateHome: string; tmpDir: string; gateLog?: string };
 
 export function buildProfile(p: ProfileInput): { ok: true; profile: string } | { ok: false; reason: string } {
-  const all = [p.worktreeRoot, p.privateHome, p.tmpDir, ...p.targets.map((t) => t.abs), ...p.denyGlobs];
+  const all = [p.worktreeRoot, p.privateHome, p.tmpDir, ...(p.gateLog ? [p.gateLog] : []), ...p.targets.map((t) => t.abs), ...p.denyGlobs];
   const bad = all.find((s) => CONTROL.test(s));
   if (bad !== undefined) return { ok: false, reason: `caminho com caractere de controle não é aceito no perfil: ${JSON.stringify(bad)}` };
   const root = canonicalPath(p.worktreeRoot);
@@ -48,13 +49,12 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     `(subpath ${sbplQuote(canonicalPath(p.tmpDir))})`,
     '(literal "/dev/null")', '(literal "/dev/tty")', '(regex #"^/dev/fd/")',
   ];
+  // Sempre, inclusive com alvos só de arquivo: um alvo que caia numa pasta protegida ou negada nunca ganha escrita.
   const denies: string[] = [];
-  if (p.targets.some((t) => t.isDir)) {
-    for (const d of PROTECTED) denies.push(`(subpath ${sbplQuote(join(root, d))})`);
-    for (const g of p.denyGlobs) {
-      denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
-      if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
-    }
+  for (const d of PROTECTED) denies.push(`(regex ${sbplQuote(`^${reEscape(root)}/(.*/)?${ci(reEscape(d))}(/.*)?$`)})`);
+  for (const g of p.denyGlobs) {
+    denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
+    if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
   }
   const profile = [
     "(version 1)",
@@ -64,6 +64,9 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     ...(denies.length ? [`(deny file-write* ${denies.join(" ")})`] : []),
     // Hard link num caminho liberado gravaria no arquivo de fora; Apple Events e LaunchServices abririam
     // processos fora do sandbox. Nada disso é usado pelo agy (verificado com a sonda real).
+    // A pasta do gate (allowlist, perfil) é da ponte: só o log desta tentativa é gravável, pelo hook.
+    `(deny file-write* (subpath ${sbplQuote(join(canonicalPath(p.privateHome), "duo-gate"))}))`,
+    ...(p.gateLog ? [`(allow file-write* (literal ${sbplQuote(canonicalPath(p.gateLog))}))`] : []),
     "(deny file-link)",
     "(deny appleevent-send)",
     '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name-regex #"^com\\.apple\\.ae\\."))',
@@ -77,7 +80,9 @@ export function probeSandbox(opts: { sandboxExec?: string } = {}): { ok: true } 
   const exe = opts.sandboxExec ?? SANDBOX_EXEC;
   if (process.platform !== "darwin") return { ok: false, reason: "sandbox-exec só existe no macOS" };
   if (!existsSync(exe)) return { ok: false, reason: `${exe} não encontrado` };
-  const base = canonicalPath(mkdtempSync(join(tmpdir(), "duo-sbx-probe-")));
+  let base: string;
+  try { base = canonicalPath(mkdtempSync(join(tmpdir(), "duo-sbx-probe-"))); }
+  catch (e) { return { ok: false, reason: `sem diretório temporário para a sonda (${(e as NodeJS.ErrnoException).code ?? "erro"})` }; }
   try {
     const wt = join(base, "wt");
     mkdirSync(wt);
@@ -90,7 +95,9 @@ export function probeSandbox(opts: { sandboxExec?: string } = {}): { ok: true } 
     if (!existsSync(join(wt, "ok.txt"))) return { ok: false, reason: "a sonda não conseguiu gravar o alvo autorizado" };
     if (existsSync(join(wt, "other.txt")) || existsSync(join(base, "outside.txt"))) return { ok: false, reason: "a sonda gravou fora do alvo: o sandbox não está contendo escrita" };
     return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `sonda do sandbox falhou (${(e as NodeJS.ErrnoException).code ?? "erro"})` };
   } finally {
-    rmSync(base, { recursive: true, force: true });
+    try { rmSync(base, { recursive: true, force: true }); } catch { /* limpeza best-effort */ }
   }
 }

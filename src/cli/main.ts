@@ -2,10 +2,10 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, EXECUTORS, loadConfig, type BrainProvider, type Provider } from "../config.js";
-import { pruneGeminiStates, type ChainClass } from "../state/gemini-state.js";
+import { pruneGeminiStates } from "../state/gemini-state.js";
 import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { repoRoot } from "../git.js";
-import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
+import { acceptTask, applyTask, cancelRun, classifyGeminiChain, refreshInterrupted } from "../orchestration/control.js";
 import { delegate, EXIT } from "../orchestration/delegate.js";
 import { writeHandoff } from "../orchestration/handoff.js";
 import { formatCatalog, loadCatalog, type Capability } from "../adapters/catalog.js";
@@ -19,7 +19,6 @@ import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
 import { activeSlots, releaseOrphanSlot } from "../state/slots.js";
 import { Store } from "../state/store.js";
-import { isPidAlive } from "../adapters/process.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
 import { loadCliLatest, cliUpdateWarnings } from "../adapters/cli-latest.js";
 import { tierOf, extraUsage } from "../adapters/tiers.js";
@@ -114,24 +113,6 @@ function str(args: Args, k: string): string | undefined {
 function provider(v: string | undefined, flag: string): Provider {
   if (!EXECUTORS.includes(v as Provider)) throw new Error(`${flag} deve ser claude, codex ou gemini`);
   return v as Provider;
-}
-
-/** Classe da cadeia para a limpeza do HOME privado do gemini (a cadeia "catalog" é a descoberta de modelos). */
-function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
-  if (chainId === "catalog") return "resumable";
-  const store = new Store(projectRoot);
-  const tasks = store.listRuns().flatMap((r) => store.listTasks(r))
-    .filter((t) => (t.selection?.chainRoot ?? t.selection?.chainId ?? t.taskId) === chainId);
-  if (!tasks.length) return "orphan";
-  const chain = store.loadChain(tasks[0]!.runId, chainId);
-  if (!chain) return "orphan";
-  const latest = tasks.find((t) => t.taskId === chain.latestTaskId) ?? null;
-  // Dono vivo da cadeia, ou executor vivo enquanto a tentativa roda; marcas de uso são vistas pela própria limpeza.
-  if ((chain.owner && isPidAlive(chain.owner.pid)) || (latest?.state === "running" && latest.pids.child && isPidAlive(latest.pids.child))) return "active";
-  if (tasks.some((t) => t.applied || t.accepted)) return "terminal";
-  // Estado persistido da cadeia: blocked e running interrompido (inclui tentativa planned) são retomáveis.
-  if (chain.status === "blocked" || chain.status === "running" || latest?.state === "planned") return "resumable";
-  return "terminal";
 }
 
 function brainProvider(v: string | undefined, flag: string): BrainProvider {

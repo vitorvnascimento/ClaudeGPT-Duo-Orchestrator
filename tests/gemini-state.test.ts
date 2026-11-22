@@ -1,7 +1,8 @@
 // HOME privado do executor Gemini (estado nativo do agy fora do .duo/) e seu ciclo de vida.
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -139,6 +140,58 @@ describe("prune", () => {
   });
 });
 
+describe("prune validado", () => {
+  it("older-than counts from the last use, not from creation", async () => {
+    const { claimChainState } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    mkdirSync(join(project, ".duo"));
+    const d = chainStateDir(project, "r1", env);
+    const old = new Date(Date.now() - 10 * 86400_000);
+    utimesSync(join(d, "owner.json"), old, old);
+    claimChainState(d)();
+    const removed = pruneGeminiStates({ classify: () => "resumable", olderThanDays: 5 }, env);
+    assert.deepEqual(removed, []);
+    assert.ok(existsSync(d));
+  });
+  it("prune never deletes a chain dir that is a symlink or sits under a foreign hash", () => {
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    mkdirSync(join(project, ".duo"));
+    const real = chainStateDir(project, "c1", env);
+    const victim = tmp("duo-gs-victim-");
+    writeFileSync(join(victim, "keep.txt"), "x");
+    // Diretório de hash alheio com owner.json apontando para este projeto.
+    const foreign = join(geminiStateRoot(env), "aaaaaaaaaaaa", "c9");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, "owner.json"), JSON.stringify({ projectRoot: project, chainId: "c9" }));
+    // Link no lugar de uma cadeia, com owner.json válido do lado de fora.
+    writeFileSync(join(victim, "owner.json"), JSON.stringify({ projectRoot: project, chainId: "c2" }));
+    symlinkSync(victim, join(real, "..", "c2"));
+    const removed = pruneGeminiStates({ classify: () => "terminal" }, env);
+    assert.ok(existsSync(join(victim, "keep.txt")), "alvo do link intacto");
+    assert.ok(existsSync(foreign), "hash alheio intacto");
+    assert.ok(removed.includes(real));
+  });
+});
+
+describe("pasta do projeto redirecionada", () => {
+  it("a symlinked project-hash dir never lets removal reach the relocated tree", async () => {
+    const { removeChainStateSafe, projectStateDir } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    const dir = chainStateDir(project, "c1", env);
+    const projDir = projectStateDir(project, env);
+    const relocated = tmp("duo-gs-reloc-");
+    // Move a árvore para fora e deixa um link no lugar da pasta do projeto.
+    fs.cpSync(projDir, join(relocated, "p"), { recursive: true });
+    rmSync(projDir, { recursive: true, force: true });
+    symlinkSync(join(relocated, "p"), projDir);
+    assert.equal(removeChainStateSafe(dir, project, "c1", env), false);
+    assert.ok(existsSync(join(relocated, "p", "c1", "owner.json")));
+  });
+});
+
 describe("remoção validada", () => {
   it("removeChainStateSafe deletes only the expected chain path of this project", async () => {
     const { removeChainStateSafe } = await import("../src/state/gemini-state.js");
@@ -167,6 +220,20 @@ describe("remoção validada", () => {
     assert.equal(removeChainStateSafe(dir, project, "c1", env), false);
     release();
     assert.deepEqual(pruneGeminiStates({ classify: () => "terminal" }, env), [dir]);
+  });
+});
+
+describe("HOME privado concorrente", () => {
+  it("parallel processes setting up the same chain never fail", async () => {
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    const mod = join(process.cwd(), "dist", "src", "state", "gemini-state.js");
+    const code = `import(${JSON.stringify(mod)}).then((m) => { const d = m.chainStateDir(${JSON.stringify(project)}, "c1", process.env); m.createPrivateHome(d, process.env); })`;
+    const runs = await Promise.all(Array.from({ length: 8 }, () => new Promise<number>((res) => {
+      const c = spawn(process.execPath, ["-e", code], { env: { ...env, PATH: process.env.PATH }, stdio: "ignore" });
+      c.on("exit", (code) => res(code ?? 1));
+    })));
+    assert.deepEqual(runs, Array(8).fill(0));
   });
 });
 

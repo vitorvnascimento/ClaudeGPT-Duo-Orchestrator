@@ -15,10 +15,10 @@ import { confirmFloor, selectModel, supportsNeed } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { executorEligible } from "./alternates.js";
-import { isVerifiedAgy } from "../adapters/gemini.js";
-import { parseVersion } from "../adapters/capabilities.js";
+import { isVerifiedAgy, agyVersionLabel } from "../adapters/gemini.js";
 import { runQuick } from "../adapters/process.js";
-import { geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
@@ -204,8 +204,17 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, env);
     if (!resolved.ok) gReasons.push(resolved.reason);
     else {
-      const v = parseVersion(runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env }).stdout);
-      if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${v ?? "?"} não verificado`);
+      // Identidade exata: a saída completa de --version (1.5.14+build.7 não é a 1.5.14 verificada).
+      const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env });
+      const v = r.ok ? r.stdout.trim() || null : null;
+      if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
+      else {
+        // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).
+        const sbx = probeSandbox();
+        if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
+        const login = geminiLoginProbe(resolved, env, cfg);
+        if (!login.ok) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
+      }
     }
     const parent = geminiParentEnvProblem(env);
     if (parent) gReasons.push(parent);

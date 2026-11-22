@@ -13,7 +13,7 @@ import { isPidAlive, runProcess } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
-import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy } from "../adapters/gemini.js";
+import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
@@ -129,7 +129,8 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     tags: [],
     needs: req.needs ?? [],
     ...(req.apps !== undefined ? { apps: [...req.apps] } : {}),
-    isolation: req.needs?.includes("computer_use") ? "worktree" : req.isolation ?? "in-place",
+    // Computer use e Gemini só rodam em worktree: nascem assim, para que um bloqueio antes da admissão continue retomável.
+    isolation: req.needs?.includes("computer_use") || req.executor === "gemini" ? "worktree" : req.isolation ?? "in-place",
     scope: req.scope.allowedPaths,
     constraints: req.needs?.includes("computer_use") ? [] : req.constraints ?? [],
     acceptanceCriteria: req.needs?.includes("computer_use") ? [] : req.acceptance.criteria,
@@ -248,8 +249,8 @@ function runGates(
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
     : req.executor === "gemini" ? probe(resolved, ["--help"], AGY_FLAGS, probeEnv)
     : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
-  if (req.executor === "gemini" && !isVerifiedAgy(caps.version, gem.platform ?? process.platform, gem.verified)) {
-    return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma; rode a sonda de contenção (tests/fixtures/agy/probe) antes de liberar` };
+  if (req.executor === "gemini" && !isVerifiedAgy(caps.rawVersion ?? null, gem.platform ?? process.platform, gem.verified)) {
+    return { ok: false, reason: `versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar` };
   }
   if (caps.missingRequired.length) {
     return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do ${req.executor} não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}` };
@@ -906,6 +907,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     ctx.cleanups?.push(releaseClaim);
     sweepStaleAttempts(chainDir);
     const { home } = createPrivateHome(chainDir, env);
+    // Worktree criada para outro executor (troca no --resume): o .agents do gate nunca entra no patch.
+    if (!(task.worktreeLinks ?? []).includes(".agents")) { task.worktreeLinks = [...(task.worktreeLinks ?? []), ".agents"]; store.saveTask(task); }
     const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
     const t = resolveGeminiTargets(execCwd, isWriteKind(task.kind) ? entries.map((e) => ({ rel: e.rel, isDir: e.isDir })) : [], links);
     if (!t.ok) return block(`alvos do gemini: ${t.reason}`);
@@ -915,7 +918,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
     let profilePath: string | null = null;
     if (ctx.gemini?.sandbox !== false) {
-      const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path });
+      const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path, gateLog: files.logPath });
       if (!prof.ok) { attempt.cleanup(); return block(`perfil sandbox-exec: ${prof.reason}`); }
       profilePath = join(home, "duo-gate", "profile.sb");
       writeFileSync(profilePath, prof.profile);
@@ -966,7 +969,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     env: execEnv,
     ...(gemPrep ? { gemini: { privateHome: gemPrep.home, tmpDir: gemPrep.attempt.path, profilePath: gemPrep.profilePath } } : {}),
     };
-    const gemAdapter = task.executor === "gemini" && ctx.gemini?.verified ? new GeminiAdapter({ verified: ctx.gemini.verified }) : adapter;
+    const gemAdapter = task.executor === "gemini" && (ctx.gemini?.verified || ctx.gemini?.platform)
+      ? new GeminiAdapter({ ...(ctx.gemini.verified ? { verified: ctx.gemini.verified } : {}), ...(ctx.gemini.platform ? { platform: ctx.gemini.platform } : {}) }) : adapter;
     plan = adapter instanceof CodexAdapter ? adapter.plan(input, effectiveCodexConfig) : gemAdapter.plan(input);
   } catch (e) {
     gemPrep?.attempt.cleanup();

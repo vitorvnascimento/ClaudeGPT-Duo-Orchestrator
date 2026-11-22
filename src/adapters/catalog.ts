@@ -7,6 +7,7 @@
 // Se todas as fontes de uma conta falharem, vale o último catálogo bom (marcado como desatualizado) e, por fim,
 // `routing.candidates` da config. A resposta de cada fonte é validada: formato inesperado cai para a próxima.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,7 @@ import { parseCodexQuota, saveQuota, type QuotaState } from "../orchestration/qu
 import { parseVersion } from "./capabilities.js";
 import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
+import { classifyErrorText } from "./types.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
 import { chainStateDir, claimChainState, createPrivateHome } from "../state/gemini-state.js";
 
@@ -445,19 +447,23 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
   if (!cfg.executors.gemini.enabled) return NOT_DISCOVERED("gemini");
   const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
   if (!resolved.ok) return { ok: false, source: "agy models", sourceKind: "none", error: resolved.reason, tools: [], models: [] };
-  const dir = chainStateDir(cwd, "catalog", baseEnv);
-  const { home } = createPrivateHome(dir, baseEnv);
   let release: (() => void) | null = null;
   let r: ReturnType<typeof runQuick>;
   try {
+    // Setup do HOME dentro do try: uma falha aqui derruba só o catálogo do gemini, nunca o Promise.all.
+    const dir = chainStateDir(cwd, "catalog", baseEnv);
+    const { home } = createPrivateHome(dir, baseEnv);
     release = claimChainState(dir);
     r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
   } catch (e) {
-    return { ok: false, source: "agy models", sourceKind: "none", error: (e as Error).message, tools: [], models: [] };
+    const error = `HOME privado do catálogo indisponível (${(e as NodeJS.ErrnoException).code ?? "erro"})`;
+    return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
   } finally { release?.(); }
   const models = r.ok ? parseAgyModels(r.stdout) : [];
   if (!models.length) {
-    const error = (r.stderr || r.error || "agy models sem modelos gemini-*").trim().slice(0, 300);
+    // Nunca grava o stderr cru (pode trazer conta ou URL): só a classe da falha.
+    const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
+    const error = r.ok ? "agy models sem modelos gemini-*" : `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})`;
     return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
   }
   return { ok: true, source: "agy models", sourceKind: "agy-models", stable: true, tools: [], models };
@@ -489,6 +495,16 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog
     if (!resolved.ok) continue;
     const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
     versions[p] = r.ok ? parseVersion(r.stdout + r.stderr) : null;
+  }
+  // Gemini só quando ligado: ligar o executor ou trocar o agy (saída exata de --version) invalida o cache.
+  if (cfg.executors.gemini.enabled) {
+    const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
+    if (resolved.ok) {
+      const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+      // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.
+      const out = r.ok ? r.stdout.trim() : "";
+      versions.gemini = !out ? null : /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$/.test(out) ? out : `sha256:${createHash("sha256").update(out).digest("hex").slice(0, 16)}`;
+    }
   }
   return versions;
 }
@@ -540,9 +556,14 @@ export function catalogTtlMs(c: Catalog): number {
 export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<Catalog> {
   const cached = readJson<Catalog>(catalogPath(store));
   const valid = cached && typeof cached.discoveredAt === "string" && cached.providers ? cached : null;
+  // Cache da v0.4.0 não tem o gemini: mesma migração do cachedCatalog antes de qualquer uso.
+  if (valid) {
+    valid.providers.gemini ??= NOT_DISCOVERED("gemini");
+    valid.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, valid.cliVersions);
+  }
   const env = opts.env ?? process.env;
   const versions = cliVersions(cfg, env);
-  const versionsMatch = valid?.cliVersions && (["claude", "codex"] as const).every((p) => valid.cliVersions[p] === versions[p]);
+  const versionsMatch = valid?.cliVersions && (["claude", "codex", "gemini"] as const).every((p) => (valid.cliVersions[p] ?? null) === versions[p]);
   const upgradeFromSandbox = Boolean(valid?.discoveredInSandbox) && !inCodexSandbox(env);
   if (!opts.refresh && valid && versionsMatch && !upgradeFromSandbox && Date.now() - Date.parse(valid.discoveredAt) < catalogTtlMs(valid)) return withUserModels(valid, cfg, store.projectRoot, env);
   const fresh = await discover(cfg, store.projectRoot, env, valid, { cliVersions: versions });

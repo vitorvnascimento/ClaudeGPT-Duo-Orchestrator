@@ -1,11 +1,10 @@
 // Diagnóstico sem inferência: versões, help, status e schema locais; versões publicadas consultadas anonimamente.
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
-import { isVerifiedAgy } from "../adapters/gemini.js";
-import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { createPrivateHome } from "../state/gemini-state.js";
+import { isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
+import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
@@ -186,27 +185,21 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     else {
       const caps = probe(resolved, ["--help"], AGY_FLAGS, probeEnv);
       const sandbox = probeSandbox();
-      const verified = isVerifiedAgy(caps.version, process.platform);
+      const verified = isVerifiedAgy(caps.rawVersion ?? null, process.platform);
       const blockers: string[] = [];
       if (process.platform !== "darwin") blockers.push("executor gemini exige macOS nesta versão");
       if (caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
       if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
-      if (!verified) blockers.push(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma`);
+      if (!verified) blockers.push(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}`);
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
       const parent = geminiParentEnvProblem(env);
       if (parent) blockers.push(parent);
       // Login sem inferência (agy models) num HOME temporário só deste diagnóstico (não disputa logs nem a limpeza).
       let auth: { method: string; detail: string } | null = null;
       if (process.platform === "darwin") {
-        const tmpHome = mkdtempSync(join(tmpdir(), "duo-doctor-agy-"));
-        try {
-          const { home } = createPrivateHome(tmpHome, env);
-          const a = geminiAuthPreflight(resolved, { ...probeEnv, HOME: home }, effectiveCfg, null);
-          auth = { method: a.method, detail: a.detail };
-          if (a.method !== "subscription") blockers.push(`login do agy: ${a.method} (${a.detail})`);
-        } catch (e) {
-          blockers.push(`não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})`);
-        } finally { rmSync(tmpHome, { recursive: true, force: true }); }
+        const a = geminiLoginProbe(resolved, { ...probeEnv, HOME: env.HOME ?? probeEnv.HOME }, effectiveCfg);
+        auth = { method: a.method, detail: a.detail };
+        if (!a.ok) blockers.push(`login do agy: ${a.method} (${a.detail})`);
       }
       ready.gemini = blockers.length === 0;
       providers.gemini = { installed: true, path: resolved.command, source: resolved.source, version: caps.version, capabilities: caps.flags,

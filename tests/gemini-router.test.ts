@@ -1,6 +1,7 @@
 // Roteador, doctor e limpeza de estado com o gemini presente.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { parseAgyModels, type Catalog } from "../src/adapters/catalog.js";
@@ -86,10 +87,52 @@ describe("disponibilidade e cota do gemini", () => {
     assert.ok(g.reasons.length > 0);
     assert.equal(typeof avail("codex").available, "boolean");
   });
+  it("an odd agy --version output shows up bounded and on one line", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });
+    const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: `1.5.14\n${"x".repeat(5000)}` }, sb.authPaths);
+    const reason = avail("gemini").reasons.find((r) => r.includes("agy")) ?? "";
+    assert.ok(reason.length > 0 && reason.length < 200, reason.slice(0, 300));
+    assert.ok(!reason.includes("\n"));
+  });
+  it("live availability checks the agy login (and sandbox-exec) before offering gemini", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: "1.5.14" };
+    const ok = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
+    assert.equal(ok("gemini").available, true, JSON.stringify(ok("gemini")));
+    const bad = await liveAvailability(new Store(sb.root), loadConfig(sb.root), { ...env, FAKE_AGY_AUTH: "apikey" }, sb.authPaths);
+    assert.equal(bad("gemini").available, false);
+    assert.ok(bad("gemini").reasons.some((r) => /login/.test(r)), JSON.stringify(bad("gemini")));
+  });
+  it("a failing probe setup (no usable TMPDIR) only makes gemini unavailable", { skip: process.platform !== "darwin" }, async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`, FAKE_AGY_VERSION: "1.5.14" };
+    const baseline = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
+    const blocker = join(sb.root, "not-a-dir");
+    writeFileSync(blocker, "x");
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = blocker;
+    try {
+      const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths);
+      assert.equal(avail("gemini").available, false);
+      assert.ok(avail("gemini").reasons.some((r) => /tempor|sonda|login/.test(r)), JSON.stringify(avail("gemini")));
+      for (const p of ["claude", "codex"] as const) assert.deepEqual(avail(p), baseline(p), p);
+    } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
+  });
   it("a saved gemini exhaustion shows up in quotaStates", () => {
     sb = makeSandbox();
     const store = new Store(sb.root);
     saveQuota(store, "gemini", { status: "exhausted", usedPercent: 100, resetsAt: new Date(Date.now() + 3600_000).toISOString(), observedAt: new Date().toISOString(), source: "task-error", affectedModels: null });
     assert.equal(quotaStates(store).gemini?.status, "exhausted");
+  });
+});
+
+describe("capacidade do gemini", () => {
+  it("a gemini capacity cooldown blocks and survives the next write", async () => {
+    const { recordCapacity, capacityBlock } = await import("../src/orchestration/capacity.js");
+    sb = makeSandbox();
+    const store = new Store(sb.root);
+    recordCapacity(store, "gemini", "gemini-4-argon-high");
+    recordCapacity(store, "codex", "gpt-6.1-sol");
+    assert.match(String(capacityBlock(store, "gemini", "gemini-4-argon-high")), /sem capacidade/);
   });
 });

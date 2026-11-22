@@ -29,12 +29,19 @@ describe("buildProfile", () => {
     assert.match(p, /\(literal "\/W\/a\.txt"\)/);
     assert.match(p, /\(subpath "\/W\/docs"\)/);
     assert.match(p, /\(subpath "\/H"\)/);
-    assert.match(p, /\(subpath "\/W\/docs\/\.agents"\)|\(subpath "\/W\/\.agents"\)/);
+    assert.match(p, /\[aA\]\[gG\]\[eE\]\[nN\]\[tT\]\[sS\]/);
     assert.doesNotMatch(p, /\(subpath "\/W"\)/);
     assert.match(p, /\(deny file-link\)/);
     assert.match(p, /\(deny appleevent-send\)/);
   });
 
+  it("protected dirs and deny globs are denied even with file-only targets", () => {
+    const r = buildProfile({ worktreeRoot: "/W", targets: [{ rel: "a.txt", abs: "/W/a.txt", isDir: false, missingAncestors: [] }], denyGlobs: DENY, privateHome: "/H", tmpDir: "/H/tmp" });
+    const p = r.ok ? r.profile : "";
+    const denyLine = p.split("\n").find((l) => l.startsWith("(deny file-write* (")) ?? "";
+    for (const d of ["[aA][gG][eE][nN][tT][sS]", "[gG][iI][tT]", "[dD][uU][oO]"]) assert.ok(denyLine.includes(d), d);
+    assert.ok(denyLine.includes("[kK][eE][yY]"));
+  });
   it("refuses control characters in any path", () => {
     const r = buildProfile({ worktreeRoot: "/W", targets: [{ rel: "a\nb", abs: "/W/a\nb", isDir: false, missingAncestors: [] }], denyGlobs: [], privateHome: "/H", tmpDir: "/H/t" });
     assert.equal(r.ok, false);
@@ -89,6 +96,27 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     assert.equal(readFileSync(join(base, "victim.txt"), "utf8"), "secret");
   });
 
+  it("a literal target inside .agents is still denied by the OS layer", () => {
+    const wt = tmp("duo-sbx-wt-");
+    mkdirSync(join(wt, ".agents"));
+    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: ".agents/hooks.json", abs: join(wt, ".agents", "hooks.json"), isDir: false, missingAncestors: [] }], denyGlobs: [], privateHome: join(wt, "..", "h"), tmpDir: join(wt, "..", "h", "tmp") });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", "echo x > .agents/hooks.json", wt);
+    assert.equal(existsSync(join(wt, ".agents", "hooks.json")), false);
+  });
+  it("the gate dir is read-only for the executor except its own log", () => {
+    const wt = tmp("duo-sbx-wt-");
+    const home = tmp("duo-sbx-home-");
+    mkdirSync(join(home, "duo-gate")); writeFileSync(join(home, "duo-gate", "allowlist.json"), "{}");
+    const log = join(home, "duo-gate", "gate-log-1.jsonl"); writeFileSync(log, "");
+    const r = buildProfile({ worktreeRoot: wt, targets: [], denyGlobs: [], privateHome: home, tmpDir: join(home, "tmp"), gateLog: log });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", `echo x >> '${log}'; echo y > '${join(home, "duo-gate", "allowlist.json")}'; echo z > '${join(home, "duo-gate", "profile.sb")}'; echo w > '${join(home, "ok.txt")}'`, wt);
+    assert.equal(readFileSync(log, "utf8"), "x\n");
+    assert.equal(readFileSync(join(home, "duo-gate", "allowlist.json"), "utf8"), "{}");
+    assert.equal(existsSync(join(home, "duo-gate", "profile.sb")), false);
+    assert.equal(existsSync(join(home, "ok.txt")), true);
+  });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });
     assert.ok(r.ok && r.profile.includes('(subpath "/private/tmp")'));

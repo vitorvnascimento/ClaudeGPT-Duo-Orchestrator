@@ -11,14 +11,16 @@ const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const valueOf = (f) => (args.indexOf(f) >= 0 ? args[args.indexOf(f) + 1] : undefined);
 
-if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(0); }
+if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(Number(process.env.FAKE_AGY_VERSION_EXIT ?? 0)); }
 if (has("--help")) { process.stdout.write(readFileSync(join(here, "agy", "help-1.5.3.txt"), "utf8")); process.exit(0); }
 if (args[0] === "models") {
   log({ cmd: "agy-models", home: process.env.HOME });
   if (process.env.HOME) {
     const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
     mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "apikey"
+    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "conflict"
+      ? "I1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=consumer, quotaProject=\nI1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: authMethod=api_key, quotaProject=\n"
+      : process.env.FAKE_AGY_AUTH === "apikey"
       ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=api_key, quotaProject=\n"
       : "I1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=consumer, quotaProject=\n");
   }
@@ -36,7 +38,9 @@ if (scenario) { process.stdout.write(readFileSync(join(here, "agy", `${scenario}
 const model = valueOf("--model") ?? "gemini-x";
 const conv = valueOf("--conversation") ?? "00000000-0000-4000-8000-000000000001";
 // Simula o hook: registra o modelo em uso no log do gate, como o gate real faria.
-const gateLog = process.env.HOME ? join(process.env.HOME, "duo-gate", "gate-log.jsonl") : null;
+// O log é o desta tentativa: o caminho vem do comando do hook (DUO_GATE_LOG) em .agents/hooks.json da worktree.
+let gateLog = null;
+try { gateLog = /DUO_GATE_LOG='([^']+)'/.exec(readFileSync(join(process.cwd(), ".agents", "hooks.json"), "utf8"))?.[1] ?? null; } catch { gateLog = null; }
 if (gateLog && existsSync(dirname(gateLog))) appendFileSync(gateLog, `${JSON.stringify({ tool: "write_file", decision: "allow", modelName: process.env.FAKE_AGY_SERVED_MODEL ?? model })}\n`);
 const report = { ...fakeReport(Object.keys(writes)), testsRun: [], ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
 const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);

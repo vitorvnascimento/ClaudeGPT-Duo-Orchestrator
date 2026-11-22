@@ -2,10 +2,11 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
+import { canonicalPath, decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
 
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
@@ -29,6 +30,10 @@ describe("decideToolCall", () => {
       assert.equal(decideToolCall(call("write_file", { Path: p, Content: "x" }), allow, canon).decision, "deny", p);
     }
   });
+  it("protected dirs are denied in any letter case", () => {
+    const wide: GateAllowlist = { ...allow, write: [{ rel: ".", isDir: true }] };
+    for (const p of ["/WT/.AGENTS/hooks.json", "/WT/.Git/config", "/WT/.DUO/x"]) assert.equal(decideToolCall(call("write_file", { Path: p }), wide, canon).decision, "deny", p);
+  });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts" }), { ...allow, readOnly: true }, canon).decision, "deny");
@@ -36,7 +41,7 @@ describe("decideToolCall", () => {
   it("allows reads inside the worktree and denies reads outside", () => {
     assert.equal(decideToolCall(call("read_file", { Path: "/WT/src/app.ts" }), allow, canon).decision, "allow");
     assert.equal(decideToolCall(call("list_dir", { DirectoryPath: "/WT" }), allow, canon).decision, "allow");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), allow, canon).decision, "allow");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), allow, canon).decision, "deny", "grep só em arquivo");
     assert.equal(decideToolCall(call("grep_search", { Query: "x" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("read_file", { Path: "/WT/.env" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("read_file", { Path: "/WT/docs/a.key" }), allow, canon).decision, "deny");
@@ -57,6 +62,64 @@ describe("decideToolCall", () => {
   });
 });
 
+describe("links no caminho pedido", () => {
+  it("link/.. is resolved through the link, never lexically", () => {
+    const wt = tmp("duo-gate-wt-");
+    const out = tmp("duo-gate-out-");
+    mkdirSync(join(out, "a")); writeFileSync(join(out, "secret"), "s");
+    mkdirSync(join(wt, "docs")); symlinkSync(join(out, "a"), join(wt, "docs", "l"));
+    const a: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "docs", isDir: true }], deny: DENY, readOnly: false };
+    // Concatenação literal: path.join colapsaria "l/.." antes do gate.
+    const raw = `${wt}/docs/l/../secret`;
+    assert.equal(decideToolCall(call("read_file", { Path: raw }), a).decision, "deny");
+    assert.equal(canonicalPath(raw), join(out, "secret"));
+    assert.equal(decideToolCall(call("read_file", { Path: "docs/l/../secret" }), a).decision, "deny", "relativo");
+  });
+  it("a dangling committed link resolves to its target (outside → denied)", () => {
+    const wt = tmp("duo-gate-wt-");
+    mkdirSync(join(wt, "docs"));
+    symlinkSync("../../fora.txt", join(wt, "docs", "d"));
+    symlinkSync("../.env", join(wt, "docs", "e"));
+    const a: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "docs", isDir: true }], deny: DENY, readOnly: false };
+    assert.equal(decideToolCall(call("write_file", { Path: join(wt, "docs", "d"), Content: "x" }), a).decision, "deny");
+    assert.equal(decideToolCall(call("read_file", { Path: join(wt, "docs", "e") }), a).decision, "deny");
+  });
+  it("a target whose missing ancestor is a dangling link is refused", () => {
+    const wt = tmp("duo-gate-wt-");
+    symlinkSync("/nao/existe/dir", join(wt, "gen"));
+    assert.equal(resolveGeminiTargets(wt, [{ rel: "gen/x.ts", isDir: false }], []).ok, false);
+  });
+});
+
+describe("busca de conteúdo e grafias equivalentes", () => {
+  function repo(): string {
+    const wt = tmp("duo-gate-wt-");
+    mkdirSync(join(wt, "Docs", "inner"), { recursive: true }); mkdirSync(join(wt, "src"));
+    writeFileSync(join(wt, "Docs", "inner", "a.key"), "k"); writeFileSync(join(wt, "src", "x.ts"), "1");
+    return wt;
+  }
+  const allowOf = (wt: string, deny = DENY): GateAllowlist => ({ worktreeRoot: wt, write: [], deny, readOnly: true });
+  const grep = (p: string) => call("grep_search", { Query: "x", SearchPath: p });
+  it("grep_search runs only on a file: any directory (root, clean or not) is denied", () => {
+    const wt = repo();
+    for (const p of [wt, join(wt, "src"), join(wt, "Docs"), join(wt, "nao-existe")]) assert.equal(decideToolCall(grep(p), allowOf(wt)).decision, "deny", p);
+    assert.equal(decideToolCall(grep(join(wt, "src", "x.ts")), allowOf(wt)).decision, "allow");
+    assert.equal(decideToolCall(grep(join(wt, "Docs", "inner", "a.key")), allowOf(wt)).decision, "deny");
+  });
+  it("a denied file is denied under another case or Unicode form, and when the rule itself uses the other form", () => {
+    const wt = repo();
+    mkdirSync(join(wt, "Caf\u00e9")); writeFileSync(join(wt, "Caf\u00e9", "secret.txt"), "s");
+    const nfcRule = ["Caf\u00e9/secret.txt"], nfdRule = ["Cafe\u0301/secret.txt"];
+    for (const rule of [nfcRule, nfdRule]) {
+      for (const spelling of ["Caf\u00e9", "Cafe\u0301", "CAF\u00c9"]) {
+        const p = join(wt, spelling, "secret.txt");
+        assert.equal(decideToolCall(call("read_file", { Path: p }), allowOf(wt, rule), (x) => x).decision, "deny", `${rule[0]} vs ${spelling}`);
+      }
+    }
+    assert.equal(decideToolCall(call("read_file", { Path: join(wt, "DOCS", "INNER", "A.KEY") }), allowOf(wt), (x) => x).decision, "deny");
+  });
+});
+
 describe("resolveGeminiTargets", () => {
   it("new file with missing parent lists missingAncestors inside worktree", () => {
     const wt = tmp("duo-gate-wt-");
@@ -72,6 +135,12 @@ describe("resolveGeminiTargets", () => {
     symlinkSync(outside, join(wt, "node_modules"));
     const r = resolveGeminiTargets(wt, [{ rel: "node_modules/pkg/x.js", isDir: false }], ["node_modules"]);
     assert.equal(r.ok, false);
+  });
+  it("protected targets (.agents, .git, .duo, any case) are refused before setup", () => {
+    const wt = tmp("duo-gate-wt-");
+    for (const rel of [".agents/hooks.json", ".AGENTS/hooks.json", ".git/config", ".duo/config.json", ".Duo", "src/.git/x"]) {
+      assert.equal(resolveGeminiTargets(wt, [{ rel, isDir: false }], []).ok, false, rel);
+    }
   });
   it("target escaping the worktree after realpath is refused", () => {
     const wt = tmp("duo-gate-wt-");
@@ -99,6 +168,16 @@ describe("arquivos do hook", () => {
     assert.deepEqual(JSON.parse(readFileSync(files.allowlistPath, "utf8")), allow);
   });
 
+  it("each gate setup gets its own log (no evidence from an earlier attempt)", () => {
+    const wt = tmp("duo-gate-wt-");
+    const home = tmp("duo-gate-home-");
+    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: DENY, readOnly: true };
+    const first = writeGateFiles(wt, home, a, { nodePath: process.execPath });
+    writeFileSync(first.logPath, '{"tool":"x","decision":"allow","modelName":"gemini-old"}\n');
+    const second = writeGateFiles(wt, home, a, { nodePath: process.execPath });
+    assert.notEqual(second.logPath, first.logPath);
+    assert.equal(existsSync(second.logPath) ? readFileSync(second.logPath, "utf8") : "", "");
+  });
   it("the hook script decides from stdin, logs modelName and fails closed on garbage", () => {
     const wt = tmp("duo-gate-wt-");
     const home = tmp("duo-gate-home-");

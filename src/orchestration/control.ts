@@ -1,7 +1,7 @@
 // Comandos de controle determinísticos: cancelamento, integração de worktree, decisões e detecção de interrupção.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { chainStatePath, removeChainStateSafe } from "../state/gemini-state.js";
+import { chainStatePath, removeChainStateSafe, type ChainClass } from "../state/gemini-state.js";
 import { isPidAlive, killPidTree } from "../adapters/process.js";
 import { loadConfig } from "../config.js";
 import { captureState, git, hashPath, headCommit } from "../git.js";
@@ -103,16 +103,38 @@ export function applyTask(projectRoot: string, taskId: string, env: NodeJS.Proce
   });
 }
 
-/** A conversa nativa do gemini só serve para retomar; depois de aplicada ou decidida, o HOME privado é apagado. */
+/**
+ * A conversa nativa do gemini só serve para retomar; quando a cadeia é decidida (apply/accept) por qualquer executor,
+ * o HOME privado dela é apagado (uma tentativa gemini antes de um fallback para Claude/Codex também deixa estado).
+ */
 function dropGeminiState(projectRoot: string, taskId: string, env: NodeJS.ProcessEnv): void {
   const store = new Store(projectRoot);
   const task = store.findTask(taskId);
-  if (!task || task.executor !== "gemini") return;
+  if (!task) return;
   // Id da cadeia vem do registro da cadeia (não de campos livres da task); o caminho é sempre recalculado.
   const chain = store.loadChain(task.runId, task.selection?.chainId ?? task.taskId);
   // A cadeia carregada precisa conter esta task, e esta task precisa ser a última dela (a decisão encerra a cadeia).
   if (!chain || chain.latestTaskId !== task.taskId || !chain.attempts.some((a) => a.taskId === task.taskId)) return;
   try { removeChainStateSafe(chainStatePath(projectRoot, chain.chainId, env), projectRoot, chain.chainId, env); } catch { /* id inválido: não apaga */ }
+}
+
+/** Classe da cadeia para a limpeza do HOME privado do gemini (a cadeia "catalog" é a descoberta de modelos). */
+export function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
+  if (chainId === "catalog") return "resumable";
+  const store = new Store(projectRoot);
+  const tasks = store.listRuns().flatMap((r) => store.listTasks(r))
+    .filter((t) => (t.selection?.chainRoot ?? t.selection?.chainId ?? t.taskId) === chainId);
+  if (!tasks.length) return "orphan";
+  const chain = store.loadChain(tasks[0]!.runId, chainId);
+  if (!chain) return "orphan";
+  const latest = tasks.find((t) => t.taskId === chain.latestTaskId) ?? null;
+  // Dono vivo da cadeia, ou executor vivo enquanto a tentativa roda; marcas de uso são vistas pela própria limpeza.
+  if ((chain.owner && isPidAlive(chain.owner.pid)) || (latest?.state === "running" && latest.pids.child && isPidAlive(latest.pids.child))) return "active";
+  // Só a última tentativa decide: uma anterior aplicada não encerra uma cadeia que seguiu (retomada ou retentativa).
+  if (latest?.applied || latest?.accepted) return "terminal";
+  // Estado persistido da cadeia: blocked e running interrompido (inclui tentativa planned) são retomáveis.
+  if (chain.status === "blocked" || chain.status === "running" || latest?.state === "planned") return "resumable";
+  return "terminal";
 }
 
 function applyAdmitted(projectRoot: string, taskId: string): { ok: boolean; message: string } {

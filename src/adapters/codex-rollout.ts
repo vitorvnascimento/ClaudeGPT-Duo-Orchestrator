@@ -125,20 +125,27 @@ export function readBoundedRollout(file: string): string {
     if (typeof zlib.zstdDecompressSync !== "function") throw new RolloutReadError("rollout_zstd_unavailable");
     // O decodificador do Node para no primeiro frame e devolve vazio num frame truncado, sem erro:
     // percorre os frames e decodifica um a um, exigindo que cada um esteja completo.
-    const out: Buffer[] = [];
-    let total = 0;
-    for (const frame of zstdFrames(data)) {
+    // Cópia para um buffer só: as partes do Node guardam alocações maiores que o texto (16 KiB por frame pequeno).
+    let buf = Buffer.allocUnsafe(Math.min(limit, 1024 * 1024)), total = 0;
+    const frames = zstdFrames(data);
+    if (frames.length > 100_000) throw new RolloutReadError("rollout_zstd_invalid");
+    for (const frame of frames) {
       let part: Buffer;
       try { part = zlib.zstdDecompressSync(frame, { maxOutputLength: limit - total }); }
       catch (error) {
         throw new RolloutReadError((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE"
           ? "rollout_size_limit_exceeded" : "rollout_zstd_invalid");
       }
+      if (total + part.length > limit) throw new RolloutReadError("rollout_size_limit_exceeded");
+      if (total + part.length > buf.length) {
+        const grown = Buffer.allocUnsafe(Math.min(limit, Math.max(buf.length * 2, total + part.length)));
+        buf.copy(grown, 0, 0, total);
+        buf = grown;
+      }
+      part.copy(buf, total);
       total += part.length;
-      if (total > limit) throw new RolloutReadError("rollout_size_limit_exceeded");
-      out.push(part);
     }
-    return Buffer.concat(out).toString("utf8");
+    return buf.toString("utf8", 0, total);
   } finally { closeSync(fd); }
 }
 

@@ -2,13 +2,13 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { applyTask, cancelRun } from "../src/orchestration/control.js";
-import { activeSlots, ExecutorSlots, inspectCodexProcesses, releaseOrphanSlot, type AdmitRequest, type SlotInfo } from "../src/state/slots.js";
+import { activeSlots, ExecutorSlots, inspectCodexProcesses, inspectSlots, recoverSlotsLocked, releaseOrphanSlot, withAdmission, type AdmitRequest, type SlotInfo } from "../src/state/slots.js";
 import { processStartTime, startedAfterReservation } from "../src/state/process-identity.js";
 import { readJson, writeJsonAtomic } from "../src/state/store.js";
 
@@ -543,4 +543,39 @@ it("an explicit spawning phase survives the stale-file window even without proce
   assert.match(applyTask(p, "missing").message, /exclusivo/);
   assert.equal(releaseOrphanSlot(p, "handoff", true).ok, false);
   assert.equal(activeSlots(p)[0]?.nonce, "handoff");
+});
+
+it("probe acha o executor pelo marcador da task mesmo com binário de outro nome", (t) => {
+  const cwd = join(root(), ".duo/worktrees/task-probe-000000");
+  const slot: SlotInfo = {
+    slot: 0, pid: deadPid(), taskId: "task-probe-000000", runId: "run-probe-000000", nonce: "probe",
+    startedAt: new Date().toISOString(), isolation: "in-place", kind: "implement", exclusive: true,
+    phase: "spawning", spawnStartedAt: new Date().toISOString(), spawnCommand: "codex", spawnCwd: cwd, childPid: null,
+  };
+  t.mock.method(childProcess, "spawnSync", ((command: string) => {
+    if (command === "/bin/ps") return { status: 0, stdout: `456 /opt/wrap/my-agent /opt/wrap/my-agent exec --cd ${cwd}\n` };
+    return assert.fail("sem lsof: o marcador já prova o processo");
+  }) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try { assert.deepEqual(inspectCodexProcesses(slot), { ok: true, pids: [456] }); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("slot que não pode ser lido (permissão) continua bloqueando, mesmo velho", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "in-place", exclusive: true, pid: process.pid, nonce: "ilegivel", startedAt: new Date().toISOString() });
+  const old = new Date(Date.now() - 60_000); utimesSync(path, old, old);
+  chmodSync(path, 0o000);
+  try {
+    withAdmission(p, () => recoverSlotsLocked(p));
+    assert.ok(existsSync(path), "erro de leitura não prova que o dono acabou");
+  } finally { chmodSync(path, 0o600); }
+});
+
+it("doctor inspeciona sem recuperar quando não consegue pegar o lock", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const p = root(), locks = join(p, ".duo/locks");
+  mkdirSync(locks, { recursive: true });
+  chmodSync(locks, 0o500);
+  try { assert.deepEqual(inspectSlots(p), []); }
+  finally { chmodSync(locks, 0o700); }
 });

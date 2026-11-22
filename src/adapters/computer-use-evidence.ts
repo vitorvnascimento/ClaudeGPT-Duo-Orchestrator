@@ -229,6 +229,8 @@ export class ComputerUseCollector {
 
   private violationCount = 0;
   private sessionMismatch = false;
+  /** Chamadas do stream pareadas com o rollout só pelo código (ids diferentes), não pelo call_id. */
+  private readonly signatureMatched = new Set<Call>();
   get actionCount(): number { return this.evidence.actions.length; }
   get violationRevision(): number { return this.violationCount; }
   get hasViolations(): boolean { return this.violationCount > 0; }
@@ -359,8 +361,9 @@ export class ComputerUseCollector {
       // Still extract a real permission denial even when the call arguments were lost.
       call = { rejected: true, targets: [], signature: "missing", results: new Set(), at };
     }
+    // O erro estruturado manda: o texto do resultado de uma chamada com erro nunca troca o app da negação.
     if (item.error != null) this.result({ error: item.error }, call);
-    if (item.result !== undefined) this.result(item.result, call, false, item.status === "failed");
+    else if (item.result !== undefined) this.result(item.result, call, false, item.status === "failed");
   }
 
   auditSession(codexHome: string, threadId: string): string | null {
@@ -431,8 +434,10 @@ export class ComputerUseCollector {
         const prior = this.rolloutCalls.get(id);
         const signature = this.signature(args);
         const byId = this.calls.get(id);
-        const matched = prior ?? (byId && this.sameAttempt(byId.at, at) ? byId : undefined)
-          ?? this.streamCalls.find(call => this.sameAttempt(call.at, at) && call.signature === signature && !this.rolloutMatches.has(call));
+        const exact = prior ?? (byId && this.sameAttempt(byId.at, at) ? byId : undefined);
+        const bySignature = exact ? undefined : this.streamCalls.find(call => this.sameAttempt(call.at, at) && call.signature === signature && !this.rolloutMatches.has(call));
+        if (bySignature) this.signatureMatched.add(bySignature);
+        const matched = exact ?? bySignature;
         if (matched) {
           if (matched.signature !== signature) {
             const changed = this.ingestCall(args, at, bindings, matched);
@@ -457,6 +462,12 @@ export class ComputerUseCollector {
       }
     }
     for (const call of active.values()) this.attributed.add(call);
+    // Pareamento por código idêntico é em ordem. Se o rollout tem menos chamadas de um código do que o stream,
+    // não dá para saber qual chamada do stream ele registrou: nenhuma captura desse código é atribuída.
+    const inRollout = new Map<string, number>(), inStream = new Map<string, number>();
+    for (const c of new Set(this.rolloutCalls.values())) inRollout.set(c.signature, (inRollout.get(c.signature) ?? 0) + 1);
+    for (const c of this.streamCalls) inStream.set(c.signature, (inStream.get(c.signature) ?? 0) + 1);
+    for (const c of this.signatureMatched) if ((inRollout.get(c.signature) ?? 0) < (inStream.get(c.signature) ?? 0)) this.attributed.delete(c);
   }
 
   private result(value: unknown, call: Call, serialized = false, failed = false): void {
@@ -489,7 +500,9 @@ export class ComputerUseCollector {
       else {
         this.addApp(app);
         if (Date.parse(call.at) >= this.attemptSince) {
-          this.evidence.permission = { kind: "app_permission", app: display };
+          const prior = this.evidence.permission;
+          if (prior && canonicalAppId(prior.app) !== app) this.violate("conflicting_permission_target"); // nunca orienta aprovar o app errado
+          else this.evidence.permission = { kind: "app_permission", app: display };
           this.violate("app_permission_denied");
         }
       }

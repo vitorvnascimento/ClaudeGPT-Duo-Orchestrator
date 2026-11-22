@@ -690,3 +690,46 @@ test("compressed rollout reads every zstd frame and refuses a truncated one", { 
     assert.throws(() => readBoundedRollout(file), /rollout_zstd_invalid/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("structured error decides the denied app even when the failed result names another app", t => {
+  const { collector } = setup(t, ["Finder", "Calculator"]);
+  collector.onLine(JSON.stringify({ type: "item.completed", timestamp: at, item: { id: "both", type: "mcp_tool_call", server: "cua_repl", tool: "js", status: "failed",
+    arguments: { code: 'let app = await cua.getApp("Finder");' },
+    error: { message: "Computer Use was not approved to use Finder" },
+    result: { isError: true, content: [{ type: "text", text: "Computer Use was not approved to use Calculator" }] } } }));
+  const result = collector.finish();
+  assert.deepEqual(result.permission, { kind: "app_permission", app: "Finder" });
+});
+
+test("two denials naming different apps never point the user at the wrong one", t => {
+  const { collector } = setup(t, ["Finder", "Calculator"]);
+  collector.onLine(event("d1", { code: 'let app = await cua.getApp("Finder");' }, { error: { message: "Computer Use was not approved to use Finder" } }));
+  collector.onLine(event("d2", { code: 'let app = await cua.getApp("Calculator");' }, { error: { message: "Computer Use was not approved to use Calculator" } }));
+  const result = collector.finish();
+  assert.equal(result.permission?.app, "Finder");
+  assert.ok(result.violations.includes("conflicting_permission_target"));
+});
+
+test("an ambiguous code-signature match never attributes a stream screenshot", t => {
+  const { dir, collector } = setup(t, ["Finder"]);
+  const code = 'let app = await cua.getApp("Finder"); let shot = await app.screenshot();';
+  const first = png(11), second = png(12);
+  collector.onLine(event("s1", { code }, { content: [image(first)] }));
+  collector.onLine(event("s2", { code }, { content: [image(second)] }));
+  attribute(t, collector, [call("r1", code), output("r1", [{ type: "text", text: "ok" }])]);
+  collector.finish();
+  const saved = readdirSync(dir).map(name => sha(readFileSync(join(dir, name))));
+  assert.ok(!saved.includes(sha(first)), "a primeira captura nunca foi corroborada pelo rollout");
+});
+
+test("many tiny zstd frames stay within the decoded limit without per-frame overhead", { skip: typeof zlib.zstdCompressSync !== "function" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "duo-zst-"));
+  try {
+    const frame = zlib.zstdCompressSync(Buffer.from("a"));
+    const file = join(dir, "r.jsonl.zst");
+    writeFileSync(file, Buffer.concat(Array.from({ length: 5000 }, () => frame)));
+    assert.equal(readBoundedRollout(file), "a".repeat(5000));
+    writeFileSync(file, Buffer.concat(Array.from({ length: 100_001 }, () => frame)));
+    assert.throws(() => readBoundedRollout(file), /rollout_zstd_invalid/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1,7 +1,7 @@
 // Admissão cooperativa: o guard serializa a escolha do isolamento e a manutenção do espelho legado.
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
@@ -169,10 +169,11 @@ export function inspectCodexProcesses(slot: SlotInfo): CodexProcessProbeResult {
   for (const line of ps.stdout.trimEnd().split("\n")) {
     const row = /^\s*(\d+)\s+(.+)$/.exec(line);
     if (!row || !validPid(Number(row[1]))) return unknown;
-    if (!executable.test(row[2]!)) continue;
     const pid = Number(row[1]);
+    if (pid === process.pid) continue;
+    // Marcador da task (taskId, runId, worktree no --cd) prova o executor qualquer que seja o binário configurado.
     if (markers.some(marker => row[2]!.includes(marker))) return { ok: true, pids: [pid] };
-    candidates.add(pid);
+    if (executable.test(row[2]!)) candidates.add(pid);
   }
   if (!candidates.size) return { ok: true, pids: [] };
   // One bounded probe for all PIDs keeps recovery inside the admission lock timeout.
@@ -195,9 +196,13 @@ export function recoverSlotsLocked(root: string): SlotInfo[] {
   let removed = false;
   for (const name of readdirSync(dir).filter(name => /^slot-\d+\.json$/.test(name))) {
     const path = join(dir, name);
-    const slot = readJson<unknown>(path);
+    let text: string;
+    try { text = readFileSync(path, "utf8"); }
+    catch { continue; } // sumiu, ou erro de leitura (permissão, E/S): não prova que o dono acabou, o slot continua bloqueando
+    let slot: unknown = null;
+    try { slot = JSON.parse(text.replace(/^\uFEFF/, "")); } catch { slot = null; }
     const valid = isWellFormedSlot(slot) && slot.slot === Number(name.slice(5, -5));
-    if (valid ? slotActive(root, slot) : mtimeAge(path) <= 10_000) continue;
+    if (valid ? slotActive(root, slot as SlotInfo) : mtimeAge(path) <= 10_000) continue;
     removeWithRetry(path);
     removed = true;
   }
@@ -205,9 +210,11 @@ export function recoverSlotsLocked(root: string): SlotInfo[] {
   return activeSlots(root);
 }
 
+/** Para o doctor: recupera sob o lock quando possível; sem escrita (checkout só leitura, sandbox), só inspeciona. */
 export function inspectSlots(root: string): SlotInfo[] {
   if (!existsSync(locksDir(root))) return activeSlots(root);
-  return withAdmission(root, () => recoverSlotsLocked(root));
+  try { return withAdmission(root, () => recoverSlotsLocked(root)); }
+  catch { return activeSlots(root); }
 }
 
 /** Recuperação manual exige auditoria; spawning exige prova independente do processo Codex. */
@@ -233,7 +240,8 @@ export function releaseOrphanSlot(
     if (!confirmed) return { ok: false, message: "verifique que o executor e seus descendentes terminaram; só então use --confirm-executor-stopped" };
     if (!bridgeGone(slot)) return { ok: false, message: "saída da ponte não confirmada; reserva preservada" };
     if (pendingSpawn(slot)) {
-      // Older slots lack the launch metadata. Their Codex invocation used the task worktree.
+      // Older slots lack the launch metadata. Their Codex invocation used the task worktree; the probe checks the
+      // task markers (taskId, runId, worktree) on every process, whatever the configured binary is called.
       const launch = slot.phase ? slot : { ...slot, spawnCommand: "codex", spawnCwd: join(duoDir(projectRoot), "worktrees", slot.taskId) };
       let inspected: CodexProcessProbeResult;
       try { inspected = inspectCodexProcesses(launch); }

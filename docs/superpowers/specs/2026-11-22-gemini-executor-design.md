@@ -68,7 +68,7 @@ The Gemini CLI stopped serving AI Pro users on 18/06/2026. The client is the **A
 `plan()` builds, for every task:
 
 ```
-[sandbox-exec -f <profile>] agy -p --input-format stream-json --output-format stream-json --model <id>
+[sandbox-exec -f <profile>] agy -p= --input-format stream-json --output-format stream-json --model <id>
   --mode accept-edits|plan --sandbox --disable-slash-commands
   --settings <session settings JSON or file in artifactsDir>
   [--conversation <id>] [--json-schema <report schema file>]
@@ -100,7 +100,7 @@ Map the JSON: `conversation_id`→`sessionId`; `status`≠`SUCCESS`→error with
 - Denied descendants: when an authorized directory contains a `scope.deny` match, the session rules must express the exclusion (an `agy` deny rule). If `agy` cannot express it, such overlapping writable scopes are **refused** for Gemini before invocation; the OS layer alone is never accepted for them.
 - Paths are canonicalized (`/private/tmp` vs `/tmp`, symlinks) and escaped for the SBPL string/regex syntax; profile generation is unit-tested against injection (quotes, parentheses, newlines in paths).
 - `duo doctor` stays inference-free: it runs a deterministic local probe (a plain shell command under a generated profile writes an allowed file and fails on a sibling and on `../`). The real `agy` containment test runs only behind an explicit opt-in (e.g. `duo doctor --live-gemini`), since it spends subscription quota and a quota outage could look like a containment failure. On macOS a successful OS probe is required for **every** Gemini invocation, read or write. If `sandbox-exec` is missing or the local probe fails, all Gemini kinds are refused on macOS with a clear message; nothing falls back to fewer layers.
-- Non-macOS: Gemini allowed only for read kinds, with layer 1 and `--mode plan`; write kinds refused ("executor gemini exige macOS para tarefas de escrita").
+- Non-macOS: Gemini allowed only for read kinds, with layer 1 and `--mode plan`, and only on a platform where a real `agy` review has been shown to read successfully and to deny an attempted in-workspace write with no OS layer (until then the platform stays disabled); write kinds refused ("executor gemini exige macOS para tarefas de escrita").
 - Network stays on (agy needs its backend). Recursion is prevented by the command allowlist (deny-by-default), not by the network.
 
 ### 6. Catalog, routing, quota

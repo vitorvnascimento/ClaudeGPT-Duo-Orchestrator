@@ -1,6 +1,6 @@
 # Verified `agy` facts (Antigravity CLI 1.5.3, macOS) — 2026-11-22
 
-Task 0 of `docs/superpowers/plans/2026-11-22-gemini-executor.md`. Every fact below was observed with the real `agy` and model `gemini-3.8-flash-low` in a throwaway git repo. Outputs are trimmed; no secrets recorded.
+Task 0 of `docs/superpowers/plans/2026-11-22-gemini-executor.md`. Redacted native transcripts: `tests/fixtures/agy/*.ndjson` (paths replaced by `/WORKSPACE`, `/SCRATCH`, `/HOME`). Not yet captured: quota and auth error streams. Every fact below was observed with the real `agy` and model `gemini-3.8-flash-low` in a throwaway git repo. Outputs are trimmed; no secrets recorded.
 
 **Gate result: STOP.** `rule-syntax` cannot confine writes to exact targets, and `state-relocation`, `extensions-off` and `auth-signal` are unproven. Per the plan, implementation waits for the owner's decision.
 
@@ -28,6 +28,9 @@ With `--settings '{"permissions":{"allow":["write_file(ok.txt)"]}}'`, `ls` (allo
 ## extensions-off — UNPROVEN
 `init.tools` lists 60 tools, including `browser_*`, `open_browser_url`, `read_url_content`, `search_web`, `call_mcp_tool`, `send_message`, `schedule`, `invoke_subagent`, `define_subagent`, `generate_image`, `run_workflow`. No session flag to disable them was found; which of them are permission-gated in headless mode was not tested. `--disable-slash-commands` only affects slash/skill expansion.
 
+## plan-mode — UNPROVEN
+Only read-only prompts ran with `--mode plan`; an attempted write under `--mode plan` without the OS layer was not tested.
+
 ## served-model — NEGATIVE
 `init.model` repeats the requested id; no event names the model that served the turn.
 
@@ -38,4 +41,4 @@ No non-secret command or output distinguishing the Google-account login from oth
 
 ## Português (resumo)
 
-Fatos verificados no `agy` 1.5.3. Funcionam: prompt por stdin (`-p=` + stream-json com `{"event":"user",...}`), eventos de saída, e `--settings` que substitui (não mescla) a lista de permissões do Vitor. Não funcionam ou não estão provados: as regras de sessão não conseguem limitar a escrita ao arquivo autorizado (dentro da pasta tudo é liberado; `deny` só aceita caminho literal ou `*`, sem glob); mover o estado do `agy` para uma pasta privada perde o login (fica no Keychain); não há como desligar as 60 ferramentas (navegador, web, MCP, mensagens, agendamento, subagentes); o modelo que respondeu não aparece; não há sinal de login sem segredo. Pelo plano, a implementação para aqui até o Vitor decidir.
+Fatos verificados no `agy` 1.5.3. Funcionam: prompt por stdin (`-p=` + stream-json com `{"event":"user",...}`), eventos de saída, e `--settings` que substitui (não mescla) a lista de permissões do Vitor. Não funcionam ou não estão provados: as regras de sessão não conseguem limitar a escrita ao arquivo autorizado (dentro da pasta tudo é liberado; `deny` só aceita caminho literal ou `*`, sem glob); mover o estado do `agy` para uma pasta privada via HOME perde o login (fica no Keychain), e outras variáveis não foram testadas; para as 60 ferramentas (navegador, web, MCP, mensagens, agendamento, subagentes) **não encontrei** flag de desligar, e não testei quais delas exigem permissão no modo headless; o modelo que respondeu não aparece; **não encontrei** sinal de login sem segredo (não está provado que não existe); o modo `plan` sem a trava do sistema não foi testado contra escrita. Pelo plano, a implementação para aqui até o Vitor decidir.

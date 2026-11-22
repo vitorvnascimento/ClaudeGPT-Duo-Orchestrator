@@ -1,6 +1,6 @@
 # Parallel request format
 
-For background dispatch (`duo delegate --request a.json &`), set `isolation: "worktree"` in every request, use distinct `taskKey` values and reuse the orchestration's existing `runId`. Up to four executors may run concurrently (1..4 configurable, default 4); `maxDelegationsPerRun` defaults to 8 across that run, including retries. An in-place task is exclusive; forced worktree isolation is fixed for its chain. Worktrees include uncommitted changes within `maxSnapshotBytes`, excluding denied paths and `.duo/`. Dependencies default to `worktreeLinks: ["node_modules"]`. Apply successful patches one by one with `duo apply`, in the brain's chosen order; rejection means rerun on the current base. `duo status --json` includes active `slots`.
+For background dispatch (`duo delegate --request a.json &`), set `isolation: "worktree"` in every request, use distinct `taskKey` values and reuse the orchestration's existing `runId`. Concurrent executors follow the project's `limits.maxConcurrentExecutors` (default 4, recommended; any higher integer or `null` = no limit); `maxDelegationsPerRun` defaults to 8 across that run, including retries. An in-place task is exclusive; forced worktree isolation is fixed for its chain. Worktrees include uncommitted changes within `maxSnapshotBytes`, excluding denied paths and `.duo/`. Dependencies default to `worktreeLinks: ["node_modules"]`. Apply successful patches one by one with `duo apply`, in the brain's chosen order; rejection means rerun on the current base. `duo status --json` includes active `slots`.
 
 ## Português
 
@@ -101,7 +101,7 @@ O executor pode ser o **mesmo cliente do cérebro** quando `model` indica outro 
 
 ## Pedidos paralelos
 
-Para disparar em segundo plano (`duo delegate --request a.json &`), informe `isolation: "worktree"` em todos os pedidos, use `taskKey` distinto e reutilize o `runId` existente da orquestração. Até 4 executores simultâneos (configurável 1..4, padrão 4); `maxDelegationsPerRun` tem padrão 8 no mesmo run, incluindo retentativas. Uma tarefa in-place é exclusiva; isolamento forçado em worktree fica fixo na cadeia. A worktree inclui alterações não commitadas dentro de `maxSnapshotBytes`, sem caminhos negados nem `.duo/`. Dependências usam `worktreeLinks: ["node_modules"]` por padrão. Aplique patches aprovados um a um com `duo apply`, na ordem do cérebro; rejeição exige nova execução na base atual. `duo status --json` inclui os `slots` ativos.
+Para disparar em segundo plano (`duo delegate --request a.json &`), informe `isolation: "worktree"` em todos os pedidos, use `taskKey` distinto e reutilize o `runId` existente da orquestração. Executores simultâneos seguem `limits.maxConcurrentExecutors` do projeto (padrão 4, recomendado; qualquer inteiro maior ou `null` = sem limite); `maxDelegationsPerRun` tem padrão 8 no mesmo run, incluindo retentativas. Uma tarefa in-place é exclusiva; isolamento forçado em worktree fica fixo na cadeia. A worktree inclui alterações não commitadas dentro de `maxSnapshotBytes`, sem caminhos negados nem `.duo/`. Dependências usam `worktreeLinks: ["node_modules"]` por padrão. Aplique patches aprovados um a um com `duo apply`, na ordem do cérebro; rejeição exige nova execução na base atual. `duo status --json` inclui os `slots` ativos.
 
 ## Executor Gemini
 

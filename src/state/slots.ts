@@ -84,8 +84,8 @@ export class ExecutorSlots {
       }
       const slots = activeSlots(this.projectRoot), holders = slots.map((s) => `${s.taskId}, pid ${s.pid}`).join("; ");
       if (slots.some((s) => s.isolation === "in-place")) return { ok: false, reason: `outro executor in-place está ativo (${holders}); aguarde ele terminar` };
-      if (this.max !== null && slots.length >= this.max) return { ok: false, reason: `limite de ${this.max} executores simultâneos atingido (${holders}); suba limits.maxConcurrentExecutors em .duo/config.json se precisar de mais` };
       if (req.fixed === "in-place" && slots.length) return { ok: false, reason: `cadeia fixa in-place requer o projeto livre (${holders}); aguarde os executores terminarem` };
+      if (this.max !== null && slots.length >= this.max) return { ok: false, reason: `limite de ${this.max} executores simultâneos atingido (${holders}); suba limits.maxConcurrentExecutors em .duo/config.json se precisar de mais` };
       const isolation = (req.fixed ?? req.requested) === "in-place" && !slots.length ? "in-place" : "worktree";
       if (isolation === "worktree" && !req.gitReady) return { ok: false, reason: "execução paralela requer um repositório git com ao menos um commit" };
       // Primeiro índice livre (sem teto: cresce conforme a ocupação; com teto, nunca passa de max - 1).

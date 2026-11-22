@@ -31,6 +31,15 @@ it("sem teto: admite além de 4 com max maior ou null", () => {
   for (let i = 0; i < 9; i++) assert.equal(slots(q, null).admit(req()).ok, true, `ilimitado ${i}`);
 });
 
+it("cadeia fixa in-place com vagas cheias pede para aguardar, não para subir o limite", () => {
+  const p = root();
+  assert.equal(slots(p, 1).admit(req()).ok, true);
+  const r = slots(p, 1).admit(req({ fixed: "in-place" }));
+  assert.equal(r.ok, false);
+  assert.match(r.ok ? "" : r.reason, /aguarde/);
+  assert.doesNotMatch(r.ok ? "" : r.reason, /maxConcurrentExecutors/);
+});
+
 it("in-place ativo bloqueia qualquer nova admissão", () => {
   const p = root();
   slots(p, 4).admit(req({ requested: "in-place" }));

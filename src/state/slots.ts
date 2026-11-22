@@ -256,7 +256,14 @@ export function releaseOrphanSlot(
       let inspected: CodexProcessProbeResult;
       try { inspected = inspectCodexProcesses(launch); }
       catch { return { ok: false, message: "não foi possível confirmar a ausência do Codex; reserva preservada" }; }
-      if (!inspected.ok) return { ok: false, message: `${inspected.reason}; reserva preservada` };
+      // No Windows não há tabela de processos verificável aqui: vale a confirmação explícita do operador
+      // (--confirm-executor-stopped), senão uma queda nessa janela travaria o projeto para sempre.
+      if (!inspected.ok && process.platform !== "win32") return { ok: false, message: `${inspected.reason}; reserva preservada` };
+      if (!inspected.ok) {
+        removeWithRetry(path);
+        refreshMirror(projectRoot);
+        return { ok: true, message: `reserva spawning ${nonce} liberada pela confirmação do operador (Windows: processos não verificáveis); nenhum processo foi encerrado` };
+      }
       if (inspected.pids.length) return { ok: false, message: "há processo Codex da worktree/run ainda ativo; reserva preservada" };
       removeWithRetry(path);
       refreshMirror(projectRoot);

@@ -45,7 +45,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Text bold>
-          {n === 1 ? '1 subagente Codex ativo' : `${n} subagentes Codex ativos`}
+          {n === 1 ? '1 subagente ativo' : `${n} subagentes ativos`}
         </Text>
         {l.ativos.map(a => (
           <Text key={`${a.source}:${a.id}`} dimColor>

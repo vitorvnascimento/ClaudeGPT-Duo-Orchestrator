@@ -7,7 +7,7 @@
     {
       "name": "codex-ativos",
       "source": "./mods/codex-ativos",
-      "description": "Band above the prompt with the active Codex subagents (openai-codex plugin jobs and duo slots) and how long each has been running / Faixa acima do prompt com os subagentes Codex ativos e há quanto tempo cada um roda"
+      "description": "Band above the prompt with the active subagents (openai-codex plugin jobs and duo executor slots: Codex, Claude or Gemini) and how long each has been running / Faixa acima do prompt com os subagentes ativos (jobs do plugin openai-codex e vagas do duo) e há quanto tempo cada um roda"
     }
   ],
   "description": "Claude Code mods for ClaudeGPT - Duo Orchestrator / Mods do Claude Code para o ClaudeGPT - Duo Orchestrator"

@@ -1057,9 +1057,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     : null;
   try {
     // Toda execução marca a passagem para o spawn: se a ponte morrer entre o spawn e o registro do pid, a vaga
-    // fica ocupada até recuperação confirmada. Em task comum, um comando que o marcador não aceita não a impede.
-    if (computerUse) lock.markSpawning(plan);
-    else { try { lock.markSpawning(plan); } catch { /* sem marcador: segue como antes */ } }
+    // fica ocupada até recuperação confirmada. Sem o marcador (vaga perdida, falha ao gravar) o executor não sobe.
+    lock.markSpawning(plan);
     result = await runProcess({
       command: plan.command,
       args: plan.args,

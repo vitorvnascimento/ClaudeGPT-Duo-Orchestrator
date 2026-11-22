@@ -18,7 +18,7 @@ test('mostra quantos estão ativos e há quanto tempo', async ($, on) => {
   ]))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
-  expect((await ui.find({ type: 'Text', text: /subagentes/ }))?.text).toBe('2 subagentes Codex ativos')
+  expect((await ui.find({ type: 'Text', text: /subagentes/ }))?.text).toBe('2 subagentes ativos')
   expect((await ui.find({ type: 'Text', text: /rescue/ }))?.text).toBe('  rescue · duo · 1:05 · running')
   expect((await ui.find({ type: 'Text', text: /review/ }))?.text).toBe('  review · site · 0:05')
   await ui.unmount()

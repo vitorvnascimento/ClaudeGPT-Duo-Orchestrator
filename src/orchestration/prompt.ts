@@ -74,7 +74,7 @@ export function buildExecutorPrompt(task: Task, extras: PromptExtras): string {
     lines.push("Use one app per call, simple awaited app methods with literal arguments only. No computed properties, variables as arguments, loops, arbitrary JavaScript, or other APIs. After actions observe with getAXState. Use getScreenshot or getAXStateAndScreenshot when necessary.");
     lines.push("On resume the REPL is new: rebind each app with a direct literal cua.getApp before using its handle.");
     lines.push('If native permission is denied ("Computer Use was not approved to use ..."), stop immediately; do not retry, switch apps, or bypass approval. Finish with blocked status if possible.');
-    lines.push("After the final observation call cua_repl with completion_summary for cleanup. Report appsUsed accurately; never include private screen text, typed values or screenshot content in the final JSON.");
+    lines.push("When the UI part is done, finish exactly as the cua_repl tool instructions say (do not invent extra cleanup calls). Report appsUsed accurately; never include private screen text, typed values or screenshot content in the final JSON.");
   }
   lines.push("");
   lines.push("## Acceptance criteria");

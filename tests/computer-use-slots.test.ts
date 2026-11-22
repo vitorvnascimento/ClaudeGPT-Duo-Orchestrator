@@ -602,3 +602,17 @@ it("slot com BOM é lido igual na inspeção e na liberação", () => {
   writeFileSync(path, "﻿" + JSON.stringify(readJson(path)));
   assert.equal(activeSlots(p)[0]?.nonce, "com-bom");
 });
+
+it("no Windows, spawning órfão sai pela confirmação do operador (processos não verificáveis)", () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "worktree", pid: deadPid(), nonce: "win-spawn", startedAt: new Date(Date.now() - 60_000).toISOString(),
+    phase: "spawning", spawnStartedAt: new Date().toISOString(), spawnCommand: "codex.exe", spawnCwd: join(p, ".duo/worktrees/task-exclusive-000000"), childPid: null });
+  const real = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    assert.equal(releaseOrphanSlot(p, "win-spawn", false).ok, false, "sem confirmação continua preservada");
+    const r = releaseOrphanSlot(p, "win-spawn", true);
+    assert.equal(r.ok, true, r.message);
+  } finally { Object.defineProperty(process, "platform", real); }
+  assert.equal(activeSlots(p).length, 0);
+});

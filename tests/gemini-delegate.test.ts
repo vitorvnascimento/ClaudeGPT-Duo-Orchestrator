@@ -191,6 +191,19 @@ describe("delegação ao gemini", () => {
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
   });
 
+  it("a worktree created for another executor gets .agents excluded from the gemini patch", async () => {
+    const s = setup();
+    const blocked = await run(s, req(), { FAKE_AGY_AUTH: "apikey" });
+    assert.equal(blocked.summary.state, "blocked", JSON.stringify(blocked.summary));
+    const store = new Store(s.root);
+    const t = task(s, blocked.summary.taskId);
+    t.worktreeLinks = (t.worktreeLinks ?? []).filter((l) => l !== ".agents"); store.saveTask(t);
+    const out = await resume(s, String(blocked.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const patch = readFileSync(join(task(s, out.summary.taskId).artifactsDir, "changes.patch"), "utf8");
+    assert.ok(!patch.includes(".agents"));
+  });
+
   it("chain state is removed after apply", async () => {
     const s = setup();
     const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 3;\n" }) });

@@ -78,6 +78,21 @@ describe("descoberta do gemini", () => {
       assert.equal(calls(), 2, "versão nova do agy: redescobre");
     } finally { rmSync(base, { recursive: true, force: true }); }
   });
+  it("a fresh v0.4.0 cache without providers.gemini loads without errors", async () => {
+    const { loadCatalog, catalogPath } = await import("../src/adapters/catalog.js");
+    const { Store } = await import("../src/state/store.js");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-cache-")));
+    try {
+      mkdirSync(join(base, "proj", ".duo"), { recursive: true });
+      const store = new Store(join(base, "proj"));
+      const old = { discoveredAt: new Date().toISOString(), cliVersions: { claude: null, codex: null }, providers: {
+        claude: { ok: true, source: "t", tools: [], models: [] }, codex: { ok: true, source: "t", tools: [], models: [] } } };
+      writeFileSync(catalogPath(store), JSON.stringify(old));
+      const cfg = structuredClone(DEFAULT_CONFIG); cfg.routing.extraModels = ["gemini:gemini-4-argon-high"];
+      const c = await loadCatalog(store, cfg, { env: { PATH: "/usr/bin:/bin", HOME: join(base, "home") } });
+      assert.ok(c.providers.gemini);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
   it("unexpected agy --version output is cached as a digest, not as text", async () => {
     const { loadCatalog, catalogPath } = await import("../src/adapters/catalog.js");
     const { Store } = await import("../src/state/store.js");

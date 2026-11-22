@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
+import { canonicalPath, decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
 
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
@@ -59,6 +59,35 @@ describe("decideToolCall", () => {
     for (const bad of [null, 1, "x", {}, { toolCall: null }, { toolCall: { name: 3 } }]) {
       assert.equal(decideToolCall(bad, allow, canon).decision, "deny");
     }
+  });
+});
+
+describe("links no caminho pedido", () => {
+  it("link/.. is resolved through the link, never lexically", () => {
+    const wt = tmp("duo-gate-wt-");
+    const out = tmp("duo-gate-out-");
+    mkdirSync(join(out, "a")); writeFileSync(join(out, "secret"), "s");
+    mkdirSync(join(wt, "docs")); symlinkSync(join(out, "a"), join(wt, "docs", "l"));
+    const a: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "docs", isDir: true }], deny: DENY, readOnly: false };
+    // Concatenação literal: path.join colapsaria "l/.." antes do gate.
+    const raw = `${wt}/docs/l/../secret`;
+    assert.equal(decideToolCall(call("read_file", { Path: raw }), a).decision, "deny");
+    assert.equal(canonicalPath(raw), join(out, "secret"));
+    assert.equal(decideToolCall(call("read_file", { Path: "docs/l/../secret" }), a).decision, "deny", "relativo");
+  });
+  it("a dangling committed link resolves to its target (outside → denied)", () => {
+    const wt = tmp("duo-gate-wt-");
+    mkdirSync(join(wt, "docs"));
+    symlinkSync("../../fora.txt", join(wt, "docs", "d"));
+    symlinkSync("../.env", join(wt, "docs", "e"));
+    const a: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "docs", isDir: true }], deny: DENY, readOnly: false };
+    assert.equal(decideToolCall(call("write_file", { Path: join(wt, "docs", "d"), Content: "x" }), a).decision, "deny");
+    assert.equal(decideToolCall(call("read_file", { Path: join(wt, "docs", "e") }), a).decision, "deny");
+  });
+  it("a target whose missing ancestor is a dangling link is refused", () => {
+    const wt = tmp("duo-gate-wt-");
+    symlinkSync("/nao/existe/dir", join(wt, "gen"));
+    assert.equal(resolveGeminiTargets(wt, [{ rel: "gen/x.ts", isDir: false }], []).ok, false);
   });
 });
 

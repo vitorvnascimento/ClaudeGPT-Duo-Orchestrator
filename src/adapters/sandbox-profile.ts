@@ -35,10 +35,11 @@ export function globToSbplRegex(root: string, glob: string): string {
   return `^${reEscape(root)}/${re}$`;
 }
 
-export type ProfileInput = { worktreeRoot: string; targets: GeminiTarget[]; denyGlobs: string[]; privateHome: string; tmpDir: string };
+/** gateLog: único arquivo gravável da pasta duo-gate do HOME privado (allowlist e perfil ficam só leitura). */
+export type ProfileInput = { worktreeRoot: string; targets: GeminiTarget[]; denyGlobs: string[]; privateHome: string; tmpDir: string; gateLog?: string };
 
 export function buildProfile(p: ProfileInput): { ok: true; profile: string } | { ok: false; reason: string } {
-  const all = [p.worktreeRoot, p.privateHome, p.tmpDir, ...p.targets.map((t) => t.abs), ...p.denyGlobs];
+  const all = [p.worktreeRoot, p.privateHome, p.tmpDir, ...(p.gateLog ? [p.gateLog] : []), ...p.targets.map((t) => t.abs), ...p.denyGlobs];
   const bad = all.find((s) => CONTROL.test(s));
   if (bad !== undefined) return { ok: false, reason: `caminho com caractere de controle não é aceito no perfil: ${JSON.stringify(bad)}` };
   const root = canonicalPath(p.worktreeRoot);
@@ -63,6 +64,9 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     ...(denies.length ? [`(deny file-write* ${denies.join(" ")})`] : []),
     // Hard link num caminho liberado gravaria no arquivo de fora; Apple Events e LaunchServices abririam
     // processos fora do sandbox. Nada disso é usado pelo agy (verificado com a sonda real).
+    // A pasta do gate (allowlist, perfil) é da ponte: só o log desta tentativa é gravável, pelo hook.
+    `(deny file-write* (subpath ${sbplQuote(join(canonicalPath(p.privateHome), "duo-gate"))}))`,
+    ...(p.gateLog ? [`(allow file-write* (literal ${sbplQuote(canonicalPath(p.gateLog))}))`] : []),
     "(deny file-link)",
     "(deny appleevent-send)",
     '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name-regex #"^com\\.apple\\.ae\\."))',

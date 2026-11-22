@@ -125,3 +125,14 @@ describe("disponibilidade e cota do gemini", () => {
     assert.equal(quotaStates(store).gemini?.status, "exhausted");
   });
 });
+
+describe("capacidade do gemini", () => {
+  it("a gemini capacity cooldown blocks and survives the next write", async () => {
+    const { recordCapacity, capacityBlock } = await import("../src/orchestration/capacity.js");
+    sb = makeSandbox();
+    const store = new Store(sb.root);
+    recordCapacity(store, "gemini", "gemini-4-argon-high");
+    recordCapacity(store, "codex", "gpt-6.1-sol");
+    assert.match(String(capacityBlock(store, "gemini", "gemini-4-argon-high")), /sem capacidade/);
+  });
+});

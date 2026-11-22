@@ -830,6 +830,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     ctx.cleanups?.push(releaseClaim);
     sweepStaleAttempts(chainDir);
     const { home } = createPrivateHome(chainDir, env);
+    // Worktree criada para outro executor (troca no --resume): o .agents do gate nunca entra no patch.
+    if (!(task.worktreeLinks ?? []).includes(".agents")) { task.worktreeLinks = [...(task.worktreeLinks ?? []), ".agents"]; store.saveTask(task); }
     const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
     const t = resolveGeminiTargets(execCwd, isWriteKind(task.kind) ? entries.map((e) => ({ rel: e.rel, isDir: e.isDir })) : [], links);
     if (!t.ok) return block(`alvos do gemini: ${t.reason}`);
@@ -839,7 +841,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
     let profilePath: string | null = null;
     if (ctx.gemini?.sandbox !== false) {
-      const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path });
+      const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path, gateLog: files.logPath });
       if (!prof.ok) { attempt.cleanup(); return block(`perfil sandbox-exec: ${prof.reason}`); }
       profilePath = join(home, "duo-gate", "profile.sb");
       writeFileSync(profilePath, prof.profile);

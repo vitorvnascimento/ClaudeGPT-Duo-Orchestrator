@@ -104,6 +104,19 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     sh(r.ok ? r.profile : "", "echo x > .agents/hooks.json", wt);
     assert.equal(existsSync(join(wt, ".agents", "hooks.json")), false);
   });
+  it("the gate dir is read-only for the executor except its own log", () => {
+    const wt = tmp("duo-sbx-wt-");
+    const home = tmp("duo-sbx-home-");
+    mkdirSync(join(home, "duo-gate")); writeFileSync(join(home, "duo-gate", "allowlist.json"), "{}");
+    const log = join(home, "duo-gate", "gate-log-1.jsonl"); writeFileSync(log, "");
+    const r = buildProfile({ worktreeRoot: wt, targets: [], denyGlobs: [], privateHome: home, tmpDir: join(home, "tmp"), gateLog: log });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", `echo x >> '${log}'; echo y > '${join(home, "duo-gate", "allowlist.json")}'; echo z > '${join(home, "duo-gate", "profile.sb")}'; echo w > '${join(home, "ok.txt")}'`, wt);
+    assert.equal(readFileSync(log, "utf8"), "x\n");
+    assert.equal(readFileSync(join(home, "duo-gate", "allowlist.json"), "utf8"), "{}");
+    assert.equal(existsSync(join(home, "duo-gate", "profile.sb")), false);
+    assert.equal(existsSync(join(home, "ok.txt")), true);
+  });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });
     assert.ok(r.ok && r.profile.includes('(subpath "/private/tmp")'));

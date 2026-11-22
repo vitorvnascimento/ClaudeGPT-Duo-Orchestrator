@@ -2,8 +2,8 @@
 // Evidência e receita: docs/gemini-agy-facts.md e tests/fixtures/agy/probe/. O agy bloqueia a chamada quando o hook
 // nega, quebra, devolve lixo ou estoura o tempo (verificado no 1.5.3), então o gate só precisa errar para "deny".
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { packageRoot } from "../paths.js";
 import { isDenied, normalizeRel } from "../permissions/scope.js";
 
@@ -29,17 +29,31 @@ export function isProtectedRel(rel: string): boolean {
 const FILE_ONLY = new Set(["grep_search"]);
 const PATH_KEY = /path|file|dir|directory/i;
 
-/** Caminho real: realpath do ancestral existente mais próximo + sufixo literal (alvos novos ainda não existem). */
-export function canonicalPath(p: string): string {
-  let cur = resolve(p);
-  const tail: string[] = [];
-  while (!existsSync(cur)) {
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    tail.unshift(basename(cur));
-    cur = parent;
+/**
+ * Caminho real, resolvido componente a componente como o sistema operacional resolve: cada link (inclusive quebrado)
+ * é seguido antes do próximo componente, ".." vale depois do link (nunca colapso léxico antes), e cada parte existente
+ * vem com o nome gravado no disco (realpath nativo: caixa e forma Unicode reais). Depois do primeiro componente
+ * inexistente o resto é literal (nada além dele existe para o sistema seguir).
+ */
+export function canonicalPath(p: string, depth = 0): string {
+  if (depth > 40) throw new Error(`links demais ao resolver ${p}`);
+  const abs = isAbsolute(p) ? p : `${process.cwd()}${sep}${p}`;
+  const parts = abs.split(sep).filter((x) => x !== "" && x !== ".");
+  let cur: string = sep;
+  for (let i = 0; i < parts.length; i++) {
+    const c = parts[i] as string;
+    if (c === "..") { cur = dirname(cur); continue; }
+    const next = join(cur, c);
+    let st;
+    try { st = lstatSync(next); } catch { return resolve(next, ...parts.slice(i + 1)); }
+    if (st.isSymbolicLink()) {
+      const target = readlinkSync(next);
+      cur = canonicalPath(isAbsolute(target) ? target : `${cur}${sep}${target}`, depth + 1);
+      continue;
+    }
+    cur = realpathSync.native(next);
   }
-  return join(realpathSync(cur), ...tail);
+  return cur;
 }
 
 function pathArgs(args: unknown, worktreeRoot: string): string[] {
@@ -47,7 +61,7 @@ function pathArgs(args: unknown, worktreeRoot: string): string[] {
   const out: string[] = [];
   for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
     if (!PATH_KEY.test(k)) continue;
-    for (const s of Array.isArray(v) ? v : [v]) if (typeof s === "string" && s) out.push(isAbsolute(s) ? s : join(worktreeRoot, s));
+    for (const s of Array.isArray(v) ? v : [v]) if (typeof s === "string" && s) out.push(isAbsolute(s) ? s : `${worktreeRoot}${sep}${s}`); // sem join: "link/.." só se resolve depois do link
   }
   return out;
 }
@@ -119,7 +133,12 @@ export function resolveGeminiTargets(
     if (relInside(root, abs) !== rel) return { ok: false, reason: `alvo fora da worktree após realpath: ${rel}` };
     const missingAncestors: string[] = [];
     for (let d = dirname(join(root, rel)); d !== root && !existsSync(d); d = dirname(d)) missingAncestors.unshift(d);
-    for (const d of missingAncestors) if (existsSync(d) && lstatSync(d).isSymbolicLink()) return { ok: false, reason: `ancestral é link: ${d}` };
+    // Link quebrado como ancestral "inexistente": existsSync diz que não existe, lstat mostra o link.
+    for (const d of missingAncestors) {
+      let link = false;
+      try { link = lstatSync(d).isSymbolicLink(); } catch { link = false; }
+      if (link) return { ok: false, reason: `ancestral é link: ${d}` };
+    }
     targets.push({ rel, abs, isDir: w.isDir, missingAncestors });
   }
   return { ok: true, targets };

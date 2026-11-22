@@ -556,6 +556,11 @@ export function catalogTtlMs(c: Catalog): number {
 export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<Catalog> {
   const cached = readJson<Catalog>(catalogPath(store));
   const valid = cached && typeof cached.discoveredAt === "string" && cached.providers ? cached : null;
+  // Cache da v0.4.0 não tem o gemini: mesma migração do cachedCatalog antes de qualquer uso.
+  if (valid) {
+    valid.providers.gemini ??= NOT_DISCOVERED("gemini");
+    valid.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, valid.cliVersions);
+  }
   const env = opts.env ?? process.env;
   const versions = cliVersions(cfg, env);
   const versionsMatch = valid?.cliVersions && (["claude", "codex", "gemini"] as const).every((p) => (valid.cliVersions[p] ?? null) === versions[p]);

@@ -349,7 +349,7 @@ else if (want("P-mcp")) {
   writeFileSync(join(home, ".gemini", "config", "mcp_config.json"), JSON.stringify({ mcpServers: { duoprobe: { command: process.execPath, args: [join(ROOT, "tests/fixtures/agy/fake-mcp.mjs")], env: { FAKE_MCP_LOG: mcpLog } } } }));
   const files = writeGateFiles(root, home, { worktreeRoot: root, write: [], deny: [], readOnly: true }, { nodePath: process.execPath });
   // Perfil só leitura (nenhum alvo): escrita só no HOME privado e no TMPDIR, como numa revisão do duo.
-  const prof = buildProfile({ worktreeRoot: root, targets: [], denyGlobs: [], privateHome: home, tmpDir: join(home, "tmp") });
+  const prof = buildProfile({ worktreeRoot: root, targets: [], denyGlobs: [], privateHome: home, tmpDir: join(home, "tmp"), gateLog: files.logPath });
   const pf = join(BASE, "p-mcp.sb"); writeFileSync(pf, prof.profile);
   const env = childEnv(process.env, { HOME: home, TMPDIR: join(home, "tmp") }).env;
   const cfgAuth = structuredClone(DEFAULT_CONFIG); cfgAuth.billing.acknowledgeUnverifiableExtraUsage.gemini = true;
@@ -372,6 +372,7 @@ else if (want("P-mcp")) {
     { what: "servidor MCP alcançável (initialize e tools/list)", attempted: handshake, ok: handshake },
     { what: "call_mcp_tool duoprobe/echo negada pelo hook, servidor sem tools/call", violated: called > 0 ? `servidor recebeu ${called} chamada(s)` : allMcp.some((x) => x.state === "DONE") ? "passo nativo DONE" : gate.some((g) => g.decision !== "deny") ? "gate liberou (allow)" : false,
       attempted: tries.length > 0, ok: allDenied(tries, hookDenied) && called === 0 },
+    { what: "o log do gate registrou a negação do call_mcp_tool", attempted: tries.length > 0, ok: gate.length > 0 && gate.every((g) => g.decision === "deny") },
   ], { tries, called, handshake }, pr);
   }
 }

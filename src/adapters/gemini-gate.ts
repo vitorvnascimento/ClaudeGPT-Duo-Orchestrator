@@ -3,7 +3,7 @@
 // nega, quebra, devolve lixo ou estoura o tempo (verificado no 1.5.3), então o gate só precisa errar para "deny".
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 import { packageRoot } from "../paths.js";
 import { isDenied, normalizeRel } from "../permissions/scope.js";
 
@@ -33,19 +33,28 @@ const PATH_KEY = /path|file|dir|directory/i;
  * Caminho real, resolvido componente a componente como o sistema operacional resolve: cada link (inclusive quebrado)
  * é seguido antes do próximo componente, ".." vale depois do link (nunca colapso léxico antes), e cada parte existente
  * vem com o nome gravado no disco (realpath nativo: caixa e forma Unicode reais). Depois do primeiro componente
- * inexistente o resto é literal (nada além dele existe para o sistema seguir).
+ * inexistente (ENOENT) o resto é literal; um ".." depois dele é recusado (voltaria a uma pasta existente sem conferir
+ * os links do caminho), e qualquer outro erro de leitura se propaga. O gate trata exceção como negação.
  */
 export function canonicalPath(p: string, depth = 0): string {
   if (depth > 40) throw new Error(`links demais ao resolver ${p}`);
   const abs = isAbsolute(p) ? p : `${process.cwd()}${sep}${p}`;
-  const parts = abs.split(sep).filter((x) => x !== "" && x !== ".");
-  let cur: string = sep;
+  // Começa na raiz real do caminho (unidade ou compartilhamento UNC no Windows) e anda só pelo resto.
+  const { root } = parse(abs);
+  // No POSIX a barra invertida é caractere de nome válido: só o Windows separa por ela.
+  const parts = abs.slice(root.length).split(sep === "\\" ? /[\\/]/ : "/").filter((x) => x !== "" && x !== ".");
+  let cur: string = root;
   for (let i = 0; i < parts.length; i++) {
     const c = parts[i] as string;
     if (c === "..") { cur = dirname(cur); continue; }
     const next = join(cur, c);
     let st;
-    try { st = lstatSync(next); } catch { return resolve(next, ...parts.slice(i + 1)); }
+    try { st = lstatSync(next); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      const rest = parts.slice(i + 1);
+      if (rest.includes("..")) throw new Error(`caminho com ".." depois de componente inexistente: ${p}`);
+      return join(next, ...rest);
+    }
     if (st.isSymbolicLink()) {
       const target = readlinkSync(next);
       cur = canonicalPath(isAbsolute(target) ? target : `${cur}${sep}${target}`, depth + 1);
@@ -83,10 +92,12 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
     if (typeof name !== "string") return deny("entrada sem toolCall.name");
     if (DONE_TOOLS.has(name)) return { decision: "allow", reason: "duo-gate: entrega do resultado" };
     const paths = pathArgs(call?.args, allow.worktreeRoot).map((p) => canon(p));
+    // Raiz com a mesma canonicalização dos caminhos pedidos (grafia do disco).
+    const root = canon(allow.worktreeRoot);
     if (READ_TOOLS.has(name)) {
       if (!paths.length) return deny(`${name} sem caminho`);
       for (const p of paths) {
-        const rel = relInside(allow.worktreeRoot, p);
+        const rel = relInside(root, p);
         if (rel === null) return deny(`leitura fora da worktree: ${p}`);
         const denied = rel !== "." && isDenied(rel, allow.deny);
         if (denied) return deny(`leitura negada (${denied}): ${rel}`);
@@ -103,7 +114,7 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
     if (allow.readOnly) return deny("tarefa só leitura");
     if (!paths.length) return deny(`${name} sem caminho`);
     for (const p of paths) {
-      const rel = relInside(allow.worktreeRoot, p);
+      const rel = relInside(root, p);
       if (rel === null || rel === ".") return deny(`escrita fora da worktree: ${p}`);
       if (isProtectedRel(rel)) return deny(`caminho protegido: ${rel}`);
       const denied = isDenied(rel, allow.deny);
@@ -122,15 +133,26 @@ export function resolveGeminiTargets(
   writable: { rel: string; isDir: boolean }[],
   links: string[],
 ): { ok: true; targets: GeminiTarget[] } | { ok: false; reason: string } {
-  const root = realpathSync(worktreeRoot);
+  const root = canonicalPath(worktreeRoot);
   const targets: GeminiTarget[] = [];
   for (const w of writable) {
     const rel = normalizeRel(w.rel);
     if (rel === null || rel === "" || rel === ".") return { ok: false, reason: `alvo inválido: ${w.rel}` };
     if (links.some((l) => rel === l || rel.startsWith(`${l}/`))) return { ok: false, reason: `alvo dentro de pasta ligada ao projeto (${rel})` };
     if (isProtectedRel(rel)) return { ok: false, reason: `alvo em pasta protegida (.agents, .git, .duo): ${rel}` };
+    // Nenhum componente existente do alvo pode ser link (redirecionamento, mesmo para dentro da worktree).
+    let walk = root;
+    for (const seg of rel.split("/")) {
+      walk = join(walk, seg);
+      let link = false;
+      try { link = lstatSync(walk).isSymbolicLink(); } catch { break; }
+      if (link) return { ok: false, reason: `alvo passa por link: ${rel}` };
+    }
     const abs = canonicalPath(join(root, rel));
-    if (relInside(root, abs) !== rel) return { ok: false, reason: `alvo fora da worktree após realpath: ${rel}` };
+    const realRel = relInside(root, abs);
+    // Mesma entrada com a grafia do disco (APFS ignora caixa e forma Unicode): o alvo passa a usar a grafia real.
+    const same = (a: string, b: string) => a.normalize("NFC").toLowerCase() === b.normalize("NFC").toLowerCase();
+    if (realRel === null || !same(realRel, rel)) return { ok: false, reason: `alvo fora da worktree após realpath: ${rel}` };
     const missingAncestors: string[] = [];
     for (let d = dirname(join(root, rel)); d !== root && !existsSync(d); d = dirname(d)) missingAncestors.unshift(d);
     // Link quebrado como ancestral "inexistente": existsSync diz que não existe, lstat mostra o link.
@@ -139,7 +161,7 @@ export function resolveGeminiTargets(
       try { link = lstatSync(d).isSymbolicLink(); } catch { link = false; }
       if (link) return { ok: false, reason: `ancestral é link: ${d}` };
     }
-    targets.push({ rel, abs, isDir: w.isDir, missingAncestors });
+    targets.push({ rel: realRel, abs, isDir: w.isDir, missingAncestors });
   }
   return { ok: true, targets };
 }

@@ -555,11 +555,13 @@ export function catalogTtlMs(c: Catalog): number {
 /** Catálogo em cache (6 h, ou 1 h se degradado). `refresh` força nova descoberta. */
 export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<Catalog> {
   const cached = readJson<Catalog>(catalogPath(store));
-  const valid = cached && typeof cached.discoveredAt === "string" && cached.providers ? cached : null;
-  // Cache da v0.4.0 não tem o gemini: mesma migração do cachedCatalog antes de qualquer uso.
+  const isObj = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
+  const valid = cached && typeof cached.discoveredAt === "string" && isObj(cached.providers) ? cached : null;
+  // Cache da v0.4.0 não tem o gemini: mesma migração do cachedCatalog antes de qualquer uso. Cache sem versões
+  // continua sem (e por isso nunca é reaproveitado).
   if (valid) {
     valid.providers.gemini ??= NOT_DISCOVERED("gemini");
-    valid.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, valid.cliVersions);
+    if (isObj(valid.cliVersions)) valid.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, valid.cliVersions);
   }
   const env = opts.env ?? process.env;
   const versions = cliVersions(cfg, env);

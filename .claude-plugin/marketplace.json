@@ -1,0 +1,14 @@
+{
+  "name": "claudegpt-duo",
+  "owner": {
+    "name": "vitorvnascimento"
+  },
+  "plugins": [
+    {
+      "name": "codex-ativos",
+      "source": "./mods/codex-ativos",
+      "description": "Band above the prompt with the active Codex subagents (openai-codex plugin jobs and duo slots) and how long each has been running / Faixa acima do prompt com os subagentes Codex ativos e há quanto tempo cada um roda"
+    }
+  ],
+  "description": "Claude Code mods for ClaudeGPT - Duo Orchestrator / Mods do Claude Code para o ClaudeGPT - Duo Orchestrator"
+}

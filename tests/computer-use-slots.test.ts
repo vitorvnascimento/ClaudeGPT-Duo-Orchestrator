@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { isPidAlive } from "../src/adapters/process.js";
 import { applyTask, cancelRun } from "../src/orchestration/control.js";
-import { activeSlots, ExecutorSlots, releaseOrphanSlot, type AdmitRequest } from "../src/state/slots.js";
+import { activeSlots, ExecutorSlots, inspectCodexProcesses, releaseOrphanSlot, type AdmitRequest, type SlotInfo } from "../src/state/slots.js";
 import { processStartTime, startedAfterReservation } from "../src/state/process-identity.js";
 import { readJson, writeJsonAtomic } from "../src/state/store.js";
 
@@ -115,6 +115,74 @@ it("registro exclusivo válido porém malformado é removido só após dez segun
   const stale = new Date(Date.now() - 11_000);
   utimesSync(path, stale, stale);
   assert.equal(owner(p).admit(req()).ok, true);
+});
+
+it("ponte morta em spawning continua fechada até a recuperação manual confirmada", { skip: process.platform === "win32" }, (t) => {
+  const p = root(), bridge = deadPid();
+  writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), {
+    ...req(), slot: 0, isolation: "in-place", exclusive: true, pid: bridge, nonce: "spawning-orphan",
+    startedAt: new Date().toISOString(), phase: "spawning", spawnStartedAt: new Date().toISOString(),
+    spawnCommand: "codex", spawnCwd: p, childPid: null,
+  });
+  writeJsonAtomic(auditPath(p), audit(bridge, null));
+  assert.equal(activeSlots(p).length, 1);
+  assert.equal(owner(p).admit(req()).ok, false);
+  assert.match(applyTask(p, "missing").message, /exclusivo/);
+  let listing = `1234 codex codex exec --cd ${p}\n`;
+  t.mock.method(childProcess, "spawnSync", (() => ({ status: 0, stdout: listing })) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try {
+    assert.equal(releaseOrphanSlot(p, "spawning-orphan", true).ok, false);
+    assert.equal(activeSlots(p).length, 1);
+    listing = "";
+    assert.equal(releaseOrphanSlot(p, "spawning-orphan", true).ok, false);
+    assert.equal(activeSlots(p).length, 1);
+    listing = "1 launchd /sbin/launchd\n";
+    assert.equal(releaseOrphanSlot(p, "spawning-orphan", false).ok, false);
+    assert.equal(releaseOrphanSlot(p, "spawning-orphan", true).ok, true);
+    assert.equal(activeSlots(p).length, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("probe de spawning cruza cwd e argv sem persistir ou comparar o projeto inteiro", { skip: process.platform === "win32" }, (t) => {
+  const p = root(), cwd = join(p, "worktree with spaces");
+  const slot: SlotInfo = {
+    slot: 0, pid: deadPid(), taskId: "task-probe-000000", runId: "run-probe-000000", nonce: "probe",
+    startedAt: new Date().toISOString(), isolation: "in-place", kind: "implement", exclusive: true,
+    phase: "spawning", spawnStartedAt: new Date().toISOString(), spawnCommand: "codex", spawnCwd: cwd, childPid: null,
+  };
+  let argv = `123 /Applications/CLI Tools/codex codex exec --cd ${cwd}\n`;
+  let currentDir = "/private/other";
+  t.mock.method(childProcess, "spawnSync", ((command: string, args: string[]) => {
+    if (command === "/bin/ps") {
+      assert.deepEqual(args, ["-ww", "-axo", "pid=,comm=,args="]);
+      return { status: 0, stdout: argv };
+    }
+    assert.equal(command, process.platform === "darwin" ? "/usr/sbin/lsof" : "/usr/bin/lsof");
+    assert.deepEqual(args, ["-a", "-p", "123", "-d", "cwd", "-Fpn"]);
+    return { status: 0, stdout: `p123\nfcwd\nn${currentDir}\n` };
+  }) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(inspectCodexProcesses(slot), { ok: true, pids: [123] });
+    argv = "123 node node /Applications/CLI Tools/codex.js exec resume\n";
+    assert.deepEqual(inspectCodexProcesses(slot), { ok: true, pids: [] });
+    currentDir = cwd;
+    assert.deepEqual(inspectCodexProcesses(slot), { ok: true, pids: [123] });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("probe de spawning falha fechado para ps vazio", (t) => {
+  const p = root();
+  const slot = {
+    slot: 0, pid: deadPid(), taskId: "task-probe-000000", runId: "run-probe-000000", nonce: "probe",
+    startedAt: new Date().toISOString(), isolation: "in-place" as const, kind: "implement" as const, exclusive: true,
+    phase: "spawning" as const, spawnStartedAt: new Date().toISOString(), spawnCommand: "codex", spawnCwd: p, childPid: null,
+  };
+  t.mock.method(childProcess, "spawnSync", (() => ({ status: 0, stdout: "" })) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try { assert.equal(inspectCodexProcesses(slot).ok, false); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 it("childPid malformado fecha a reserva e não permite remoção manual", () => {
@@ -246,12 +314,21 @@ it("ponte morta mantém exclusividade enquanto filho auditado vive e libera apó
   }
 });
 
-it("ponte exclusiva morta com childPid nulo publicado pode ser liberada", () => {
+it("legacy exclusive null PID needs a confirmed process scan after a bridge crash", { skip: process.platform === "win32" }, t => {
   const p = root(), bridge = deadPid();
   writeJsonAtomic(join(p, ".duo/locks/slot-0.json"), { ...req(), slot: 0, isolation: "in-place", exclusive: true, pid: bridge, nonce: "orphan", startedAt: new Date().toISOString(), childPid: null });
   writeJsonAtomic(auditPath(p), audit(bridge, null));
-  assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
-  assert.equal(activeSlots(p).length, 0);
+  assert.equal(activeSlots(p).length, 1);
+  assert.match(applyTask(p, "missing").message, /exclusivo/);
+  let listing = `123 codex codex exec --output-schema /data/${req().taskId}/schema.json\n`;
+  t.mock.method(childProcess, "spawnSync", (() => ({ status: 0, stdout: listing })) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try {
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, false);
+    listing = "1 launchd /sbin/launchd\n";
+    assert.equal(releaseOrphanSlot(p, "orphan", true).ok, true);
+    assert.equal(activeSlots(p).length, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 it("slot ordinário permanece ativo enquanto o filho auditado vive após a morte da ponte", async () => {
@@ -454,4 +531,16 @@ it("admissões concorrentes nunca sobrepõem slot exclusivo e outros slots", asy
   } finally {
     await Promise.all(children.map(async (c) => { if (c.exitCode === null && c.signalCode === null) { const exited = once(c, "exit"); c.kill(); await exited; } }));
   }
+});
+
+it("an explicit spawning phase survives the stale-file window even without process probe metadata", () => {
+  const p = root(), bridge = deadPid(), at = new Date(Date.now() - 11_000);
+  const file = join(p, ".duo/locks/slot-0.json");
+  writeJsonAtomic(file, { ...req(), slot: 0, pid: bridge, nonce: "handoff", exclusive: true,
+    isolation: "in-place", startedAt: at.toISOString(), spawnStartedAt: at.toISOString(), phase: "spawning", childPid: null });
+  utimesSync(file, at, at);
+  assert.equal(owner(p).admit(req()).ok, false);
+  assert.match(applyTask(p, "missing").message, /exclusivo/);
+  assert.equal(releaseOrphanSlot(p, "handoff", true).ok, false);
+  assert.equal(activeSlots(p)[0]?.nonce, "handoff");
 });

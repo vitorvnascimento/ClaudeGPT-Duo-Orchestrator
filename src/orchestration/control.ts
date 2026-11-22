@@ -6,7 +6,7 @@ import { loadConfig } from "../config.js";
 import { captureState, git, hashPath, headCommit } from "../git.js";
 import { inScope, validateScope } from "../permissions/scope.js";
 import { canTransition, isTerminal, transition } from "../state/machine.js";
-import { activeSlots, withAdmission } from "../state/slots.js";
+import { recoverSlotsLocked, withAdmission } from "../state/slots.js";
 import { Store } from "../state/store.js";
 import type { Task } from "../state/types.js";
 
@@ -89,7 +89,7 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
 /** Integra o patch de um worktree somente se a base não mudou. Nunca força nem descarta mudanças do usuário. */
 export function applyTask(projectRoot: string, taskId: string): { ok: boolean; message: string } {
   return withAdmission(projectRoot, () => {
-    const slots = activeSlots(projectRoot);
+    const slots = recoverSlotsLocked(projectRoot);
     if (slots.some((slot) => slot.exclusive)) {
       return { ok: false, message: "um executor exclusivo está ativo; aguarde ele terminar para aplicar" };
     }

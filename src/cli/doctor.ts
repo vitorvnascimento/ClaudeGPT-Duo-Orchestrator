@@ -10,7 +10,7 @@ import { git, repoRoot } from "../git.js";
 import { cachedCatalog, checkCodexCatalogContract, describeSource } from "../adapters/catalog.js";
 import { cliUpdateWarnings, loadCliLatest, type FetchLike } from "../adapters/cli-latest.js";
 import { Store } from "../state/store.js";
-import { activeSlots, type SlotInfo } from "../state/slots.js";
+import { inspectSlots, type SlotInfo } from "../state/slots.js";
 import { authBlockReason, BILLING_ENV, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 
 export type ComputerUseDiagnostics = {
@@ -212,7 +212,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     project: { root: root ?? null, isGitRepo: root !== null, config: configError ?? (existsSync(configPath(projectRoot)) ? "ok" : "padrão (sem .duo/config.json)"), duoIgnored: ignored },
     providers,
     computerUse: computerUseDiagnostics(effectiveCfg.computerUse, env),
-    executorSlots: activeSlots(root ?? cwd),
+    executorSlots: inspectSlots(projectRoot),
     directions: {
       "claude→codex (Claude cérebro, Codex executor)": ready.codex ? "pronto" : "bloqueado (ver providers.codex.blockers)",
       "codex→claude (Codex cérebro, Claude executor)": ready.claude ? "pronto" : "bloqueado (ver providers.claude.blockers)",

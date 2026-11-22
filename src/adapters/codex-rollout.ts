@@ -3,7 +3,8 @@
 // não informa o modelo; o rollout sim. Formato não contratual: tudo aqui é best-effort e validado.
 // Só metadados são extraídos; o conteúdo da conversa nunca é copiado.
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import * as zlib from "node:zlib";
 import { join } from "node:path";
 
 export type CodexRolloutEvidence = {
@@ -49,16 +50,102 @@ export function findRollout(codexHome: string, threadId: string, startedAtMs: nu
   for (const day of days) {
     const dir = join(codexHome, "sessions", ...day.split("/"));
     if (!existsSync(dir)) continue;
-    const hit = readdirSync(dir).find((f) => f.startsWith("rollout-") && f.endsWith(`-${threadId}.jsonl`));
+    const files = readdirSync(dir).filter(f => f.startsWith("rollout-"));
+    const hit = files.find(f => f.endsWith(`-${threadId}.jsonl`)) ?? files.find(f => f.endsWith(`-${threadId}.jsonl.zst`));
     if (hit) return join(dir, hit);
   }
   return null;
 }
 
-export function readRolloutEvidence(file: string, threadId: string, codexHome: string): CodexRolloutEvidence | null {
+export class RolloutReadError extends Error {
+  constructor(readonly reason: string) { super(reason); }
+}
+
+/**
+ * Divide um arquivo zstd nos seus frames (RFC 8878), conferindo que cada frame termina dentro do arquivo
+ * (blocos completos, último bloco marcado, checksum presente). Frames "skippable" são pulados.
+ * Arquivo vazio, magic desconhecido ou frame truncado: rollout_zstd_invalid.
+ */
+export function zstdFrames(data: Buffer): Buffer[] {
+  const frames: Buffer[] = [];
+  let pos = 0;
+  const need = (n: number) => { if (pos + n > data.length) throw new RolloutReadError("rollout_zstd_invalid"); };
+  if (!data.length) throw new RolloutReadError("rollout_zstd_invalid");
+  while (pos < data.length) {
+    need(4);
+    const magic = data.readUInt32LE(pos);
+    if ((magic & 0xfffffff0) === 0x184d2a50) { // skippable frame
+      need(8);
+      const size = data.readUInt32LE(pos + 4);
+      pos += 8; need(size); pos += size;
+      continue;
+    }
+    if (magic !== 0xfd2fb528) throw new RolloutReadError("rollout_zstd_invalid");
+    const start = pos;
+    pos += 4; need(1);
+    const fhd = data[pos]!; pos += 1;
+    const fcsFlag = fhd >> 6, singleSegment = (fhd >> 5) & 1, checksum = (fhd >> 2) & 1, dictFlag = fhd & 3;
+    if ((fhd >> 3) & 1) throw new RolloutReadError("rollout_zstd_invalid"); // bit reservado
+    const header = (singleSegment ? 0 : 1) + [0, 1, 2, 4][dictFlag]! + [singleSegment ? 1 : 0, 2, 4, 8][fcsFlag]!;
+    need(header); pos += header;
+    for (;;) {
+      need(3);
+      const bh = data[pos]! | (data[pos + 1]! << 8) | (data[pos + 2]! << 16);
+      pos += 3;
+      const last = bh & 1, type = (bh >> 1) & 3, size = bh >>> 3;
+      if (type === 3) throw new RolloutReadError("rollout_zstd_invalid");
+      const body = type === 1 ? 1 : size; // RLE: um byte repetido `size` vezes
+      need(body); pos += body;
+      if (last) break;
+    }
+    if (checksum) { need(4); pos += 4; }
+    frames.push(data.subarray(start, pos));
+  }
+  if (!frames.length) throw new RolloutReadError("rollout_zstd_invalid");
+  return frames;
+}
+
+/** Bound both the file read and the decompressor output, including archives with no declared content size. */
+export function readBoundedRollout(file: string): string {
+  const limit = 64 * 1024 * 1024;
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new RolloutReadError("rollout_missing");
+    if (stat.size > limit) throw new RolloutReadError("rollout_size_limit_exceeded");
+    const data = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < data.length) {
+      const n = readSync(fd, data, offset, data.length - offset, null);
+      if (!n) throw new RolloutReadError("rollout_missing");
+      offset += n;
+    }
+    if (fstatSync(fd).size !== stat.size) throw new RolloutReadError("rollout_changed_during_read");
+    if (!file.endsWith(".zst")) return data.toString("utf8");
+    if (typeof zlib.zstdDecompressSync !== "function") throw new RolloutReadError("rollout_zstd_unavailable");
+    // O decodificador do Node para no primeiro frame e devolve vazio num frame truncado, sem erro:
+    // percorre os frames e decodifica um a um, exigindo que cada um esteja completo.
+    const out: Buffer[] = [];
+    let total = 0;
+    for (const frame of zstdFrames(data)) {
+      let part: Buffer;
+      try { part = zlib.zstdDecompressSync(frame, { maxOutputLength: limit - total }); }
+      catch (error) {
+        throw new RolloutReadError((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE"
+          ? "rollout_size_limit_exceeded" : "rollout_zstd_invalid");
+      }
+      total += part.length;
+      if (total > limit) throw new RolloutReadError("rollout_size_limit_exceeded");
+      out.push(part);
+    }
+    return Buffer.concat(out).toString("utf8");
+  } finally { closeSync(fd); }
+}
+
+export function readRolloutEvidence(file: string, threadId: string, codexHome: string, bounded = false): CodexRolloutEvidence | null {
   let text: string;
   try {
-    text = readFileSync(file, "utf8");
+    text = bounded || file.endsWith(".zst") ? readBoundedRollout(file) : readFileSync(file, "utf8");
   } catch {
     return null;
   }

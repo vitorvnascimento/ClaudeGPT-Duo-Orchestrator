@@ -1,10 +1,12 @@
 import { strict as assert } from "node:assert";
 import childProcess = require("node:child_process");
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, it, mock } from "node:test";
+import { releaseOrphanSlot } from "../src/state/slots.js";
+import { applyTask } from "../src/orchestration/control.js";
 import { computerUseDiagnostics, doctor, formatDoctor } from "../src/cli/doctor.js";
 
 const roots: string[] = [];
@@ -170,4 +172,38 @@ it("includes loaded project opt-in and cache evidence in doctor JSON and text wi
     assert.match(text, /appsEnforcement=post-execution-detection/);
     assert.match(text, /approval may still block/);
   }
+});
+
+for (const entry of ["doctor", "apply"]) {
+  it(`${entry} preserves fresh malformed slots and reclaims them after ten seconds without another delegation`, async () => {
+    const { home, env } = fixture();
+    const locks = join(home, ".duo", "locks");
+    mkdirSync(locks, { recursive: true });
+    const file = join(locks, "slot-0.json");
+    writeFileSync(file, "{");
+    writeFileSync(join(home, ".duo", "config.json"), JSON.stringify({ discovery: { checkCliUpdates: false } }));
+    const blocked = async () => entry === "apply"
+      ? applyTask(home, "missing").message.includes("exclusivo")
+      : (await doctor(home, { ...env, PATH: "" })).executorSlots!.length > 0;
+    assert.equal(await blocked(), true);
+    assert.ok(existsSync(file));
+    const stale = new Date(Date.now() - 11_000);
+    utimesSync(file, stale, stale);
+    assert.equal(await blocked(), false);
+    assert.equal(existsSync(file), false);
+  });
+}
+
+it("doctor can reclaim an expired malformed slot using the nonce it displayed", () => {
+  const { home } = fixture();
+  const dir = join(home, ".duo", "locks");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "slot-0.json");
+  writeFileSync(file, "{");
+  assert.equal(releaseOrphanSlot(home, "malformed-000000", true).ok, false);
+  assert.ok(existsSync(file));
+  const stale = new Date(Date.now() - 11_000);
+  utimesSync(file, stale, stale);
+  assert.equal(releaseOrphanSlot(home, "malformed-000000", true).ok, true);
+  assert.equal(existsSync(file), false);
 });

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { delegate } from "../src/orchestration/delegate.js";
 import { applyTask, refreshInterrupted } from "../src/orchestration/control.js";
+import * as zlib from "node:zlib";
+import { ExecutorSlots } from "../src/state/slots.js";
 import { Store } from "../src/state/store.js";
 import { baseRequest, makeSandbox } from "./helpers.js";
 
@@ -22,16 +24,21 @@ describe("computer use runtime with fake Codex", () => {
   it("audits actions and screenshots, blocks permission denial, and resumes the same session without persisting private content", async t => {
     const s = setup(t, { executors: { codex: { disableUserExtensions: false } } });
     s.env.FAKE_SCENARIO = "cu-permission";
-    const req = s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"], objective: "PRIVATE_USER_PROMPT_CANARY", acceptance: { criteria: ["PRIVATE_CRITERION_CANARY"] } }));
+    const req = s.request(baseRequest("claude", { taskKey: "permission", needs: ["computer_use"], apps: ["Calculator"], objective: "PRIVATE_USER_PROMPT_CANARY", acceptance: { criteria: ["PRIVATE_CRITERION_CANARY"] } }));
     const first = await delegate({ cwd: s.root, requestPath: req, env: s.env, authPaths: s.authPaths });
     assert.equal(first.summary.state, "blocked", JSON.stringify(first.summary));
-    assert.deepEqual(first.summary.blockedReason, { kind: "app_permission", app: "Finder" });
-    assert.match(String(first.summary.outcome), /Aprove somente Finder.*uma vez/);
+    assert.deepEqual(first.summary.blockedReason, { kind: "app_permission", app: "Calculator" });
+    assert.match(String(first.summary.outcome), /Aprove somente Calculator.*uma vez/);
     assert.match(JSON.stringify(first.summary.next), /uma vez/);
     const store = new Store(s.root);
     const before = store.findTask(String(first.summary.taskId)); assert.ok(before);
     assert.equal(before.native.sessionId, "0199a213-81c0-7800-8aa1-bbab2a035a53");
     assert.equal(before.executorReport, null);
+    assert.ok(!s.log().some(entry => entry.cmd === "continued-after-denial"));
+    const repeat = s.request({ ...JSON.parse(readFileSync(req, "utf8")), runId: before.runId });
+    const duplicated = await delegate({ cwd: s.root, requestPath: repeat, env: s.env, authPaths: s.authPaths });
+    assert.equal(duplicated.summary.state, "rejected");
+    assert.equal(s.execCalls().length, 1);
     s.env.FAKE_SCENARIO = "cu-success";
     const second = await delegate({ cwd: s.root, resumeTaskId: before.taskId, env: s.env, authPaths: s.authPaths });
     assert.equal(second.summary.state, "succeeded", JSON.stringify(second.summary));
@@ -55,6 +62,44 @@ describe("computer use runtime with fake Codex", () => {
     assert.equal(existsSync(join(task.artifactsDir, "prompt.txt")), false);
   });
 
+  it("retries an occupied pre-spawn taskKey from the request in the same run", async t => {
+    const s = setup(t);
+    s.env.FAKE_SCENARIO = "cu-success";
+    const req = baseRequest("claude", { taskKey: "screen", needs: ["computer_use"], apps: ["Finder"] });
+    const slots = new ExecutorSlots(s.root, 1);
+    assert.ok(slots.admit({ taskId: "holder", runId: "run-holder", kind: "review", requested: "worktree", fixed: null, gitReady: true }).ok);
+    let first;
+    try { first = await delegate({ cwd: s.root, requestPath: s.request(req), env: s.env, authPaths: s.authPaths }); }
+    finally { slots.release(); }
+    assert.equal(first.summary.state, "blocked");
+    assert.equal(s.execCalls().length, 0);
+    const options = { cwd: s.root, env: s.env, authPaths: s.authPaths };
+    assert.equal((await delegate({ ...options, resumeTaskId: String(first.summary.taskId) })).summary.state, "rejected");
+    const requestPath = s.request({ ...req, runId: first.summary.runId });
+    const retry = await delegate({ ...options, requestPath });
+    assert.equal(retry.summary.state, "succeeded", JSON.stringify(retry.summary));
+    assert.equal(new Store(s.root).findTask(String(retry.summary.taskId))?.retryOf, first.summary.taskId);
+    assert.equal((await delegate({ ...options, requestPath })).summary.reused, true);
+    assert.equal(s.execCalls().length, 1);
+    assert.equal(s.execCalls()[0]?.resume, null);
+  });
+
+  it("bounds full action checkpoints during a burst and preserves every final action", async t => {
+    const s = setup(t);
+    s.env.FAKE_SCENARIO = "cu-burst";
+    const counts: number[] = [];
+    const save = Store.prototype.saveTask;
+    t.mock.method(Store.prototype, "saveTask", function(this: Store, task: Parameters<typeof save>[0]) {
+      if (task.state === "running" && task.evidence?.computerUse) counts.push(task.evidence.computerUse.actions.length);
+      return save.call(this, task);
+    });
+    const out = await delegate({ cwd: s.root, env: s.env, authPaths: s.authPaths,
+      requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] })) });
+    assert.equal(out.summary.state, "succeeded");
+    assert.equal(new Store(s.root).findTask(String(out.summary.taskId))?.evidence?.computerUse?.actions.length, 131);
+    assert.ok(counts.length <= 12, `${counts.length} full checkpoints for 131 actions`);
+  });
+
   for (const scenario of ["cu-unlisted", "cu-sensitive", "cu-unknown", "cu-mismatch", "cu-modified", "cu-no-audit", "cu-permission-unlisted", "cu-stream-abort", "cu-missing-rollout"]) {
     it(`fails closed for ${scenario}`, async t => {
       const s = setup(t);
@@ -69,7 +114,11 @@ describe("computer use runtime with fake Codex", () => {
         assert.equal(existsSync(join(task.worktree!, "continued-after-violation")), false);
         if (osType() !== "Windows_NT") assert.equal(s.log().find(entry => entry.cmd === "violation-checkpoint")?.observed, true);
       }
-      if (scenario === "cu-missing-rollout") assert.ok(task.evidence?.computerUse?.violations.includes("rollout_missing"));
+      if (scenario === "cu-missing-rollout") {
+        assert.ok(task.evidence?.computerUse?.violations.includes("rollout_missing"));
+        assert.deepEqual(task.evidence?.computerUse?.screenshots, []);
+        assert.ok(!readdirSync(task.artifactsDir).some(name => /^computer-use-.*\.(?:png|jpg)$/.test(name)));
+      }
       if (scenario === "cu-modified") {
         assert.equal(task.verification?.filesChangedCount, 1);
         assert.equal(task.verification?.patchPath, null);
@@ -93,28 +142,40 @@ describe("computer use runtime with fake Codex", () => {
   it("publishes session and action evidence before the executor exits", async t => {
     const s = setup(t);
     Object.assign(s.env, { FAKE_SCENARIO: "cu-checkpoint" });
+    const register = ExecutorSlots.prototype.registerChildPid;
+    let phaseBeforeRegistration: string | undefined;
+    t.mock.method(ExecutorSlots.prototype, "registerChildPid", function(this: ExecutorSlots, pid: number) {
+      phaseBeforeRegistration = JSON.parse(readFileSync(join(s.root, ".duo/locks/slot-0.json"), "utf8")).phase;
+      register.call(this, pid);
+    });
     const out = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] })), env: s.env, authPaths: s.authPaths });
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
     const checkpoint = s.log().find(entry => entry.cmd === "checkpoint");
+    assert.equal(phaseBeforeRegistration, "spawning");
+    assert.equal(checkpoint?.phase, "running");
     assert.equal(checkpoint?.observed, true);
     assert.equal(checkpoint?.childRegistered, true);
     assert.equal(checkpoint?.isolation, "in-place");
     assert.equal(checkpoint?.exclusive, true);
   });
 
-  for (const mode of ["bom", "historical violation", "missing rollout", "non-permission block", "missing session"]) it(`checks ${mode} on permission resume`, async t => {
+  for (const mode of ["bom", ...(typeof zlib.zstdCompressSync === "function" ? ["compressed"] : []), "historical violation", "missing rollout", "non-permission block", "missing session"]) it(`checks ${mode} on permission resume`, async t => {
     const s = setup(t);
     Object.assign(s.env, { FAKE_SCENARIO: "cu-permission" });
-    const req = s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] }));
+    const req = s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Calculator"] }));
     if (mode === "bom") writeFileSync(req, "\uFEFF" + readFileSync(req, "utf8"));
     const first = await delegate({ cwd: s.root, requestPath: req, env: s.env, authPaths: s.authPaths });
     assert.equal(first.summary.state, "blocked");
     const store = new Store(s.root);
     const task = store.findTask(String(first.summary.taskId))!;
-    if (mode === "historical violation" || mode === "missing rollout") {
+    if (["compressed", "historical violation", "missing rollout"].includes(mode)) {
       const sessions = join(s.env.CODEX_HOME!, "sessions");
       const rollout = readdirSync(sessions, { recursive: true, encoding: "utf8" }).find(file => file.endsWith(".jsonl"))!;
-      if (mode === "missing rollout") unlinkSync(join(sessions, rollout));
+      if (mode === "compressed") {
+        const path = join(sessions, rollout);
+        writeFileSync(path + ".zst", zlib.zstdCompressSync(readFileSync(path)));
+        unlinkSync(path);
+      } else if (mode === "missing rollout") unlinkSync(join(sessions, rollout));
       else appendFileSync(join(sessions, rollout), JSON.stringify({ type: "response_item", timestamp: task.evidence!.computerUse!.actions[0]!.at,
         payload: { type: "function_call", name: "mcp__cua_repl__js", call_id: "historical", arguments: JSON.stringify({ code: 'await cua.getApp("Mail");' }) } }) + "\n");
     }
@@ -123,7 +184,7 @@ describe("computer use runtime with fake Codex", () => {
     store.saveTask(task);
     s.env.FAKE_SCENARIO = "cu-success";
     const out = await delegate({ cwd: s.root, resumeTaskId: task.taskId, env: s.env, authPaths: s.authPaths });
-    if (mode === "bom") assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    if (mode === "bom" || mode === "compressed") assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
     else if (mode === "historical violation" || mode === "missing rollout") {
       assert.equal(s.execCalls().length, 1);
       assert.equal(out.summary.state, "failed");
@@ -149,7 +210,7 @@ describe("computer use runtime with fake Codex", () => {
   for (const via of ["resume", "refresh", "admitted"]) it(`fails orphaned computer use during ${via}`, async t => {
     const s = setup(t);
     Object.assign(s.env, { FAKE_SCENARIO: "cu-permission" });
-    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] })), env: s.env, authPaths: s.authPaths });
+    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Calculator"] })), env: s.env, authPaths: s.authPaths });
     const store = new Store(s.root);
     const task = store.findTask(String(first.summary.taskId))!;
     task.state = via === "admitted" ? "approved" : "running";
@@ -165,7 +226,7 @@ describe("computer use runtime with fake Codex", () => {
   it("does not approve an empty resume using only the prior permission attempt", async t => {
     const s = setup(t);
     s.env.FAKE_SCENARIO = "cu-permission";
-    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] })), env: s.env, authPaths: s.authPaths });
+    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Calculator"] })), env: s.env, authPaths: s.authPaths });
     assert.equal(first.summary.state, "blocked");
     s.env.FAKE_SCENARIO = "cu-no-audit";
     const result = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), env: s.env, authPaths: s.authPaths });
@@ -178,7 +239,7 @@ describe("computer use runtime with fake Codex", () => {
   for (const scenario of ["cu-no-thread", "cu-session-mismatch"]) it(`rejects ${scenario} on resume`, async t => {
     const s = setup(t);
     s.env.FAKE_SCENARIO = "cu-permission";
-    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Finder"] })), env: s.env, authPaths: s.authPaths });
+    const first = await delegate({ cwd: s.root, requestPath: s.request(baseRequest("claude", { needs: ["computer_use"], apps: ["Calculator"] })), env: s.env, authPaths: s.authPaths });
     assert.equal(first.summary.state, "blocked");
     s.env.FAKE_SCENARIO = scenario;
     const result = await delegate({ cwd: s.root, resumeTaskId: String(first.summary.taskId), env: s.env, authPaths: s.authPaths });

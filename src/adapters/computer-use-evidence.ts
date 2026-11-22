@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { findRollout } from "./codex-rollout.js";
+import { findRollout, readBoundedRollout, RolloutReadError } from "./codex-rollout.js";
 
 export type ComputerUseAction = {
   at: string; app: string | null; kind: "view" | "click" | "type" | "shortcut" | "scroll" | "other";
@@ -212,6 +212,7 @@ export class ComputerUseCollector {
   private readonly callImages = new Map<Call, Set<string>>();
   private readonly screenshotHashes = new Set<string>();
   private readonly apps = new Set<string>();
+  private readonly attributed = new Set<Call>();
   private readonly rolloutMatches = new Set<Call>();
   private readonly rolloutOnly: Call[] = [];
   private readonly streamMatches = new Set<Call>();
@@ -227,11 +228,14 @@ export class ComputerUseCollector {
   }
 
   private violationCount = 0;
-  get revision(): number { return this.violationCount + this.evidence.actions.length; }
+  private sessionMismatch = false;
+  get actionCount(): number { return this.evidence.actions.length; }
+  get violationRevision(): number { return this.violationCount; }
   get hasViolations(): boolean { return this.violationCount > 0; }
 
   violate(message: string): void {
     this.violationCount++;
+    if (message === "native_session_mismatch") this.sessionMismatch = true;
     if (this.evidence.violations.includes(message)) return;
     if (this.evidence.violations.length < 100) this.evidence.violations.push(message);
   }
@@ -356,7 +360,7 @@ export class ComputerUseCollector {
       call = { rejected: true, targets: [], signature: "missing", results: new Set(), at };
     }
     if (item.error != null) this.result({ error: item.error }, call);
-    if (item.result !== undefined) this.result(item.result, call);
+    if (item.result !== undefined) this.result(item.result, call, false, item.status === "failed");
   }
 
   auditSession(codexHome: string, threadId: string): string | null {
@@ -364,22 +368,23 @@ export class ComputerUseCollector {
     try { file = findRollout(codexHome, threadId, this.since); }
     catch { /* Inaccessible directories also fail the audit. */ }
     if (file) this.readRollout(file, threadId);
-    else this.violate("rollout_missing");
+    else { this.attributed.clear(); this.violate("rollout_missing"); }
     return file;
   }
 
   /** Actual session identity is checked before any backfill is ingested. Old calls only
    * reconstruct literal app bindings; they cannot contribute actions or images. */
   readRollout(file: string, threadId: string): void {
+    this.attributed.clear();
     let lines: string[];
     try {
-      const stat = lstatSync(file);
-      if (!stat.isFile()) { this.violate("rollout_missing"); return; }
-      if (stat.size > 64 * 1024 * 1024) { this.violate("rollout_size_limit_exceeded"); return; }
-      lines = readFileSync(file, "utf8").split("\n", 100_001);
+      lines = readBoundedRollout(file).split("\n", 100_001);
       if (lines.length > 100_000) { this.violate("rollout_record_limit_exceeded"); return; }
       lines = lines.filter(line => line.trim());
-    } catch { this.violate("rollout_missing"); return; }
+    } catch (error) {
+      this.violate(error instanceof RolloutReadError ? error.reason : "rollout_missing");
+      return;
+    }
     const records: Record<string, unknown>[] = [];
     let session = false;
     for (const line of lines) {
@@ -396,8 +401,17 @@ export class ComputerUseCollector {
     const bindings = new Map<string, string>();
     const active = new Map<string, Call>();
     for (const r of records) {
-      if (r.type !== "response_item") continue;
       const p = obj(r.payload);
+      if (r.type === "event_msg" && p.type === "item_completed") {
+        const item = obj(p.item);
+        if (item.type === "McpToolCall" && item.server === "cua_repl" && item.tool === "js" &&
+            item.status === "failed" && item.result !== undefined && this.timestamp(r.timestamp, true)) {
+          const call = active.get(string(item.id) ?? "");
+          if (call) this.result(item.result, call, false, true);
+          else this.violate("unauditable_call_identity");
+        }
+      }
+      if (r.type !== "response_item") continue;
       if (p.type === "custom_tool_call") {
         if (this.timestamp(r.timestamp, true)) this.violate("unauditable_nested_tool_call");
         bindings.clear(); continue;
@@ -442,10 +456,11 @@ export class ComputerUseCollector {
         bindings.clear();
       }
     }
+    for (const call of active.values()) this.attributed.add(call);
   }
 
-  private result(value: unknown, call: Call, serialized = false): void {
-    const digest = hash(JSON.stringify(value));
+  private result(value: unknown, call: Call, serialized = false, failed = false): void {
+    const digest = (failed ? "failed:" : "") + hash(JSON.stringify(value));
     if (call.results.has(digest)) return;
     if (call.results.size >= 100) { call.rejected = true; this.violate("result_limit_exceeded"); return; }
     call.results.add(digest);
@@ -455,7 +470,17 @@ export class ComputerUseCollector {
     }
     const root = obj(envelope);
     const error = string(root.error) ?? string(obj(root.error).message);
-    const denial = error && /\bComputer Use was not approved to use ([^\r\n]+)/.exec(error);
+    const pattern = /\bComputer Use was not approved to use ([^\r\n]+)/;
+    let denial = error ? pattern.exec(error) : null;
+    if (!error && (failed || root.isError === true) && Array.isArray(root.content)) {
+      for (const entry of root.content) {
+        const block = obj(entry);
+        if (block.type === "text" && typeof block.text === "string") {
+          denial = /^Computer Use was not approved to use ([^\r\n]+)/.exec(block.text);
+          if (denial) break;
+        }
+      }
+    }
     if (denial) {
       call.rejected = true;
       const display = denial[1]!.trim().replace(/\.$/, "");
@@ -578,7 +603,7 @@ export class ComputerUseCollector {
 
   finish(reportedApps?: readonly string[]): ComputerUseEvidence {
     for (const [call, hashes] of this.callImages) {
-      if (call.rejected) continue;
+      if (call.rejected || !this.attributed.has(call) || this.sessionMismatch) continue;
       const unseen = [...hashes].filter(id => !this.screenshotHashes.has(id));
       if (unseen.length) this.saveImages(new Map(unseen.map(id => [id, this.pendingImages.get(id)!])));
     }

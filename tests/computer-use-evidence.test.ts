@@ -1,11 +1,12 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { deflateSync } from "node:zlib";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import * as zlib from "node:zlib";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { findRollout } from "../src/adapters/codex-rollout.js";
+import { findRollout, readBoundedRollout, readRolloutEvidence } from "../src/adapters/codex-rollout.js";
 import { canonicalAppId, ComputerUseCollector, sanitizeComputerUseLine } from "../src/adapters/computer-use-evidence.js";
 
 const before = "2026-11-05T19:00:00.000Z";
@@ -32,6 +33,12 @@ function writeRollout(dir: string, records: string[], session = "thread-1"): str
   writeFileSync(file, [rolloutRecord("session_meta", { id: session }, before), ...records].join("\n"));
   return file;
 }
+// Keep the native rollout separate from the directory whose image files the test counts.
+function attribute(t: TestContext, collector: ComputerUseCollector, records: string[]) {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "cu-rollout-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  collector.readRollout(writeRollout(dir, records), "thread-1");
+}
 function png(seed = 0, padding = 0): Buffer {
   const chunk = (type: string, data: Buffer): Buffer => {
     const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
@@ -42,7 +49,7 @@ function png(seed = 0, padding = 0): Buffer {
     return Buffer.concat([length, body, checksum]);
   };
   const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.from([0, seed, 30, 40, 255]))), ...(padding ? [chunk("tEXt", Buffer.alloc(padding))] : []), chunk("IEND", Buffer.alloc(0))]);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(Buffer.from([0, seed, 30, 40, 255]))), ...(padding ? [chunk("tEXt", Buffer.alloc(padding))] : []), chunk("IEND", Buffer.alloc(0))]);
 }
 const image = (bytes = png()) => ({ type: "image", mimeType: "image/png", data: bytes.toString("base64"), path: "../../must-not-be-used.png" });
 
@@ -178,6 +185,7 @@ test("images are validated, hashed, safely named and deduplicated across lifecyc
   collector.onLine(event("a", { code: 'const app = await cua.getApp("Finder"); await app.getScreenshot();' }, result, "item.updated"));
   collector.onLine(event("a", undefined, result));
   collector.onLine(event("b", { code: 'await app.getScreenshot();' }, result));
+  attribute(t, collector, [call("a", 'const app = await cua.getApp("Finder"); await app.getScreenshot();'), call("b", 'await app.getScreenshot();')]);
   const evidence = collector.finish(["Finder"]);
   assert.equal(evidence.screenshots.length, 1);
   const screenshot = evidence.screenshots[0]!;
@@ -213,6 +221,7 @@ test("image data URL supported; unique screenshot count bounded to 20", t => {
   for (let i = 0; i < 21; i++) {
     collector.onLine(event(String(i), { code: 'await cua.getApp("Finder");' }, { content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${png(i).toString("base64")}` } }] }));
   }
+  attribute(t, collector, Array.from({ length: 21 }, (_, i) => call(String(i), 'await cua.getApp("Finder");')));
   assert.equal(collector.finish().screenshots.length, 20);
   assert.equal(readdirSync(dir).length, 20);
   assert.ok(collector.finish().violations.includes("screenshot_count_limit_exceeded"));
@@ -223,12 +232,14 @@ test("existing artifacts are reused without overwrite; symlinks never followed",
   const bytes = png(); const path = join(dir, `computer-use-${sha(bytes)}.png`);
   const target = join(dir, "target.txt"); writeFileSync(target, "PRIVATE"); symlinkSync(target, path);
   collector.onLine(event("a", { code: 'await cua.getApp("Finder");' }, { content: [image(bytes)] }));
+  attribute(t, collector, [call("a", 'await cua.getApp("Finder");')]);
   assert.equal(readFileSync(target, "utf8"), "PRIVATE");
   assert.equal(collector.finish().screenshots.length, 0);
   assert.ok(collector.finish().violations.includes("screenshot_write_failed_or_unsafe_path"));
   const other = setup(t);
   const existing = join(other.dir, `computer-use-${sha(bytes)}.png`); writeFileSync(existing, bytes);
   other.collector.onLine(event("a", { code: 'await cua.getApp("Finder");' }, { content: [image(bytes)] }));
+  attribute(t, other.collector, [call("a", 'await cua.getApp("Finder");')]);
   assert.equal(other.collector.finish().screenshots.length, 1);
   assert.ok(readFileSync(existing).equals(bytes));
 });
@@ -301,6 +312,7 @@ test("2 MiB image boundary is inclusive and validated without a base64 regex sta
   const bytes = png(0, 2 * 1024 * 1024 - png().length - 12);
   assert.equal(bytes.length, 2 * 1024 * 1024);
   collector.onLine(event("a", { code: 'await cua.getApp("Finder");' }, { content: [image(bytes)] }));
+  attribute(t, collector, [call("a", 'await cua.getApp("Finder");')]);
   assert.equal(collector.finish().screenshots[0]!.bytes, bytes.length);
   assert.deepEqual(collector.finish(["Finder"]).violations, []);
 });
@@ -434,6 +446,7 @@ const jpegImage = (bytes = jpeg) => ({ type: "image", mimeType: "image/jpeg", da
 test("JPEG screenshots preserve bytes and reject truncated, empty or malformed containers", t => {
   const { collector } = setup(t);
   collector.onLine(event("jpeg", { code: 'await cua.getApp("Calculator");' }, { content: [jpegImage()] }));
+  attribute(t, collector, [call("jpeg", 'await cua.getApp("Calculator");')]);
   const saved = collector.finish().screenshots[0]!;
   assert.ok(saved);
   assert.equal(saved.sha256, sha(jpeg));
@@ -452,12 +465,15 @@ test("screenshot quota spans resumes, permits duplicates at capacity, and counts
   const { collector, dir } = setup(t);
   collector.onLine(event("jpeg", { code: 'await cua.getApp("Calculator");' }, { content: [jpegImage()] }));
   for (let i = 0; i < 18; i++) collector.onLine(event(String(i), { code: 'await cua.getApp("Calculator");' }, { content: [image(png(i))] }));
+  attribute(t, collector, ["jpeg", ...Array.from({ length: 18 }, (_, i) => String(i))].map(id => call(id, 'await cua.getApp("Calculator");')));
   collector.finish();
   const resumed = new ComputerUseCollector({ artifactsDir: dir, sinceMs });
   resumed.onLine(event("reuse", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(0)), jpegImage(), image(png(18))] }));
+  attribute(t, resumed, [call("reuse", 'await cua.getApp("Calculator");')]);
   resumed.finish();
   const resumedAgain = new ComputerUseCollector({ artifactsDir: dir, sinceMs });
   resumedAgain.onLine(event("last", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(19)), jpegImage()] }));
+  attribute(t, resumedAgain, [call("last", 'await cua.getApp("Calculator");')]);
   resumedAgain.finish();
   assert.equal(readdirSync(dir).length, 20);
   assert.equal(resumed.finish().screenshots.length, 3);
@@ -476,16 +492,19 @@ test("quota recognizes only hash-matching owned regular images and rejects artif
   // A valid unrelated image has no collector-owned name and consumes no quota.
   writeFileSync(join(dir, "unrelated.png"), png());
   collector.onLine(event("new", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(99))] }));
+  attribute(t, collector, [call("new", 'await cua.getApp("Calculator");')]);
   assert.equal(collector.finish().screenshots.length, 1);
   assert.deepEqual(collector.finish(["Calculator"]).violations, []);
   assert.equal(readFileSync(target, "utf8"), "PRIVATE");
   const link = join(dir, "linked-artifacts"); symlinkSync(dir, link);
   const unsafe = new ComputerUseCollector({ artifactsDir: link, sinceMs });
   unsafe.onLine(event("new", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(100))] }));
+  attribute(t, unsafe, [call("new", 'await cua.getApp("Calculator");')]);
   assert.equal(unsafe.finish().screenshots.length, 0);
   assert.ok(unsafe.finish().violations.includes("screenshot_write_failed_or_unsafe_path"));
   const unsafeParent = new ComputerUseCollector({ artifactsDir: join(link, "new-child"), sinceMs });
   unsafeParent.onLine(event("new", { code: 'await cua.getApp("Calculator");' }, { content: [image(png(100))] }));
+  attribute(t, unsafeParent, [call("new", 'await cua.getApp("Calculator");')]);
   assert.equal(unsafeParent.finish().screenshots.length, 0);
   assert.ok(unsafeParent.finish().violations.includes("screenshot_write_failed_or_unsafe_path"));
   assert.ok(!readdirSync(dir).includes("new-child"));
@@ -562,4 +581,112 @@ test("an unreadable rollout and an in-window output with no call fail the audit"
   collector.readRollout(truncated, "thread-1");
   assert.ok(collector.finish().violations.includes("rollout_missing"));
   assert.deepEqual(collector.finish().screenshots, []);
+});
+
+test("Codex 0.166 Calculator denial uses the failed MCP content envelope", t => {
+  const { collector } = setup(t, ["Calculator"]);
+  const line = JSON.parse(event("a", { code: 'await cua.getApp("Calculator");' }, {
+    content: [{ type: "text", text: "Computer Use was not approved to use Calculator" }], isError: true,
+  }));
+  line.item.status = "failed";
+  collector.onLine(JSON.stringify(line));
+  assert.deepEqual(collector.finish().permission, { kind: "app_permission", app: "Calculator" });
+});
+
+for (const mode of ["absent", "invalid JSON", "wrong session", "metadata only", "different call"]) {
+  test(`stream screenshot stays private with ${mode} rollout`, t => {
+    const { collector, dir } = setup(t);
+    const code = 'await cua.getApp("Finder");';
+    collector.onLine(event("screen", { code }, { content: [image()] }));
+    const records = mode === "invalid JSON" ? ["{"] : mode === "different call" ? [call("other", 'await cua.getApp("Calculator");')] : [call("screen", code)];
+    if (mode === "absent") collector.auditSession(dir, "0199a213-81c0-7800-8aa1-bbab2a035a53");
+    else collector.readRollout(writeRollout(dir, mode === "metadata only" ? [] : records, mode === "wrong session" ? "other" : "thread-1"), "thread-1");
+    const result = collector.finish();
+    assert.ok(result.actions.length > 0);
+    assert.deepEqual(result.screenshots, []);
+    assert.ok(!readdirSync(dir).some(name => name.startsWith("computer-use-")));
+  });
+}
+
+test("compressed rollouts retain identity and decompressed size checks", { skip: typeof zlib.zstdCompressSync !== "function" }, t => {
+  const { dir, collector } = setup(t);
+  const id = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const day = new Date(sinceMs).toISOString().slice(0, 10).split("-");
+  const folder = join(dir, "sessions", ...day);
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, `rollout-test-${id}.jsonl.zst`);
+  writeFileSync(file, zlib.zstdCompressSync([rolloutRecord("session_meta", { id }), rolloutRecord("turn_context", { model: "test-model" })].join("\n")));
+  assert.equal(findRollout(dir, id, sinceMs), file);
+  assert.equal(readRolloutEvidence(file, id, dir)?.model, "test-model");
+  writeFileSync(file, zlib.zstdCompressSync(rolloutRecord("session_meta", { id: "other" })));
+  assert.equal(readRolloutEvidence(file, id, dir), null);
+  collector.auditSession(dir, id);
+  assert.ok(collector.finish().violations.includes("rollout_session_mismatch"));
+  writeFileSync(file, zlib.zstdCompressSync(Buffer.alloc(64 * 1024 * 1024 + 1)));
+  collector.auditSession(dir, id);
+  assert.ok(collector.finish().violations.includes("rollout_size_limit_exceeded"));
+});
+
+test("the matching native rollout completion also records Calculator's denial", t => {
+  const { collector, dir } = setup(t, ["Calculator"]);
+  collector.readRollout(writeRollout(dir, [
+    call("a", 'await cua.getApp("Calculator");'),
+    rolloutRecord("event_msg", { type: "item_completed", item: {
+      type: "McpToolCall", id: "a", server: "cua_repl", tool: "js", status: "failed",
+      result: { content: [{ type: "text", text: "Computer Use was not approved to use Calculator" }], isError: true },
+    } }),
+  ]), "thread-1");
+  assert.deepEqual(collector.finish().permission, { kind: "app_permission", app: "Calculator" });
+});
+
+test("a runtime without native zstd diagnoses the archive before parsing any bytes", t => {
+  const { collector, dir } = setup(t);
+  const file = join(dir, "rollout.jsonl.zst");
+  writeFileSync(file, "invalid archive");
+  const builtin = createRequire(import.meta.url)("node:zlib");
+  const decoder = builtin.zstdDecompressSync;
+  try {
+    builtin.zstdDecompressSync = undefined;
+    syncBuiltinESMExports();
+    collector.readRollout(file, "thread-1");
+    assert.deepEqual(collector.finish().violations, ["rollout_zstd_unavailable"]);
+  } finally {
+    if (decoder === undefined) delete builtin.zstdDecompressSync;
+    else builtin.zstdDecompressSync = decoder;
+    syncBuiltinESMExports();
+  }
+});
+
+test("a validated session authorizes pixels only for the matching call", t => {
+  const { collector, dir } = setup(t);
+  const code = 'await cua.getApp("Finder");';
+  collector.onLine(event("first", { code }, { content: [image(png(1))] }));
+  collector.onLine(event("second", { code }, { content: [image(png(2))] }));
+  collector.readRollout(writeRollout(dir, [call("second", code)]), "thread-1");
+  const evidence = collector.finish();
+  assert.equal(evidence.actions.length, 2);
+  assert.deepEqual(evidence.screenshots.map(entry => entry.sha256), [sha(png(2))]);
+  assert.deepEqual(readdirSync(dir).filter(name => name.endsWith(".png")), [`computer-use-${sha(png(2))}.png`]);
+});
+
+test("compressed rollout reads every zstd frame and refuses a truncated one", { skip: typeof zlib.zstdCompressSync !== "function" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "duo-zst-"));
+  try {
+    const opts = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } };
+    const big = "x".repeat(300_000) + "\n"; // várias blocks por frame
+    const a = zlib.zstdCompressSync(Buffer.from('{"a":1}\n' + big), opts), b = zlib.zstdCompressSync(Buffer.from('{"b":2}\n'));
+    const skip = Buffer.alloc(12); skip.writeUInt32LE(0x184d2a50, 0); skip.writeUInt32LE(4, 4);
+    const file = join(dir, "r.jsonl.zst");
+    writeFileSync(file, Buffer.concat([a, skip, b]));
+    const text = readBoundedRollout(file);
+    assert.ok(text.startsWith('{"a":1}') && text.endsWith('{"b":2}\n'), "o segundo frame não pode sumir");
+    for (const cut of [1, 4, 10]) {
+      writeFileSync(file, Buffer.concat([a, b]).subarray(0, a.length + b.length - cut));
+      assert.throws(() => readBoundedRollout(file), /rollout_zstd_invalid/, `truncado em ${cut} bytes`);
+    }
+    writeFileSync(file, a.subarray(0, a.length - 2));
+    assert.throws(() => readBoundedRollout(file), /rollout_zstd_invalid/);
+    writeFileSync(file, Buffer.alloc(0));
+    assert.throws(() => readBoundedRollout(file), /rollout_zstd_invalid/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

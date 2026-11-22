@@ -360,7 +360,12 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (reuse) return reused(reuse);
         for (const prior of matches) {
           if (prior.status === "running") return invalid(`taskKey ${req.taskKey} já está em execução (${prior.latestTaskId})`);
-          if (prior.status === "blocked") return invalid(`taskKey ${req.taskKey} está bloqueada (${prior.latestTaskId}); use duo delegate --resume ${prior.latestTaskId}`);
+          if (prior.status === "blocked") {
+            const last = store.loadTask(run.runId, prior.latestTaskId);
+            const retryBeforeSpawn = last?.state === "blocked" && last.needs.includes("computer_use") &&
+              prior.requestHash === hash && last.invocations === 0 && !last.native.sessionId && !last.blockedReason;
+            if (!retryBeforeSpawn) return invalid(`taskKey ${req.taskKey} está bloqueada (${prior.latestTaskId}); use duo delegate --resume ${prior.latestTaskId}`);
+          }
           task.retryOf = prior.latestTaskId;
         }
         mkdirSync(task.artifactsDir, { recursive: true });
@@ -407,7 +412,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (evidence.violations.length) {
           task.evidence = { computerUse: evidence };
           delete task.blockedReason;
-          transition(task, "failed", "a auditoria da sessão original falhou antes da retomada");
+          transition(task, "failed", `a auditoria da sessão original falhou antes da retomada: ${evidence.violations.join(", ")}`);
           store.saveTask(task);
           return { exitCode: EXIT.failed, summary: summarize(task) };
         }
@@ -617,7 +622,6 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         const note = `catálogo do ${task.executor} desatualizado (de ${execCatalog.staleSince}): modelo/capacidade não confirmados antes da execução`;
         if (!task.limitations.includes(note)) task.limitations.push(note);
       }
-      if (task.needs.includes("computer_use")) delete task.blockedReason;
       transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação e política aprovadas; autenticação será conferida no plano efetivo");
       const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
       const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
@@ -878,6 +882,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!policyReason) fresh.invocations++;
   });
   if (policyReason) return block(`política: ${policyReason}`);
+  if (computerUse) delete task.blockedReason;
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;
   store.saveTask(task);
@@ -933,6 +938,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const eventsPath = join(task.artifactsDir, "events.jsonl");
   const redactStdout = createStreamRedactor();
   let loggedBytes = 0;
+  let nextActionCheckpoint = 1;
   let result: Awaited<ReturnType<typeof runProcess>>;
   // No Windows não há SIGTERM tratável: `duo cancel` só marca o run, e a ponte percebe aqui e encerra o executor.
   const cancelWatch = process.platform === "win32"
@@ -942,6 +948,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     }, 300)
     : null;
   try {
+    if (computerUse) lock.markSpawning(plan);
     result = await runProcess({
       command: plan.command,
       args: plan.args,
@@ -958,11 +965,12 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
         store.saveTask(task);
       },
       onLine: (line) => {
-        const revision = collector?.revision;
+        const violations = collector?.violationRevision;
         const sessionId = task.native.sessionId;
         parser.onLine(line);
         collector?.onLine(line);
-        if (collector && (collector.revision !== revision || task.native.sessionId !== sessionId)) {
+        if (collector && (collector.actionCount >= nextActionCheckpoint || collector.violationRevision !== violations || task.native.sessionId !== sessionId)) {
+          if (collector.actionCount >= nextActionCheckpoint) nextActionCheckpoint = 2 * collector.actionCount;
           if (collector.hasViolations) nativeAbort.abort();
           task.evidence = { computerUse: collector.snapshot() };
           store.saveTask(task);
@@ -1037,8 +1045,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!computerUse) codexEvidence = collectCodexEvidence(ctx.codexHome, task.native.sessionId, Date.now() - result.durationMs);
     else if (rolloutFile && task.native.sessionId) {
       try {
-        const stat = statSync(rolloutFile);
-        if (stat.isFile() && stat.size <= 64 * 1024 * 1024) codexEvidence = readRolloutEvidence(rolloutFile, task.native.sessionId, ctx.codexHome);
+        codexEvidence = readRolloutEvidence(rolloutFile, task.native.sessionId, ctx.codexHome, true);
       }
       catch { /* malformed or disappearing rollout is not model evidence */ }
     }
@@ -1101,13 +1108,15 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let cuViolations: string[] = [];
   let cuPermission: { kind: "app_permission"; app: string } | null = null;
   if (collector) {
+    if (nativeSessionMismatch || (outcome.sessionId && !/^[0-9a-f-]{16,64}$/i.test(outcome.sessionId))) {
+      collector.violate("native_session_mismatch");
+    }
     const current = collector.finish(reportedApps);
     const { actions, appsUsed, screenshots } = current;
     cuViolations = current.violations.filter((v) => v !== "app_permission_denied");
     cuPermission = current.permission;
     if (outcome.events.unknown || outcome.events.malformed || result.oversizeLines || result.outputLimitExceeded) cuViolations.push("unknown_or_incomplete_audit");
     if (!current.actions.some(action => Date.parse(action.at) >= attemptSince) || !current.appsUsed.length) cuViolations.push("missing_auditable_actions");
-    if (nativeSessionMismatch || (outcome.sessionId && !/^[0-9a-f-]{16,64}$/i.test(outcome.sessionId))) cuViolations.push("native_session_mismatch");
     if (!task.native.sessionId) cuViolations.push("missing_native_session");
     if (!cuPermission && result.exitCode !== 0) cuViolations.push("executor_did_not_exit_cleanly");
     if (outcome.report) {
@@ -1401,6 +1410,9 @@ export function summarize(task: Task): Record<string, unknown> {
   if (task.state === "blocked" && (!task.needs.includes("computer_use") || task.blockedReason)) next.push(task.blockedReason
     ? appApprovalInstruction(task.blockedReason.app, task.taskId)
     : `corrigir a causa e retomar: duo delegate --resume ${task.taskId}`);
+  if (task.state === "blocked" && task.needs.includes("computer_use") && task.invocations === 0 && !task.native.sessionId) {
+    next.push(`reenviar o pedido original com runId ${task.runId} após corrigir o bloqueio`);
+  }
   if (task.state === "succeeded" || task.state === "failed") next.push(`registrar decisão: duo accept --task-id ${task.taskId} [--reject] --note "..."`);
   return {
     taskId: task.taskId,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Codex CLI simulado: imita `--version`, `exec --help`, `login status`, `exec --json` (JSONL), `app-server` (JSON-RPC) e `debug models`.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import * as zlib from "node:zlib";
 import { dirname, join } from "node:path";
 import {
   applyWrites, emit, emitPrivateKey, log, readStdin, removeLock, report, scenario, sensitiveEnvSeen, sleep, spawnGrandchild, tryRecursiveDelegate, writeFragmented,
@@ -171,8 +172,15 @@ const writeRollout = (tools = []) => {
     { type: "token_usage_record", payload: { thread_id: thread, response_id: "resp_fake_2", usage: usage } },
   ];
   const file = join(dir, `rollout-2026-09-26T18-13-01-${thread}.jsonl`);
-  if (scenario.startsWith("cu-") && resuming && existsSync(file)) return;
+  if (scenario.startsWith("cu-") && resuming) {
+    if (existsSync(file)) return file;
+    if (existsSync(file + ".zst")) {
+      writeFileSync(file, zlib.zstdDecompressSync(readFileSync(file + ".zst")));
+      return file;
+    }
+  }
   writeFileSync(file, recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  return file;
 };
 const finish = (rep) => {
   const text = JSON.stringify(rep);
@@ -183,6 +191,7 @@ const finish = (rep) => {
 };
 
 switch (scenario) {
+  case "cu-burst":
   case "cu-checkpoint":
   case "cu-no-thread":
   case "cu-stream-abort":
@@ -195,12 +204,32 @@ switch (scenario) {
   case "cu-unknown":
   case "cu-mismatch":
   case "cu-modified": {
-    writeRollout();
+    const rollout = writeRollout();
     if (scenario !== "cu-no-thread") emit({ type: "thread.started", thread_id: thread });
     emit({ type: "turn.started" });
-    const app = scenario === "cu-sensitive" ? "Mail" : scenario === "cu-unlisted" || scenario === "cu-permission-unlisted" ? "Calculator" : "Finder";
-    const call = (id, code, result) => emit({ type: "item.completed", item: { id, type: "mcp_tool_call", server: "cua_repl", tool: "js", arguments: { code }, result } });
-    call("app", `let app = await cua.getApp("${app}");`, scenario.startsWith("cu-permission") ? { error: `Computer Use was not approved to use ${app}` } : { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
+    const app = scenario === "cu-sensitive" ? "Mail" : scenario === "cu-unlisted" || scenario.startsWith("cu-permission") || resuming ? "Calculator" : "Finder";
+    const call = (id, code, result) => {
+      const callId = process.pid + "-" + id;
+      const item = { id: callId, server: "cua_repl", tool: "js", arguments: { code },
+        status: result.isError ? "failed" : "completed", result };
+      if (rollout) {
+        const timestamp = new Date().toISOString();
+        const records = [{ type: "response_item", timestamp, payload: {
+          type: "function_call", namespace: "mcp__cua_repl", name: "js", arguments: JSON.stringify({ code }), call_id: callId,
+        } }];
+        if (result.isError) records.push({ type: "event_msg", timestamp, payload: {
+          type: "item_completed", item: { type: "McpToolCall", ...item },
+        } });
+        appendFileSync(rollout, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+      }
+      emit({ type: "item.completed", item: { type: "mcp_tool_call", ...item } });
+    };
+    call("app", `let app = await cua.getApp("${app}");`, scenario.startsWith("cu-permission")
+      ? { content: [{ type: "text", text: `Computer Use was not approved to use ${app}` }], isError: true }
+      : { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
+    if (scenario === "cu-burst") {
+      for (let i = 0; i < 128; i++) call("burst-" + i, "await app.getAXState();", {});
+    }
     if (scenario === "cu-checkpoint") {
       const taskFile = join(dirname(schemaPath), "task.json");
       let observed = false;
@@ -212,7 +241,7 @@ switch (scenario) {
       }
       const slot = JSON.parse(readFileSync(join(process.cwd(), "../../locks/slot-0.json"), "utf8"));
       log({ cmd: "checkpoint", observed, childRegistered: slot.childPid === process.pid,
-        exclusive: slot.exclusive, isolation: slot.isolation });
+        exclusive: slot.exclusive, isolation: slot.isolation, phase: slot.phase });
     }
     if (scenario === "cu-stream-abort") {
       process.once("SIGTERM", async () => {
@@ -230,7 +259,11 @@ switch (scenario) {
       writeFileSync(join(process.cwd(), "continued-after-violation"), "");
     }
     process.stderr.write("PRIVATE_STDERR_CANARY");
-    if (scenario.startsWith("cu-permission")) break;
+    if (scenario.startsWith("cu-permission")) {
+      await sleep(1000);
+      log({ cmd: "continued-after-denial" });
+      break;
+    }
     call("action", scenario === "cu-unknown" ? 'await app.click(dynamicIndex);' : 'await app.typeText("PRIVATE_TYPED_CANARY");', { content: [{ type: "text", text: "PRIVATE_SCREEN_CANARY" }] });
     const jpeg = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAH/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAr/2Q==";
     call("screenshot", "await app.getScreenshot();", { content: [{ type: "image", mimeType: "image/jpeg", data: jpeg }] });

@@ -189,11 +189,13 @@ describe("trava e caminhos da cadeia", () => {
     assert.throws(() => chainStatePath(project, "a/b", env));
     assert.equal(removeChainStateSafe(tmp("duo-gs-victim-"), project, "../..", env), false);
   });
-  it("an abandoned empty prune.lock is recovered", async () => {
+  it("an abandoned empty chain lock (sibling file) is recovered", async () => {
     const { claimChainState } = await import("../src/state/gemini-state.js");
     const env = fakeEnv();
     const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
-    writeFileSync(join(dir, "prune.lock"), "");
+    writeFileSync(`${dir}.lock`, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${dir}.lock`, old, old); // ilegível e velho (>10 s): o withFileLock recupera
     const release = claimChainState(dir);
     release();
   });

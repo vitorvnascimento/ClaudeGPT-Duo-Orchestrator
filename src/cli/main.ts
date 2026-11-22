@@ -123,7 +123,8 @@ function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
   const chain = store.loadChain(tasks[0]!.runId, chainId);
   if (!chain) return "orphan";
   const latest = tasks.find((t) => t.taskId === chain.latestTaskId) ?? null;
-  if ((chain.owner && isPidAlive(chain.owner.pid)) || [latest?.pids.bridge, latest?.pids.child].some((p) => p && isPidAlive(p))) return "active";
+  // Dono vivo da cadeia, ou executor vivo enquanto a tentativa roda; marcas de uso são vistas pela própria limpeza.
+  if ((chain.owner && isPidAlive(chain.owner.pid)) || (latest?.state === "running" && latest.pids.child && isPidAlive(latest.pids.child))) return "active";
   if (tasks.some((t) => t.applied || t.accepted)) return "terminal";
   // Estado persistido da cadeia: blocked e running interrompido (inclui tentativa planned) são retomáveis.
   if (chain.status === "blocked" || chain.status === "running" || latest?.state === "planned") return "resumable";

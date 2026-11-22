@@ -130,11 +130,20 @@ describe("fallback adaptativo de cota (I4)", () => {
     assert.ok(task(s, out.summary.taskId).limitations.some((l) => l.includes(`maxAttempts=${maxAttempts}`)));
   });
   it("fallback para o próprio cérebro/modelo bloqueia sem executar", async () => {
-    const s = setup();
+    // Só o modelo do cérebro é elegível no Codex: não há alternativa independente.
+    const s = setup({ routing: { include: ["claude:claude-sonnet-5-5", "codex:gpt-6.1-sol"] } });
     const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6.1-sol", complexity: "standard", acceptance: okAcceptance }), quotaEnv);
     assert.equal(out.summary.state, "blocked"); assert.equal(s.execCalls().length, 1);
     assert.match(String(out.summary.outcome), /faça no cérebro/);
     assert.equal(fallbacks(s, task(s, out.summary.taskId)).length, 1);
+  });
+  it("fallback escolhe um modelo independente do cérebro quando existe (não o do cérebro)", async () => {
+    const s = setup();
+    const out = await run(s, adaptiveRequest("codex", { brainModel: "gpt-6.1-sol", complexity: "standard", acceptance: okAcceptance }), quotaEnv);
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.equal(t.executor, "codex");
+    assert.notEqual(t.model.requested, "gpt-6.1-sol");
   });
   it("adaptive=false registra cota e mantém blocked sem fallback", async () => {
     const s = setup({ routing: { adaptive: { enabled: false } } });

@@ -165,3 +165,21 @@ describe("posse do estado do gemini", () => {
     assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("inuse-")), []);
   });
 });
+
+describe("limpeza amarrada à cadeia da task", () => {
+  it("apply does not delete another chain's state when selection.chainId points elsewhere", async () => {
+    const s = setup();
+    const a = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 5;\n" }) });
+    const b = await run(s, req({ runId: a.summary.runId, scope: { allowedPaths: ["src/util.ts"] } }), { FAKE_AGY_WRITES: JSON.stringify({ "src/util.ts": "export const util = 5;\n" }) });
+    const store = new Store(s.root);
+    const ta = store.findTask(String(a.summary.taskId))!;
+    const tb = store.findTask(String(b.summary.taskId))!;
+    assert.ok(tb.geminiStateDir && existsSync(tb.geminiStateDir));
+    // adultera a task A para apontar para a cadeia da task B
+    (ta as { selection: unknown }).selection = { ...(ta.selection ?? {}), chainId: tb.selection?.chainId ?? tb.taskId };
+    store.saveTask(ta);
+    const r = applyTask(s.root, ta.taskId, s.env);
+    assert.ok(r.ok, r.message);
+    assert.ok(existsSync(tb.geminiStateDir), "estado da outra cadeia preservado");
+  });
+});

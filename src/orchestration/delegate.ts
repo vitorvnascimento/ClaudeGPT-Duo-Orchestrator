@@ -179,6 +179,12 @@ function readRequest(cwd: string, requestPath: string, adaptiveEnabled: boolean)
 
 type Gates = { resolved: ReturnType<typeof resolveExecutable> & { ok: true }; caps: Capabilities; entries: ScopeEntry[] };
 
+/** Marca como indisponíveis os candidatos do mesmo cliente do cérebro sem independência comprovada. */
+function markBrainUnavailable<C extends { executor: Provider; model: string | null; available: boolean }>(list: C[], req: DelegationRequest, catalog: Catalog | null): C[] {
+  return list.map((c) => req.brain === c.executor && (!req.brainModel || !c.model || sameBaseModel(catalog, c.executor, c.model, req.brainModel))
+    ? { ...c, available: false } : c);
+}
+
 function runGates(
   req: DelegationRequest,
   task: Task,
@@ -495,7 +501,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!chosen && autoUnavailable && task.invocations === 0) {
           const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
           const picked = pickAlternate(alternateProviders(task.executor, eligibility, { sameFirst: false }), false,
-            (p) => { const a = selectFor(p); return a && !(req.brain === p && (!req.brainModel || sameBaseModel(catalog, p, a.model, req.brainModel))) ? a : null; },
+            (p) => selectModel(catalog, cfg, p, target, { candidates: markBrainUnavailable(candidates, req, catalog), floor: policy.floor, needs: req.needs, minimumEffort, allowDowngrade: false }),
             (p, model) => candidates.find((e) => e.executor === p && e.model === model)?.score ?? Number.NEGATIVE_INFINITY);
           const other = picked?.executor;
           const alt = picked?.selected ?? null;
@@ -667,14 +673,16 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
         const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
         const providers = alternateProviders(task.executor, eligibility, { sameFirst: Boolean(capacity || exhausted?.affectedModels) });
-        const selectAt = (executor: Provider) => selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+        const selectAt = (executor: Provider, list = evals) => selectModel(catalog, cfg, executor, currentTier, { candidates: list, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+        // Independência do cérebro aplicada aos candidatos ANTES da seleção: o 2º modelo do mesmo cliente ainda concorre.
+        const independent = markBrainUnavailable(evals, req, catalog);
         const scoreOf = (executor: Provider, model: string) => evals.find((e) => e.executor === executor && e.model === model)?.score ?? Number.NEGATIVE_INFINITY;
         const sameFirst = Boolean(capacity || exhausted?.affectedModels);
         // Independência do cérebro antes do placar: um candidato independente vence o próprio modelo do cérebro.
         // Se só sobrar o do cérebro, a escolha segue e o portão de independência bloqueia com "faça no cérebro".
         const next = pickAlternate(providers, sameFirst,
-          (executor) => { const s = selectAt(executor); return s && !(req.brain === executor && (!req.brainModel || sameBaseModel(catalog, executor, s.model, req.brainModel))) ? s : null; },
-          scoreOf) ?? pickAlternate(providers, sameFirst, selectAt, scoreOf);
+          (executor) => selectAt(executor, independent),
+          scoreOf) ?? pickAlternate(providers, sameFirst, (executor) => selectAt(executor), scoreOf);
         if (!next) {
           task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
           store.saveTask(task);

@@ -20,7 +20,7 @@ import { parseVersion } from "./capabilities.js";
 import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
-import { chainStateDir, createPrivateHome } from "../state/gemini-state.js";
+import { chainStateDir, claimChainState, createPrivateHome } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation";
@@ -445,8 +445,16 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
   if (!cfg.executors.gemini.enabled) return NOT_DISCOVERED("gemini");
   const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
   if (!resolved.ok) return { ok: false, source: "agy models", sourceKind: "none", error: resolved.reason, tools: [], models: [] };
-  const { home } = createPrivateHome(chainStateDir(cwd, "catalog", baseEnv), baseEnv);
-  const r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
+  const dir = chainStateDir(cwd, "catalog", baseEnv);
+  const { home } = createPrivateHome(dir, baseEnv);
+  let release: (() => void) | null = null;
+  let r: ReturnType<typeof runQuick>;
+  try {
+    release = claimChainState(dir);
+    r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
+  } catch (e) {
+    return { ok: false, source: "agy models", sourceKind: "none", error: (e as Error).message, tools: [], models: [] };
+  } finally { release?.(); }
   const models = r.ok ? parseAgyModels(r.stdout) : [];
   if (!models.length) {
     const error = (r.stderr || r.error || "agy models sem modelos gemini-*").trim().slice(0, 300);

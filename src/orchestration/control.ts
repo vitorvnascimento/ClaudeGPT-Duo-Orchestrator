@@ -99,7 +99,8 @@ function dropGeminiState(projectRoot: string, taskId: string, env: NodeJS.Proces
   if (!task || task.executor !== "gemini") return;
   // Id da cadeia vem do registro da cadeia (não de campos livres da task); o caminho é sempre recalculado.
   const chain = store.loadChain(task.runId, task.selection?.chainId ?? task.taskId);
-  if (!chain) return;
+  // A cadeia carregada precisa conter esta task, e esta task precisa ser a última dela (a decisão encerra a cadeia).
+  if (!chain || chain.latestTaskId !== task.taskId || !chain.attempts.some((a) => a.taskId === task.taskId)) return;
   try { removeChainStateSafe(chainStatePath(projectRoot, chain.chainId, env), projectRoot, chain.chainId, env); } catch { /* id inválido: não apaga */ }
 }
 

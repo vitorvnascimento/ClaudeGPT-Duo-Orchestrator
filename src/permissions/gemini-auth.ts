@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { DuoConfig } from "../config.js";
 import { runQuick } from "../adapters/process.js";
 import type { Resolved } from "../adapters/resolve.js";
+import { classifyErrorText } from "../adapters/types.js";
 import { SANDBOX_EXEC } from "../adapters/sandbox-profile.js";
 import type { AuthCheck, AuthMethod } from "./auth.js";
 import { BILLING_ENV, childEnv } from "./auth.js";
@@ -46,7 +47,11 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const agy = [resolved.command, ...resolved.prefixArgs, "models"];
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
-  if (!r.ok) return { ...base, ok: false, method: "none", detail: `agy models falhou: ${(r.stderr || r.error || "").trim().slice(0, 200)}` };
+  // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
+  if (!r.ok) {
+    const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
+    return { ...base, ok: false, method: "none", detail: `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})` };
+  }
   const text = existsSync(logDir) ? readdirSync(logDir).map((f) => readFileSync(join(logDir, f), "utf8")).join("\n") : "";
   const c = classifyAgyLog(text);
   return { ...base, ...c, ok: c.method === "subscription" };

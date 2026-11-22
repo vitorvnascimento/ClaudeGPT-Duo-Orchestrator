@@ -2,8 +2,9 @@
 // O agy grava conversas, logs e cache ali (verificado: o ~/.gemini do usuário fica intacto). Só
 // Library/Keychains aponta para o real, que é onde está o login da assinatura.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { withFileLock } from "./store.js";
 import { basename, dirname, join } from "node:path";
 
 export type ChainClass = "active" | "resumable" | "terminal" | "orphan";
@@ -143,33 +144,16 @@ export function removeChainStateSafe(dir: string, projectRoot: string, chainId: 
   }
 }
 
-const sleepMs = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** Trava curta por cadeia (prune.lock), compartilhada por quem usa o estado e pela limpeza. null = não obtida. */
+/**
+ * Trava curta por cadeia, compartilhada por quem usa o estado e pela limpeza. Usa o withFileLock do store (recuperação
+ * de trava morta por geração) num arquivo IRMÃO do diretório (<cadeia>.lock), que sobrevive à remoção da cadeia.
+ * null = trava não obtida no prazo ou erro de sistema de arquivos.
+ */
 export function withChainLock<T>(chainDir: string, fn: () => T, waitMs = 5000): T | null {
-  const lock = join(chainDir, "prune.lock");
-  const until = Date.now() + waitMs;
-  for (;;) {
-    // Publicação atômica: o pid é gravado num arquivo temporário e ligado (link) como trava; nunca há trava vazia.
-    const tmp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
-    let got = false;
-    try {
-      writeFileSync(tmp, String(process.pid));
-      linkSync(tmp, lock);
-      got = true;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; // diretório sumiu
-    } finally { rmSync(tmp, { force: true }); }
-    if (got) {
-      try { return fn(); } finally { rmSync(lock, { force: true }); }
-    }
-    try {
-      const holder = Number(readFileSync(lock, "utf8"));
-      if (!holder || !isAlive(holder)) { rmSync(lock, { force: true }); continue; }
-    } catch { continue; /* trava sumiu entre as chamadas */ }
-    if (Date.now() > until) return null;
-    sleepMs(50);
-  }
+  if (!existsSync(chainDir)) return null;
+  try { return withFileLock(`${chainDir}.lock`, waitMs, fn); }
+  catch { return null; }
 }
 
 /** Marca o estado da cadeia como em uso (delegação ou descoberta). A limpeza nunca apaga com marca viva. */

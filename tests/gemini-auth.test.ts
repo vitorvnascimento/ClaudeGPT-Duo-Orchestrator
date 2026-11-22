@@ -43,10 +43,12 @@ describe("preflight de login do gemini", () => {
     const a = geminiAuthPreflight(resolved, env(h, { FAKE_AGY_AUTH: "apikey" }), ack(true), null);
     assert.equal(a.method, "api_key");
   });
-  it("blocks when agy models fails", () => {
+  it("blocks when agy models fails, without echoing raw stderr", () => {
     const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
     assert.equal(a.ok, false);
     assert.notEqual(authBlockReason(a), null);
+    assert.doesNotMatch(a.detail, /Please sign in/);
+    assert.match(a.detail, /agy models falhou \(/);
   });
   it("parent env with Google credentials is a problem before sanitizing", () => {
     assert.match(String(geminiParentEnvProblem({ GEMINI_API_KEY: "x", PATH: "/bin" })), /GEMINI_API_KEY/);

@@ -137,13 +137,17 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       if (parent) blockers.push(parent);
       // Login sem inferência (agy models) num HOME temporário só deste diagnóstico (não disputa logs nem a limpeza).
       let auth: { method: string; detail: string } | null = null;
-      const tmpHome = mkdtempSync(join(tmpdir(), "duo-doctor-agy-"));
-      try {
-        const { home } = createPrivateHome(tmpHome, env);
-        const a = geminiAuthPreflight(resolved, { ...probeEnv, HOME: home }, effectiveCfg, null);
-        auth = { method: a.method, detail: a.detail };
-        if (a.method !== "subscription") blockers.push(`login do agy: ${a.method} (${a.detail})`);
-      } finally { rmSync(tmpHome, { recursive: true, force: true }); }
+      if (process.platform === "darwin") {
+        const tmpHome = mkdtempSync(join(tmpdir(), "duo-doctor-agy-"));
+        try {
+          const { home } = createPrivateHome(tmpHome, env);
+          const a = geminiAuthPreflight(resolved, { ...probeEnv, HOME: home }, effectiveCfg, null);
+          auth = { method: a.method, detail: a.detail };
+          if (a.method !== "subscription") blockers.push(`login do agy: ${a.method} (${a.detail})`);
+        } catch (e) {
+          blockers.push(`não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})`);
+        } finally { rmSync(tmpHome, { recursive: true, force: true }); }
+      }
       ready.gemini = blockers.length === 0;
       providers.gemini = { installed: true, path: resolved.command, source: resolved.source, version: caps.version, capabilities: caps.flags,
         missingRequired: caps.missingRequired, sandbox, verified, ...(auth ? { auth } : {}), blockers };

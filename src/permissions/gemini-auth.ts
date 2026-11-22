@@ -21,12 +21,12 @@ export function geminiParentEnvProblem(parentEnv: NodeJS.ProcessEnv): string | n
   return found.length ? `variáveis de cobrança do Google no ambiente (${found.join(", ")}); remova-as antes de delegar ao gemini` : null;
 }
 
-function classifyAgyLog(text: string): { method: AuthMethod; detail: string } {
+function classifyAgyLog(text: string): { method: AuthMethod; detail: string; conflict?: true } {
   const all = (re: RegExp) => [...new Set([...text.matchAll(re)].map((m) => m[1] as string))];
   const effectives = all(/authenticated via [a-z_]+ \(effective: ([a-z_]+)\)/g);
   const methods = all(/\bauthMethod=([a-z_]+)/g);
   // Sinais diferentes no mesmo log: não dá para saber qual login a chamada usou.
-  if (effectives.length > 1 || methods.length > 1) return { method: "unknown", detail: `sinais de login conflitantes (authMethod=${methods.join("|") || "?"} effective=${effectives.join("|") || "?"})` };
+  if (effectives.length > 1 || methods.length > 1) return { method: "unknown", conflict: true, detail: `sinais de login conflitantes (authMethod=${methods.join("|") || "?"} effective=${effectives.join("|") || "?"})` };
   const effective = effectives[0] ?? null;
   const authMethod = methods[0] ?? null;
   const detail = `authMethod=${authMethod ?? "?"} effective=${effective ?? "?"}`;
@@ -55,24 +55,28 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  if (!r.ok) {
-    const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
-    return { ...base, ok: false, method: "none", detail: `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})` };
-  }
   const text = existsSync(logDir) ? readdirSync(logDir).map((f) => readFileSync(join(logDir, f), "utf8")).join("\n") : "";
   const c = classifyAgyLog(text);
+  if (!r.ok) {
+    const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
+    const failed = `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})`;
+    // Evidência negativa do log (API, nuvem, sinais conflitantes) vale mesmo com a falha; o resto é "sem login legível".
+    if (c.method === "api_key" || c.method === "cloud" || c.conflict) return { ...base, ...c, ok: false, detail: `${failed}; ${c.detail}` };
+    return { ...base, ok: false, method: "none", detail: failed };
+  }
   return { ...base, ...c, ok: c.method === "subscription" };
 }
 
 /** Login sem inferência (agy models) num HOME temporário só desta checagem (não disputa logs nem a limpeza das cadeias). */
-export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig): { ok: boolean; method: string; detail: string } {
+/** conflict: o log trouxe sinais de login diferentes (evidência contra, não falta de evidência). */
+export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig): { ok: boolean; method: string; detail: string; conflict: boolean } {
   let tmpHome: string | null = null;
   try {
     tmpHome = mkdtempSync(join(tmpdir(), "duo-agy-login-"));
     const { home } = createPrivateHome(tmpHome, env);
     const a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null);
-    return { ok: a.method === "subscription", method: a.method, detail: a.detail };
+    return { ok: a.method === "subscription", method: a.method, detail: a.detail, conflict: (a as { conflict?: boolean }).conflict === true };
   } catch (e) {
-    return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})` };
+    return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})`, conflict: false };
   } finally { if (tmpHome) try { rmSync(tmpHome, { recursive: true, force: true }); } catch { /* limpeza best-effort */ } }
 }

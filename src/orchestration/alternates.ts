@@ -1,6 +1,7 @@
 // Quem pode receber uma tarefa quando a conta atual fica sem cota ou capacidade (e na recomendação inicial).
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { GEMINI_VERIFIED, type VerifiedAgy } from "../adapters/gemini.js";
+import { unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import type { Isolation } from "../state/slots.js";
 import type { TaskKind } from "../state/types.js";
 
@@ -19,6 +20,8 @@ export function executorEligible(p: Provider, ctx: EligibilityCtx): boolean {
   if (!(ctx.verified ?? GEMINI_VERIFIED).some((v) => v.platform === ctx.platform)) return false;
   // O gate do gemini mora numa worktree descartável: nenhuma cadeia fixada in-place pode migrar para ele.
   if (ctx.fixedIsolation === "in-place") return false;
+  // scope.deny que a trava do SO não aplica: toda delegação ao gemini bloquearia ao montar o perfil.
+  if (unsupportedDenyGlob(ctx.cfg.scope.deny)) return false;
   return true;
 }
 

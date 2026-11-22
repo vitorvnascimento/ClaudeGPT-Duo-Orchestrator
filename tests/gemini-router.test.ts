@@ -136,6 +136,10 @@ describe("disponibilidade e cota do gemini", () => {
     assert.equal(unreadable.available, true, JSON.stringify(unreadable));
     const apikey = await check({ FAKE_AGY_AUTH: "apikey" });
     assert.equal(apikey.available, false, JSON.stringify(apikey));
+    const conflict = await check({ FAKE_AGY_AUTH: "conflict" });
+    assert.equal(conflict.available, false, JSON.stringify(conflict));
+    const failedApikey = await check({ FAKE_AGY_AUTH: "apikey", FAKE_AGY_NO_MODELS: "1" });
+    assert.equal(failedApikey.available, false, JSON.stringify(failedApikey));
   });
   it("a saved gemini exhaustion shows up in quotaStates", () => {
     sb = makeSandbox();

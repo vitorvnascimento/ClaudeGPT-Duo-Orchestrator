@@ -88,6 +88,7 @@ Every MCP server named by the effective configuration is disabled in the Codex e
 ## Gemini executor (agy)
 
 - Two independent write-containment layers, each verified alone against a sibling file with the real `agy` 1.5.3 (recipe: `tests/fixtures/agy/probe/README.md`): the bridge's `PreToolUse` gate hook and a per-task `sandbox-exec` profile. The gate denies every non-file tool (commands, web, messages, subagents, schedules, workflows, swarm, MCP, browser) and fails closed on crash, invalid output or timeout.
+- `grep_search` runs only on a single file, and Gemini delegation is refused if a `scope.deny` pattern has non-ASCII characters or `?` (the OS profile could not match every spelling the gate denies on APFS); such a configuration also makes Gemini ineligible for routing.
 - Real battery on `agy` 1.5.14 (2026-11-22): `schedule`, `run_workflow`, `swarm` and MCP were attempted and denied by the hook. Browser tools are declared but not exposed to the model in headless mode, so no call could be observed; the gate denies every `browser_*` tool (offline test). Verified list: 1.5.14/darwin only; every other version is refused until the battery passes on it.
 - Session settings (`allowNonWorkspaceAccess:false`, `command(*)` denied) are an extra guard only; on `agy` 1.5.3 they cannot confine writes to a single file.
 - The `agy` state lives in a private HOME per chain outside `.duo/` (raw conversations are not redacted there); it is removed on apply/accept and by `duo gemini-state prune`. Removal validates the path structure and owner before deleting.
@@ -101,6 +102,7 @@ Projeto pessoal e local. Não expõe serviço de rede, não recebe credenciais e
 ## Executor Gemini (agy)
 
 - Duas travas independentes de escrita, cada uma verificada sozinha contra um arquivo vizinho com o `agy` 1.5.3 real (receita: `tests/fixtures/agy/probe/README.md`): o hook `PreToolUse` do duo e um perfil `sandbox-exec` por tarefa. O gate nega toda ferramenta que não seja de arquivo e falha fechado.
+- O `grep_search` só roda sobre um arquivo, e a delegação ao Gemini é recusada se um padrão de `scope.deny` tiver caracteres fora do ASCII ou `?` (o perfil do SO não casaria todas as grafias que o gate nega no APFS); essa configuração também tira o Gemini do roteamento.
 - Bateria real no `agy` 1.5.14 (22/11/2026): `schedule`, `run_workflow`, `swarm` e MCP foram tentados e negados pelo hook. As ferramentas de navegador são declaradas mas o headless não as expõe ao modelo, então nenhuma chamada pôde ser observada; o gate nega toda ferramenta `browser_*` (teste offline). Lista verificada: só 1.5.14/darwin; qualquer outra versão é recusada até a bateria passar nela.
 - O estado do `agy` fica num HOME privado por cadeia, fora do `.duo/` (conversas brutas, sem redação); é apagado no apply/accept e por `duo gemini-state prune`, sempre validando caminho e dono.
 - O sinal de login prova o método (`authMethod=consumer` pelo keyring), não que a assinatura está paga.

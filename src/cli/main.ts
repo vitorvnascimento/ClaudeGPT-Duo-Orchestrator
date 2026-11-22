@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, EXECUTORS, loadConfig, type BrainProvider, type Provider } from "../config.js";
 import { pruneGeminiStates, type ChainClass } from "../state/gemini-state.js";
+import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { repoRoot } from "../git.js";
 import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
 import { delegate, EXIT } from "../orchestration/delegate.js";
@@ -292,9 +293,14 @@ async function main(argv: string[]): Promise<number> {
       if (!kind || !["implement", "review", "test", "investigate", "asset"].includes(kind)) throw new Error("--kind deve ser implement, review, test, investigate ou asset");
       const needs = (str(args, "needs") ?? request?.needs?.join(",") ?? "").split(",").map((x) => x.trim()).filter(Boolean) as Capability[];
       if (needs.some((n) => !["code", "image_generation", "computer_use"].includes(n))) throw new Error("--needs aceita: code, image_generation, computer_use");
-      // Mesmas travas do delegate: não recomenda o que a delegação recusaria.
-      if (needs.includes("computer_use") && !cfg.computerUse.enabled) throw new Error("computer use está desligado (computerUse.enabled=false na config do projeto)");
-      if (needs.includes("computer_use") && needs.includes("image_generation")) throw new Error("computer use não pode combinar image_generation no mesmo pedido");
+      // Mesmas travas do delegate: não recomenda o que a delegação recusaria. Pedido completo passa pelo mesmo validador.
+      const computerUse = needs.includes("computer_use") || !!request?.needs?.includes("computer_use");
+      if (computerUse && !cfg.computerUse.enabled) throw new Error("computer use está desligado (computerUse.enabled=false na config do projeto)");
+      if (computerUse && needs.includes("image_generation")) throw new Error("computer use não pode combinar image_generation no mesmo pedido");
+      if (request) {
+        const cuReason = computerUseBlockReason(request, cfg.computerUse.enabled);
+        if (cuReason) throw new Error(cuReason);
+      }
       const brainModel = str(args, "brain-model") ?? request?.brainModel ?? null;
       const risk = (str(args, "risk") ?? request?.risk ?? "medium") as Risk;
       if (!["low", "medium", "high"].includes(risk)) throw new Error("--risk deve ser low, medium ou high");
@@ -320,9 +326,10 @@ async function main(argv: string[]): Promise<number> {
         resolved: resolveExecutable("codex", cfg.executors.codex.command, process.env) });
       const defaults = { claude: null, gemini: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env, cfg.executors.codex.ignoreUserConfig, effective) };
       const rec = recommend(store, request?.adaptive === false ? { ...cfg, routing: { ...cfg.routing, adaptive: { ...cfg.routing.adaptive, enabled: false } } } : cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs, paths: scopeEntries, ...(request ? { objective: request.objective, acceptance: request.acceptance, complexity: request.complexity } : {}) }, await liveAvailability(store, cfg), catalog, defaults);
-      // Pedido de computer use pode trazer texto a digitar: na telemetria vão só os metadados.
-      store.telemetry({ event: "recommend", query: needs.includes("computer_use") ? { kind, needs, risk, computerUse: true } : rec.query, decision: rec.decision });
-      print(args.flags.json ? rec : formatRecommendation(rec));
+      // Pedido de computer use pode trazer texto a digitar: telemetria e saída levam só os metadados.
+      const shown = computerUse ? { ...rec, query: { kind: rec.query.kind, tags: rec.query.tags, risk: rec.query.risk, brain: rec.query.brain, needs: rec.query.needs ?? needs } } : rec;
+      store.telemetry({ event: "recommend", query: shown.query, decision: rec.decision });
+      print(args.flags.json ? shown : formatRecommendation(shown));
       return 0;
     }
     case "status": {

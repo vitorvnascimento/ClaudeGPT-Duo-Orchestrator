@@ -63,7 +63,7 @@ const cwd = process.argv[2];
 if (cwd) {
   const locks = path.join(cwd, '.duo', 'locks');
   let files = [];
-  try { files = fs.readdirSync(locks).filter((f) => /^slot-\d{1,4}\.json$/.test(f)).slice(0, 64); } catch {}
+  try { files = fs.readdirSync(locks).filter((f) => /^slot-\d{1,4}\.json$/.test(f)); } catch {} // até 10.000 pelo padrão do nome
   for (const f of files) {
     const s = readJson(path.join(locks, f));
     if (!s || !Number.isInteger(s.pid) || !alive(s.pid) || !KINDS.has(s.kind) || !ISOLATIONS.has(s.isolation) || typeof s.taskId !== 'string' || !TASK_ID.test(s.taskId)) continue;

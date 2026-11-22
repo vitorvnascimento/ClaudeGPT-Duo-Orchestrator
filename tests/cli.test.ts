@@ -309,9 +309,17 @@ describe("recommend com computer use", () => {
     const both = cli(s, ["recommend", "--kind", "investigate", "--needs", "computer_use,image_generation", "--json"]);
     assert.notEqual(both.status, 0);
     assert.match(both.stderr, /image_generation/);
-    const req = s.request({ ...baseRequest("codex", { objective: "Digite SEGREDO-DIGITADO na Calculadora." }), kind: "investigate", needs: ["computer_use"], apps: ["Calculator"] });
-    cli(s, ["recommend", "--request", req, "--json"]);
-    const tel = join(s.root, ".duo", "telemetry.jsonl");
-    assert.doesNotMatch(existsSync(tel) ? readFileSync(tel, "utf8") : "", /SEGREDO-DIGITADO/);
+    const req = s.request({ ...baseRequest("claude", { objective: "Digite SEGREDO-DIGITADO na Calculadora." }), executor: "codex", kind: "investigate", needs: ["computer_use"], apps: ["Calculator"] });
+    const ok = cli(s, ["recommend", "--request", req, "--json"]);
+    if (process.platform !== "darwin") { assert.notEqual(ok.status, 0); return; } // computer use só no macOS
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.doesNotMatch(ok.stdout, /SEGREDO-DIGITADO/, "a saída também não repete o texto");
+    const events = readFileSync(join(s.root, ".duo", "telemetry.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.event === "recommend");
+    assert.ok(events.length >= 1);
+    assert.doesNotMatch(JSON.stringify(events), /SEGREDO-DIGITADO/);
+    const mail = s.request({ ...baseRequest("claude"), executor: "codex", kind: "investigate", needs: ["computer_use"], apps: ["Mail"] });
+    const denied = cli(s, ["recommend", "--request", mail, "--json"]);
+    assert.notEqual(denied.status, 0);
+    assert.match(denied.stderr, /proibido/);
   });
 });

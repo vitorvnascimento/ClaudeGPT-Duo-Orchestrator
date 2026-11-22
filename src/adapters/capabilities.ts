@@ -47,6 +47,18 @@ export const CODEX_EXEC_FLAGS: Record<string, FlagSpec> = {
   skipGitRepoCheck: { flag: "--skip-git-repo-check", required: false },
 };
 
+/** agy (Antigravity CLI): o prompt vai por stdin em stream-json; sem isso o adaptador recusa a versão. */
+export const AGY_FLAGS: Record<string, FlagSpec> = {
+  print: { flag: "--print", required: true },
+  inputFormat: { flag: "--input-format", required: true },
+  outputFormat: { flag: "--output-format", required: true },
+  model: { flag: "--model", required: true },
+  settings: { flag: "--settings", required: true },
+  conversation: { flag: "--conversation", required: false },
+  jsonSchema: { flag: "--json-schema", required: false },
+  disableSlashCommands: { flag: "--disable-slash-commands", required: false },
+};
+
 export function parseVersion(text: string): string | null {
   const m = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/.exec(text);
   return m ? (m[1] as string) : null;

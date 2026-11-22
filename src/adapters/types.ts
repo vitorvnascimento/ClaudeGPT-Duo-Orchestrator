@@ -21,6 +21,8 @@ export type InvocationInput = {
   resumeSessionId: string | null;
   artifactsDir: string;
   env: NodeJS.ProcessEnv;
+  /** Só para o executor gemini: HOME privado da cadeia, TMPDIR da tentativa e perfil sandbox-exec (null fora do macOS). */
+  gemini?: { privateHome: string; tmpDir: string; profilePath: string | null };
 };
 
 export type InvocationPlan = {

@@ -1,11 +1,11 @@
 // Diagnóstico sem inferência: versões, help, status e schema locais; versões publicadas consultadas anonimamente.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
 import { isVerifiedAgy } from "../adapters/gemini.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { chainStateDir, createPrivateHome } from "../state/gemini-state.js";
+import { createPrivateHome } from "../state/gemini-state.js";
 import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
@@ -135,14 +135,15 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
       const parent = geminiParentEnvProblem(env);
       if (parent) blockers.push(parent);
-      // Login sem inferência (agy models) no HOME privado de descoberta do projeto; fora de um repo não há onde rodar.
+      // Login sem inferência (agy models) num HOME temporário só deste diagnóstico (não disputa logs nem a limpeza).
       let auth: { method: string; detail: string } | null = null;
-      if (root) {
-        const { home } = createPrivateHome(chainStateDir(root, "catalog", env), env);
+      const tmpHome = mkdtempSync(join(tmpdir(), "duo-doctor-agy-"));
+      try {
+        const { home } = createPrivateHome(tmpHome, env);
         const a = geminiAuthPreflight(resolved, { ...probeEnv, HOME: home }, effectiveCfg, null);
         auth = { method: a.method, detail: a.detail };
         if (a.method !== "subscription") blockers.push(`login do agy: ${a.method} (${a.detail})`);
-      }
+      } finally { rmSync(tmpHome, { recursive: true, force: true }); }
       ready.gemini = blockers.length === 0;
       providers.gemini = { installed: true, path: resolved.command, source: resolved.source, version: caps.version, capabilities: caps.flags,
         missingRequired: caps.missingRequired, sandbox, verified, ...(auth ? { auth } : {}), blockers };

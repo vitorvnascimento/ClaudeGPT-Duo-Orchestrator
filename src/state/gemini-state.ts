@@ -2,7 +2,7 @@
 // O agy grava conversas, logs e cache ali (verificado: o ~/.gemini do usuário fica intacto). Só
 // Library/Keychains aponta para o real, que é onde está o login da assinatura.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -110,8 +110,15 @@ export function removeChainState(dir: string): void {
 }
 
 /** Caminho esperado do estado de uma cadeia (sem criar nada). */
+const CHAIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+
+export function projectStateDir(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(geminiStateRoot(env), createHash("sha256").update(projectRoot).digest("hex").slice(0, 12));
+}
+
 export function chainStatePath(projectRoot: string, chainId: string, env: NodeJS.ProcessEnv = process.env): string {
-  return join(geminiStateRoot(env), createHash("sha256").update(projectRoot).digest("hex").slice(0, 12), chainId);
+  if (!CHAIN_ID.test(chainId) || chainId.includes("..")) throw new Error(`chainId inválido: ${chainId}`);
+  return join(projectStateDir(projectRoot, env), chainId);
 }
 
 /**
@@ -121,7 +128,9 @@ export function chainStatePath(projectRoot: string, chainId: string, env: NodeJS
 export function removeChainStateSafe(dir: string, projectRoot: string, chainId: string, env: NodeJS.ProcessEnv = process.env): boolean {
   try {
     const expected = chainStatePath(projectRoot, chainId, env);
-    if (realpathSync(dir) !== realpathSync(expected)) return false;
+    const real = realpathSync(dir);
+    // Filho direto do diretório canônico do projeto, e exatamente a cadeia esperada.
+    if (dirname(real) !== realpathSync(projectStateDir(projectRoot, env)) || real !== realpathSync(expected)) return false;
     const owner = JSON.parse(readFileSync(join(expected, "owner.json"), "utf8")) as { projectRoot?: unknown; chainId?: unknown };
     if (owner.projectRoot !== projectRoot || owner.chainId !== chainId) return false;
     return withChainLock(expected, () => {
@@ -141,20 +150,25 @@ export function withChainLock<T>(chainDir: string, fn: () => T, waitMs = 5000): 
   const lock = join(chainDir, "prune.lock");
   const until = Date.now() + waitMs;
   for (;;) {
-    let fd: number;
-    try { fd = openSync(lock, "wx"); }
-    catch (e) {
+    // Publicação atômica: o pid é gravado num arquivo temporário e ligado (link) como trava; nunca há trava vazia.
+    const tmp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    let got = false;
+    try {
+      writeFileSync(tmp, String(process.pid));
+      linkSync(tmp, lock);
+      got = true;
+    } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; // diretório sumiu
-      try {
-        const holder = Number(readFileSync(lock, "utf8"));
-        if (holder && !isAlive(holder)) { rmSync(lock, { force: true }); continue; }
-      } catch { /* trava sendo criada: espera */ }
-      if (Date.now() > until) return null;
-      sleepMs(50);
-      continue;
+    } finally { rmSync(tmp, { force: true }); }
+    if (got) {
+      try { return fn(); } finally { rmSync(lock, { force: true }); }
     }
-    try { writeFileSync(lock, String(process.pid)); return fn(); }
-    finally { closeSync(fd); rmSync(lock, { force: true }); }
+    try {
+      const holder = Number(readFileSync(lock, "utf8"));
+      if (!holder || !isAlive(holder)) { rmSync(lock, { force: true }); continue; }
+    } catch { continue; /* trava sumiu entre as chamadas */ }
+    if (Date.now() > until) return null;
+    sleepMs(50);
   }
 }
 

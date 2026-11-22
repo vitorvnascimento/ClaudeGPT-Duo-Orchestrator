@@ -1,7 +1,7 @@
 // Comandos de controle determinísticos: cancelamento, integração de worktree, decisões e detecção de interrupção.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { removeChainStateSafe } from "../state/gemini-state.js";
+import { chainStatePath, removeChainStateSafe } from "../state/gemini-state.js";
 import { isPidAlive, killPidTree } from "../adapters/process.js";
 import { loadConfig } from "../config.js";
 import { captureState, git, hashPath, headCommit } from "../git.js";
@@ -94,8 +94,13 @@ export function applyTask(projectRoot: string, taskId: string, env: NodeJS.Proce
 
 /** A conversa nativa do gemini só serve para retomar; depois de aplicada ou decidida, o HOME privado é apagado. */
 function dropGeminiState(projectRoot: string, taskId: string, env: NodeJS.ProcessEnv): void {
-  const task = new Store(projectRoot).findTask(taskId);
-  if (task?.geminiStateDir && task.geminiChainId) removeChainStateSafe(task.geminiStateDir, projectRoot, task.geminiChainId, env);
+  const store = new Store(projectRoot);
+  const task = store.findTask(taskId);
+  if (!task || task.executor !== "gemini") return;
+  // Id da cadeia vem do registro da cadeia (não de campos livres da task); o caminho é sempre recalculado.
+  const chain = store.loadChain(task.runId, task.selection?.chainId ?? task.taskId);
+  if (!chain) return;
+  try { removeChainStateSafe(chainStatePath(projectRoot, chain.chainId, env), projectRoot, chain.chainId, env); } catch { /* id inválido: não apaga */ }
 }
 
 function applyAdmitted(projectRoot: string, taskId: string): { ok: boolean; message: string } {
@@ -147,7 +152,7 @@ export function acceptTask(projectRoot: string, taskId: string, accepted: boolea
   if (accepted && task.state !== "succeeded") return { ok: false, message: "só tasks succeeded podem ser aceitas; registre --reject com a justificativa" };
   task.accepted = { at: new Date().toISOString(), accepted, note };
   store.saveTask(task);
-  if (task.geminiStateDir && task.geminiChainId) removeChainStateSafe(task.geminiStateDir, projectRoot, task.geminiChainId, env);
+  dropGeminiState(projectRoot, taskId, env);
   const run = store.loadRun(task.runId);
   if (run) {
     store.updateRun(run.runId, (fresh) => { fresh.decisions.push({ at: task.accepted!.at, taskId, kind: accepted ? "accepted" : "rejected", text: note || (accepted ? "aceito" : "rejeitado") }); });

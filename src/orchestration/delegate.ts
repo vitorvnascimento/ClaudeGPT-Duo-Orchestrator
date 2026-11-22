@@ -495,7 +495,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         if (!chosen && autoUnavailable && task.invocations === 0) {
           const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
           const picked = pickAlternate(alternateProviders(task.executor, eligibility, { sameFirst: false }), false,
-            (p) => { const a = selectFor(p); return a && !(req.brain === p && req.brainModel && sameBaseModel(catalog, p, a.model, req.brainModel)) ? a : null; },
+            (p) => { const a = selectFor(p); return a && !(req.brain === p && (!req.brainModel || sameBaseModel(catalog, p, a.model, req.brainModel))) ? a : null; },
             (p, model) => candidates.find((e) => e.executor === p && e.model === model)?.score ?? Number.NEGATIVE_INFINITY);
           const other = picked?.executor;
           const alt = picked?.selected ?? null;
@@ -633,11 +633,15 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       }
       store.saveTask(task);
       let out: DelegateOutcome;
+      const cleanups: (() => void)[] = [];
       try {
         const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
         const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.gemini ? { gemini: opts.gemini } : {}) });
-      } finally { lock.release(); }
+        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.gemini ? { gemini: opts.gemini } : {}), cleanups });
+      } finally {
+        for (const fn of cleanups) { try { fn(); } catch { /* liberação nunca impede o resultado */ } }
+        lock.release();
+      }
       if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
       if (!chainPolicy(store.loadChain(run.runId, rootId)!, { maxAttempts: cfg.routing.adaptive.maxAttempts }).canRetry) {
         task.limitations.push(`sem nova tentativa: routing.adaptive.maxAttempts=${cfg.routing.adaptive.maxAttempts}`);
@@ -663,9 +667,14 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
         const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
         const providers = alternateProviders(task.executor, eligibility, { sameFirst: Boolean(capacity || exhausted?.affectedModels) });
-        const next = pickAlternate(providers, Boolean(capacity || exhausted?.affectedModels),
-          (executor) => selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false }),
-          (executor, model) => evals.find((e) => e.executor === executor && e.model === model)?.score ?? Number.NEGATIVE_INFINITY);
+        const selectAt = (executor: Provider) => selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
+        const scoreOf = (executor: Provider, model: string) => evals.find((e) => e.executor === executor && e.model === model)?.score ?? Number.NEGATIVE_INFINITY;
+        const sameFirst = Boolean(capacity || exhausted?.affectedModels);
+        // Independência do cérebro antes do placar: um candidato independente vence o próprio modelo do cérebro.
+        // Se só sobrar o do cérebro, a escolha segue e o portão de independência bloqueia com "faça no cérebro".
+        const next = pickAlternate(providers, sameFirst,
+          (executor) => { const s = selectAt(executor); return s && !(req.brain === executor && (!req.brainModel || sameBaseModel(catalog, executor, s.model, req.brainModel))) ? s : null; },
+          scoreOf) ?? pickAlternate(providers, sameFirst, selectAt, scoreOf);
         if (!next) {
           task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
           store.saveTask(task);
@@ -743,6 +752,8 @@ type ExecCtx = {
   codexHome: string;
   signal?: AbortSignal;
   gemini?: GeminiDelegateOptions;
+  /** Liberações registradas pela execução (posse do estado do gemini, pasta da tentativa); a chamadora sempre roda. */
+  cleanups?: (() => void)[];
 };
 
 async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
@@ -807,6 +818,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     task.geminiStateDir = chainDir;
     task.geminiChainId = ctx.chainId;
     releaseClaim = claimChainState(chainDir);
+    ctx.cleanups?.push(releaseClaim);
     sweepStaleAttempts(chainDir);
     const { home } = createPrivateHome(chainDir, env);
     const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
@@ -814,6 +826,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!t.ok) return block(`alvos do gemini: ${t.reason}`);
     for (const target of t.targets) for (const d of target.missingAncestors) mkdirSync(d, { recursive: true });
     const attempt = attemptTmpDir(chainDir);
+    ctx.cleanups?.push(() => attempt.cleanup());
     const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
     let profilePath: string | null = null;
     if (ctx.gemini?.sandbox !== false) {

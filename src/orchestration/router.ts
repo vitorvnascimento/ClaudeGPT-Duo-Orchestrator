@@ -209,6 +209,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
     }
     const parent = geminiParentEnvProblem(env);
     if (parent) gReasons.push(parent);
+    if (cfg.billing.acknowledgeUnverifiableExtraUsage.gemini !== true) gReasons.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
     const blocked = quotaBlock(quotaStates(store).gemini);
     if (blocked) gReasons.push(blocked);
   }

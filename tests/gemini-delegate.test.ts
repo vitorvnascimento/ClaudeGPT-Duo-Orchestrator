@@ -154,3 +154,14 @@ describe("delegação ao gemini", () => {
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
   });
 });
+
+describe("posse do estado do gemini", () => {
+  it("an early exit (login refused) releases the in-use claim", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_AUTH: "apikey" });
+    assert.equal(out.summary.state, "blocked");
+    const dir = task(s, out.summary.taskId).geminiStateDir as string;
+    const { readdirSync } = await import("node:fs");
+    assert.deepEqual(readdirSync(dir).filter((n) => n.startsWith("inuse-")), []);
+  });
+});

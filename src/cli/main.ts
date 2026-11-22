@@ -120,12 +120,14 @@ function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
   const tasks = store.listRuns().flatMap((r) => store.listTasks(r))
     .filter((t) => (t.selection?.chainRoot ?? t.selection?.chainId ?? t.taskId) === chainId);
   if (!tasks.length) return "orphan";
-  const latest = [...tasks].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0]!;
-  const owner = store.loadChain(latest.runId, chainId)?.owner;
-  if ((owner && isPidAlive(owner.pid)) || [latest.pids.bridge, latest.pids.child].some((p) => p && isPidAlive(p))) return "active";
+  const chain = store.loadChain(tasks[0]!.runId, chainId);
+  if (!chain) return "orphan";
+  const latest = tasks.find((t) => t.taskId === chain.latestTaskId) ?? null;
+  if ((chain.owner && isPidAlive(chain.owner.pid)) || [latest?.pids.bridge, latest?.pids.child].some((p) => p && isPidAlive(p))) return "active";
   if (tasks.some((t) => t.applied || t.accepted)) return "terminal";
-  // running/approved com ponte e executor mortos: abandonada no meio, retomável (e removível com --older-than).
-  return ["blocked", "running", "approved"].includes(latest.state) ? "resumable" : "terminal";
+  // Estado persistido da cadeia: blocked e running interrompido (inclui tentativa planned) são retomáveis.
+  if (chain.status === "blocked" || chain.status === "running" || latest?.state === "planned") return "resumable";
+  return "terminal";
 }
 
 function brainProvider(v: string | undefined, flag: string): BrainProvider {

@@ -179,3 +179,22 @@ describe("HOME privado idempotente", () => {
     assert.doesNotThrow(() => createPrivateHome(dir, env));
   });
 });
+
+describe("trava e caminhos da cadeia", () => {
+  it("invalid chain ids are refused and never resolve outside the project dir", async () => {
+    const { chainStatePath, removeChainStateSafe } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    assert.throws(() => chainStatePath(project, "../x", env));
+    assert.throws(() => chainStatePath(project, "a/b", env));
+    assert.equal(removeChainStateSafe(tmp("duo-gs-victim-"), project, "../..", env), false);
+  });
+  it("an abandoned empty prune.lock is recovered", async () => {
+    const { claimChainState } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
+    writeFileSync(join(dir, "prune.lock"), "");
+    const release = claimChainState(dir);
+    release();
+  });
+});

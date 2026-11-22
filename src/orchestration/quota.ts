@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ModelInfo } from "../adapters/catalog.js";
 import type { ParsedOutcome } from "../adapters/types.js";
-import type { Provider } from "../config.js";
+import { EXECUTORS, type Provider } from "../config.js";
 import { readJson, type Store, updateJsonLocked } from "../state/store.js";
 
 export type QuotaState = {
@@ -25,7 +25,7 @@ export function quotaStatus(used: number | null, warn: number): QuotaState["stat
 export function quotaStates(store: Store, now = Date.now()): Partial<Record<Provider, QuotaState>> {
   const saved = readJson<Partial<Record<Provider, QuotaState>>>(quotaStatePath(store)) ?? {};
   const states: Partial<Record<Provider, QuotaState>> = {};
-  for (const p of ["claude", "codex"] as const) {
+  for (const p of EXECUTORS) {
     const s = saved[p];
     if (!s) continue;
     const expired = s.resetsAt ? Date.parse(s.resetsAt) <= now : now - Date.parse(s.observedAt) > TTL;

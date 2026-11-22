@@ -36,7 +36,10 @@ describe("decideToolCall", () => {
   it("allows reads inside the worktree and denies reads outside", () => {
     assert.equal(decideToolCall(call("read_file", { Path: "/WT/src/app.ts" }), allow, canon).decision, "allow");
     assert.equal(decideToolCall(call("list_dir", { DirectoryPath: "/WT" }), allow, canon).decision, "allow");
-    assert.equal(decideToolCall(call("grep_search", { Query: "x" }), allow, canon).decision, "allow");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), allow, canon).decision, "allow");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x" }), allow, canon).decision, "deny");
+    assert.equal(decideToolCall(call("read_file", { Path: "/WT/.env" }), allow, canon).decision, "deny");
+    assert.equal(decideToolCall(call("read_file", { Path: "/WT/docs/a.key" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("view_file", { AbsolutePath: "/Users/x/.ssh/id_rsa" }), allow, canon).decision, "deny");
   });
   it("denies every non-file tool seen in the fixtures and unknown tools", () => {

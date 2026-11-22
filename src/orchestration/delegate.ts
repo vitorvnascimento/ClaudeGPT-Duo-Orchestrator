@@ -13,11 +13,11 @@ import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
 import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy } from "../adapters/gemini.js";
-import { alternateProviders } from "./alternates.js";
+import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { attemptTmpDir, chainStateDir, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
+import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
@@ -494,9 +494,11 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         // equivalente livre, usa o outro (mesma regra do fallback de cota: nível >= minTier, esforço >= minEffort).
         if (!chosen && autoUnavailable && task.invocations === 0) {
           const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
-          const other = alternateProviders(task.executor, eligibility, { sameFirst: false })
-            .find((p) => { const a = selectFor(p); return a && !(req.brain === p && req.brainModel && sameBaseModel(catalog, p, a.model, req.brainModel)); });
-          const alt = other ? selectFor(other) : null;
+          const picked = pickAlternate(alternateProviders(task.executor, eligibility, { sameFirst: false }), false,
+            (p) => { const a = selectFor(p); return a && !(req.brain === p && req.brainModel && sameBaseModel(catalog, p, a.model, req.brainModel)) ? a : null; },
+            (p, model) => candidates.find((e) => e.executor === p && e.model === model)?.score ?? Number.NEGATIVE_INFINITY);
+          const other = picked?.executor;
+          const alt = picked?.selected ?? null;
           if (other && alt) {
             task.executor = other;
             // Sessão nativa pertence ao cliente anterior: o novo fornecedor começa uma sessão própria.
@@ -661,11 +663,9 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         // Capacidade e cota de modelos específicos: primeiro outro modelo do mesmo fornecedor, depois o outro fornecedor.
         const eligibility = { kind: task.kind, fixedIsolation, cfg, platform: opts.gemini?.platform ?? process.platform, ...(opts.gemini?.verified ? { verified: opts.gemini.verified } : {}) };
         const providers = alternateProviders(task.executor, eligibility, { sameFirst: Boolean(capacity || exhausted?.affectedModels) });
-        let next: { executor: Provider; selected: ModelSelection } | null = null;
-        for (const executor of providers) {
-          const selected = selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false });
-          if (selected) { next = { executor, selected }; break; }
-        }
+        const next = pickAlternate(providers, Boolean(capacity || exhausted?.affectedModels),
+          (executor) => selectModel(catalog, cfg, executor, currentTier, { candidates: evals, floor: currentTier, needs: req.needs, minimumEffort, allowDowngrade: false }),
+          (executor, model) => evals.find((e) => e.executor === executor && e.model === model)?.score ?? Number.NEGATIVE_INFINITY);
         if (!next) {
           task.outcome = `${capacity ? `${task.executor} sem capacidade para ${task.model.requested ?? "o modelo padrão"} até ${out.capacityUntil}` : `limite/cota do ${task.executor} esgotada até ${exhausted?.resetsAt ?? "reset desconhecido"}`}; nenhum modelo equivalente de nível ${currentTier} ou superior${minimumEffort ? ` com esforço >= ${minimumEffort}` : ""} estava disponível. Retome com duo delegate --resume ${task.taskId}.`;
           store.saveTask(task);
@@ -800,10 +800,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     execCwd = realpathSync(wt);
   }
 
+  let releaseClaim: (() => void) | null = null;
   let gemPrep: { home: string; attempt: ReturnType<typeof attemptTmpDir>; logPath: string; profilePath: string | null } | null = null;
   if (task.executor === "gemini") {
     const chainDir = chainStateDir(projectRoot, ctx.chainId, env);
     task.geminiStateDir = chainDir;
+    task.geminiChainId = ctx.chainId;
+    releaseClaim = claimChainState(chainDir);
     sweepStaleAttempts(chainDir);
     const { home } = createPrivateHome(chainDir, env);
     const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
@@ -998,6 +1001,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;
   const outcome = parser.finish(lastMessage, result.stderrTail);
   gemPrep?.attempt.cleanup();
+  releaseClaim?.();
   const lockIntact = lock.intact();
   const cancelledExternally = store.loadRun(run.runId)?.cancelled === true;
 

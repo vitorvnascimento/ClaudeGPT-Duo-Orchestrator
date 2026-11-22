@@ -15,8 +15,12 @@ import { confirmFloor, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { executorEligible } from "./alternates.js";
+import { isVerifiedAgy } from "../adapters/gemini.js";
+import { parseVersion } from "../adapters/capabilities.js";
+import { runQuick } from "../adapters/process.js";
+import { geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { listFiles } from "../git.js";
-import { authBlockReason, checkAuth, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
+import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
 import type { Store } from "../state/store.js";
 import type { DelegationRequest, Selection, Task, TaskKind } from "../state/types.js";
@@ -193,7 +197,23 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
     const res = { available, reasons };
     cache.set(executor, res);
   }
-  return (executor) => cache.get(executor)!;
+  // Gemini: elegível (ligado, macOS, versão verificada) e binário com versão verificada; login fica para o preflight da delegação.
+  const gReasons: string[] = [];
+  if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform: process.platform })) gReasons.push("gemini desligado, fora do macOS ou sem versão verificada do agy");
+  else {
+    const resolved = resolveExecutable("agy", cfg.executors.gemini.command, env);
+    if (!resolved.ok) gReasons.push(resolved.reason);
+    else {
+      const v = parseVersion(runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env }).stdout);
+      if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${v ?? "?"} não verificado`);
+    }
+    const parent = geminiParentEnvProblem(env);
+    if (parent) gReasons.push(parent);
+    const blocked = quotaBlock(quotaStates(store).gemini);
+    if (blocked) gReasons.push(blocked);
+  }
+  cache.set("gemini", { available: gReasons.length === 0, reasons: gReasons });
+  return (executor) => cache.get(executor) ?? { available: false, reasons: [`${executor}: sem verificação de disponibilidade`] };
 }
 
 const key = (p: Provider, m: string | null) => `${p}:${m ?? "(padrão)"}`;

@@ -55,7 +55,14 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
     if (typeof name !== "string") return deny("entrada sem toolCall.name");
     const paths = pathArgs(call?.args, allow.worktreeRoot).map((p) => canon(p));
     if (READ_TOOLS.has(name)) {
-      for (const p of paths) if (relInside(allow.worktreeRoot, p) === null) return deny(`leitura fora da worktree: ${p}`);
+      if (!paths.length) return deny(`${name} sem caminho`);
+      for (const p of paths) {
+        const rel = relInside(allow.worktreeRoot, p);
+        if (rel === null) return deny(`leitura fora da worktree: ${p}`);
+        const denied = rel !== "." && isDenied(rel, allow.deny);
+        if (denied) return deny(`leitura negada (${denied}): ${rel}`);
+      }
+      // shortcut: busca/listagem num diretório ainda alcança arquivos negados dentro dele (commitados); limitação documentada.
       return { decision: "allow", reason: "duo-gate: leitura na worktree" };
     }
     if (!WRITE_TOOLS.has(name)) return deny(`ferramenta não permitida: ${name}`);

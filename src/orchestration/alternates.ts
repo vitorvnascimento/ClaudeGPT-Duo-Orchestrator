@@ -2,7 +2,7 @@
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { GEMINI_VERIFIED, type VerifiedAgy } from "../adapters/gemini.js";
 import type { Isolation } from "../state/slots.js";
-import { isWriteKind, type TaskKind } from "../state/types.js";
+import type { TaskKind } from "../state/types.js";
 
 export type EligibilityCtx = {
   kind: TaskKind;
@@ -17,17 +17,38 @@ export function executorEligible(p: Provider, ctx: EligibilityCtx): boolean {
   if (p !== "gemini") return true;
   if (!ctx.cfg.executors.gemini.enabled || ctx.platform !== "darwin") return false;
   if (!(ctx.verified ?? GEMINI_VERIFIED).some((v) => v.platform === ctx.platform)) return false;
-  // Escrita do gemini só roda em worktree: uma cadeia fixada in-place não pode migrar para ele.
-  if (isWriteKind(ctx.kind) && ctx.fixedIsolation === "in-place") return false;
+  // O gate do gemini mora numa worktree descartável: nenhuma cadeia fixada in-place pode migrar para ele.
+  if (ctx.fixedIsolation === "in-place") return false;
   return true;
 }
 
-/**
- * Ordem: a própria conta primeiro quando o limite é de um modelo só (sameFirst), depois as outras na ordem
- * claude, codex, gemini. shortcut: ordem fixa em vez do placar do roteador; o gemini fica por último por ser a conta
- * menos provada. Trocar por placar quando houver histórico suficiente do gemini.
- */
+/** Ordem base: a própria conta primeiro quando o limite é de um modelo só (sameFirst), depois claude, codex, gemini. */
 export function alternateProviders(current: Provider, ctx: EligibilityCtx, opts: { sameFirst: boolean }): Provider[] {
   const others = EXECUTORS.filter((p) => p !== current && executorEligible(p, ctx));
   return opts.sameFirst ? [current, ...others] : others;
+}
+
+/**
+ * Escolhe a alternativa: a própria conta primeiro (sameFirst) se tiver modelo; senão, entre as demais, o modelo com
+ * maior placar do roteador; empate fica com a ordem base (claude, codex, gemini).
+ */
+export function pickAlternate<S extends { model: string }>(
+  providers: readonly Provider[],
+  sameFirst: boolean,
+  select: (p: Provider) => S | null,
+  score: (p: Provider, model: string) => number,
+): { executor: Provider; selected: S } | null {
+  const [first, ...rest] = providers;
+  if (sameFirst && first) {
+    const s = select(first);
+    if (s) return { executor: first, selected: s };
+  }
+  let best: { executor: Provider; selected: S; score: number } | null = null;
+  for (const p of sameFirst ? rest : providers) {
+    const s = select(p);
+    if (!s) continue;
+    const sc = score(p, s.model);
+    if (!best || sc > best.score) best = { executor: p, selected: s, score: sc };
+  }
+  return best ? { executor: best.executor, selected: best.selected } : null;
 }

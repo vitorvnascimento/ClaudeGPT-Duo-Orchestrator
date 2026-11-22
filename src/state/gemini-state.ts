@@ -2,7 +2,7 @@
 // O agy grava conversas, logs e cache ali (verificado: o ~/.gemini do usuário fica intacto). Só
 // Library/Keychains aponta para o real, que é onde está o login da assinatura.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -31,7 +31,10 @@ export function createPrivateHome(chainDir: string, env: NodeJS.ProcessEnv = pro
   const home = join(chainDir, "home");
   mkdirSync(join(home, "Library"), { recursive: true, mode: 0o700 });
   const kc = join(home, "Library", "Keychains");
-  if (!existsSync(kc)) symlinkSync(join(realHome(env), "Library", "Keychains"), kc);
+  // lstat: um link para Keychains inexistente é "quebrado" para existsSync, mas já existe.
+  let linked = true;
+  try { lstatSync(kc); } catch { linked = false; }
+  if (!linked) symlinkSync(join(realHome(env), "Library", "Keychains"), kc);
   const cfgDir = join(home, ".gemini", "config");
   mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
   const cfg = join(cfgDir, "config.json");
@@ -106,25 +109,69 @@ export function removeChainState(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
 }
 
+/** Caminho esperado do estado de uma cadeia (sem criar nada). */
+export function chainStatePath(projectRoot: string, chainId: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(geminiStateRoot(env), createHash("sha256").update(projectRoot).digest("hex").slice(0, 12), chainId);
+}
+
 /**
- * Remoção a partir de um caminho guardado (ex.: task.geminiStateDir): só apaga se for exatamente
- * .../duo/gemini-state/<sha do projeto>/<cadeia> e se o owner.json apontar para este projeto e esta cadeia.
+ * Remoção a partir de um caminho guardado (task.geminiStateDir): só apaga se o caminho resolvido for exatamente o
+ * esperado para este projeto e esta cadeia dentro da raiz de estado, com owner.json coerente e sem uso ativo.
  */
-export function removeChainStateSafe(dir: string, projectRoot: string): boolean {
+export function removeChainStateSafe(dir: string, projectRoot: string, chainId: string, env: NodeJS.ProcessEnv = process.env): boolean {
   try {
-    const real = realpathSync(dir);
-    const chain = basename(real);
-    const hash = basename(dirname(real));
-    const stateDir = dirname(dirname(real));
-    if (basename(stateDir) !== "gemini-state" || basename(dirname(stateDir)) !== "duo") return false;
-    if (hash !== createHash("sha256").update(projectRoot).digest("hex").slice(0, 12)) return false;
-    const owner = JSON.parse(readFileSync(join(real, "owner.json"), "utf8")) as { projectRoot?: unknown; chainId?: unknown };
-    if (owner.projectRoot !== projectRoot || owner.chainId !== chain) return false;
-    rmSync(real, { recursive: true, force: true });
-    return true;
+    const expected = chainStatePath(projectRoot, chainId, env);
+    if (realpathSync(dir) !== realpathSync(expected)) return false;
+    const owner = JSON.parse(readFileSync(join(expected, "owner.json"), "utf8")) as { projectRoot?: unknown; chainId?: unknown };
+    if (owner.projectRoot !== projectRoot || owner.chainId !== chainId) return false;
+    return withChainLock(expected, () => {
+      if (anyAttemptAlive(expected) || anyClaimAlive(expected)) return false;
+      rmSync(expected, { recursive: true, force: true });
+      return true;
+    }) ?? false;
   } catch {
     return false;
   }
+}
+
+const sleepMs = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** Trava curta por cadeia (prune.lock), compartilhada por quem usa o estado e pela limpeza. null = não obtida. */
+export function withChainLock<T>(chainDir: string, fn: () => T, waitMs = 5000): T | null {
+  const lock = join(chainDir, "prune.lock");
+  const until = Date.now() + waitMs;
+  for (;;) {
+    let fd: number;
+    try { fd = openSync(lock, "wx"); }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; // diretório sumiu
+      try {
+        const holder = Number(readFileSync(lock, "utf8"));
+        if (holder && !isAlive(holder)) { rmSync(lock, { force: true }); continue; }
+      } catch { /* trava sendo criada: espera */ }
+      if (Date.now() > until) return null;
+      sleepMs(50);
+      continue;
+    }
+    try { writeFileSync(lock, String(process.pid)); return fn(); }
+    finally { closeSync(fd); rmSync(lock, { force: true }); }
+  }
+}
+
+/** Marca o estado da cadeia como em uso (delegação ou descoberta). A limpeza nunca apaga com marca viva. */
+export function claimChainState(chainDir: string): () => void {
+  const marker = join(chainDir, `inuse-${process.pid}-${randomBytes(4).toString("hex")}.json`);
+  const ok = withChainLock(chainDir, () => { writeFileSync(marker, JSON.stringify({ pid: process.pid })); return true; });
+  if (!ok) throw new Error(`estado do gemini ocupado pela limpeza: ${chainDir}`);
+  return () => rmSync(marker, { force: true });
+}
+
+function anyClaimAlive(chainDir: string): boolean {
+  if (!existsSync(chainDir)) return false;
+  return readdirSync(chainDir).some((n) => {
+    if (!n.startsWith("inuse-")) return false;
+    try { return isAlive((JSON.parse(readFileSync(join(chainDir, n), "utf8")) as { pid?: unknown }).pid); } catch { return false; }
+  });
 }
 
 /**
@@ -137,7 +184,7 @@ export function pruneGeminiStates(
 ): string[] {
   const removed: string[] = [];
   const effective = (projectRoot: string, chainId: string, dir: string): ChainClass => {
-    if (anyAttemptAlive(dir)) return "active";
+    if (anyAttemptAlive(dir) || anyClaimAlive(dir)) return "active";
     if (!existsSync(join(projectRoot, ".duo"))) return "orphan";
     return opts.classify(projectRoot, chainId);
   };
@@ -145,17 +192,12 @@ export function pruneGeminiStates(
     cls === "terminal" || cls === "orphan" || (cls === "resumable" && opts.olderThanDays !== undefined && Date.now() - mtimeMs >= opts.olderThanDays * 86400_000);
   for (const s of listGeminiStates(env)) {
     if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) continue;
-    const lock = join(s.dir, "prune.lock");
-    let fd: number;
-    try { fd = openSync(lock, "wx"); } catch { continue; }
-    try {
-      if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) continue;
+    const gone = withChainLock(s.dir, () => {
+      if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) return false;
       removeChainState(s.dir);
-      removed.push(s.dir);
-    } finally {
-      closeSync(fd);
-      rmSync(lock, { force: true });
-    }
+      return true;
+    }, 0);
+    if (gone) removed.push(s.dir);
   }
   return removed;
 }

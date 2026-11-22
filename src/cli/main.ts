@@ -120,10 +120,12 @@ function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
   const tasks = store.listRuns().flatMap((r) => store.listTasks(r))
     .filter((t) => (t.selection?.chainRoot ?? t.selection?.chainId ?? t.taskId) === chainId);
   if (!tasks.length) return "orphan";
-  if (tasks.some((t) => t.pids.child && isPidAlive(t.pids.child))) return "active";
-  if (tasks.some((t) => t.state === "running" || t.state === "approved")) return "active";
+  const latest = [...tasks].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0]!;
+  const owner = store.loadChain(latest.runId, chainId)?.owner;
+  if ((owner && isPidAlive(owner.pid)) || [latest.pids.bridge, latest.pids.child].some((p) => p && isPidAlive(p))) return "active";
   if (tasks.some((t) => t.applied || t.accepted)) return "terminal";
-  return tasks.some((t) => t.state === "blocked") ? "resumable" : "terminal";
+  // running/approved com ponte e executor mortos: abandonada no meio, retomável (e removível com --older-than).
+  return ["blocked", "running", "approved"].includes(latest.state) ? "resumable" : "terminal";
 }
 
 function brainProvider(v: string | undefined, flag: string): BrainProvider {
@@ -365,6 +367,7 @@ async function main(argv: string[]): Promise<number> {
     case "gemini-state": {
       if (args._[1] !== "prune") throw new Error("uso: duo gemini-state prune [--older-than <dias>]");
       const days = str(args, "older-than");
+      if (days !== undefined && days.trim() === "") throw new Error("--older-than precisa de um número de dias (0 apaga já)");
       const olderThanDays = days === undefined ? undefined : Number(days);
       if (olderThanDays !== undefined && (!Number.isFinite(olderThanDays) || olderThanDays < 0)) throw new Error("--older-than deve ser um número de dias >= 0");
       const removed = pruneGeminiStates({ ...(olderThanDays !== undefined ? { olderThanDays } : {}), classify: classifyGeminiChain });

@@ -1,12 +1,13 @@
 // Roteador, doctor e limpeza de estado com o gemini presente.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { parseAgyModels, type Catalog } from "../src/adapters/catalog.js";
 import { loadConfig } from "../src/config.js";
 import { packageRoot } from "../src/paths.js";
-import { recommend, type AvailabilityFn } from "../src/orchestration/router.js";
+import { liveAvailability, recommend, type AvailabilityFn } from "../src/orchestration/router.js";
+import { quotaStates, saveQuota } from "../src/orchestration/quota.js";
 import { Store } from "../src/state/store.js";
 import { adaptiveCatalog } from "./adaptive-catalog.js";
 import { CLI, makeSandbox, type Sandbox } from "./helpers.js";
@@ -32,19 +33,48 @@ describe("roteador com gemini", () => {
 });
 
 describe("CLI com gemini", () => {
-  it("doctor shows a gemini section and never runs agy in headless mode", () => {
+  // O agy falso é um .mjs com shebang: no Windows não roda como executável (e o gemini é bloqueado lá de qualquer forma).
+  it("doctor shows a gemini section (json and text) and never runs agy in headless mode", { skip: process.platform === "win32" }, () => {
     sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });
-    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}:${sb.env.PATH ?? ""}` };
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}` };
+    const text = spawnSync(process.execPath, [CLI, "doctor"], { cwd: sb.root, env, encoding: "utf8" });
+    assert.doesNotMatch(text.stderr, /Cannot read properties/);
+    assert.match(text.stdout, /\[gemini\][\s\S]*verificada: não/);
+    assert.match(text.stdout, /login: subscription/);
     const r = spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd: sb.root, env, encoding: "utf8" });
     const report = JSON.parse(r.stdout) as { providers: Record<string, { installed?: boolean; version?: string; sandbox?: { ok: boolean } }> };
     assert.equal(report.providers.gemini?.version, "1.5.3", r.stdout.slice(0, 400));
     assert.ok("sandbox" in (report.providers.gemini ?? {}));
     assert.equal(sb.log().filter((e) => e.cmd === "agy-run").length, 0);
   });
+  it("gemini-state prune rejects an empty --older-than", () => {
+    sb = makeSandbox();
+    const r = spawnSync(process.execPath, [CLI, "gemini-state", "prune", "--older-than", " "], { cwd: sb.root, env: sb.env, encoding: "utf8" });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout + r.stderr, /older-than/);
+  });
+
   it("gemini-state prune runs and reports what it removed", () => {
     sb = makeSandbox();
     const r = spawnSync(process.execPath, [CLI, "gemini-state", "prune"], { cwd: sb.root, env: sb.env, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /removid/);
+  });
+});
+
+describe("disponibilidade e cota do gemini", () => {
+  it("live availability returns a gemini entry (unverified → unavailable) without breaking the others", async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });
+    const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), sb.env, sb.authPaths);
+    const g = avail("gemini");
+    assert.equal(g.available, false);
+    assert.ok(g.reasons.length > 0);
+    assert.equal(typeof avail("codex").available, "boolean");
+  });
+  it("a saved gemini exhaustion shows up in quotaStates", () => {
+    sb = makeSandbox();
+    const store = new Store(sb.root);
+    saveQuota(store, "gemini", { status: "exhausted", usedPercent: 100, resetsAt: new Date(Date.now() + 3600_000).toISOString(), observedAt: new Date().toISOString(), source: "task-error", affectedModels: null });
+    assert.equal(quotaStates(store).gemini?.status, "exhausted");
   });
 });

@@ -140,18 +140,42 @@ describe("prune", () => {
 });
 
 describe("remoção validada", () => {
-  it("removeChainStateSafe refuses a path outside the state root or with another owner", async () => {
+  it("removeChainStateSafe deletes only the expected chain path of this project", async () => {
     const { removeChainStateSafe } = await import("../src/state/gemini-state.js");
     const env = fakeEnv();
     const project = tmp("duo-gs-proj-");
     const dir = chainStateDir(project, "c1", env);
+    const other = chainStateDir(project, "c2", env);
     const victim = tmp("duo-gs-victim-");
-    assert.equal(removeChainStateSafe(victim, project), false);
+    assert.equal(removeChainStateSafe(victim, project, "c1", env), false);
     assert.ok(existsSync(victim));
-    assert.equal(removeChainStateSafe(dir, tmp("duo-gs-other-")), false);
-    assert.ok(existsSync(dir));
-    assert.equal(removeChainStateSafe(join(dir, "..", "..", ".."), project), false);
-    assert.equal(removeChainStateSafe(dir, project), true);
+    assert.equal(removeChainStateSafe(other, project, "c1", env), false, "outra cadeia do mesmo projeto");
+    assert.ok(existsSync(other));
+    assert.equal(removeChainStateSafe(dir, tmp("duo-gs-other-"), "c1", env), false);
+    assert.equal(removeChainStateSafe(dir, project, "c1", env), true);
     assert.equal(existsSync(dir), false);
+  });
+
+  it("a live claim keeps the state from prune and from safe removal", async () => {
+    const { claimChainState, removeChainStateSafe } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    mkdirSync(join(project, ".duo"));
+    const dir = chainStateDir(project, "c1", env);
+    const release = claimChainState(dir);
+    assert.deepEqual(pruneGeminiStates({ classify: () => "terminal" }, env), []);
+    assert.equal(removeChainStateSafe(dir, project, "c1", env), false);
+    release();
+    assert.deepEqual(pruneGeminiStates({ classify: () => "terminal" }, env), [dir]);
+  });
+});
+
+describe("HOME privado idempotente", () => {
+  it("createPrivateHome twice works when the real Keychains does not exist (dangling link)", () => {
+    const home = tmp("duo-gs-nohome-");
+    const env = { HOME: home };
+    const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
+    createPrivateHome(dir, env);
+    assert.doesNotThrow(() => createPrivateHome(dir, env));
   });
 });

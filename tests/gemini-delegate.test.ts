@@ -142,7 +142,7 @@ describe("delegação ao gemini", () => {
     const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 3;\n" }) });
     const t = task(s, out.summary.taskId);
     assert.ok(t.geminiStateDir && existsSync(t.geminiStateDir));
-    const r = applyTask(s.root, t.taskId);
+    const r = applyTask(s.root, t.taskId, s.env);
     assert.ok(r.ok, r.message);
     assert.equal(existsSync(t.geminiStateDir), false);
     assert.equal(s.read("src/app.ts"), "export const app = 3;\n");

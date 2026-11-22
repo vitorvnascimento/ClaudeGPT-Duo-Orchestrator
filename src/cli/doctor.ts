@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
 import { isVerifiedAgy } from "../adapters/gemini.js";
+import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { chainStateDir, createPrivateHome } from "../state/gemini-state.js";
 import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
@@ -131,9 +133,19 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
       if (!verified) blockers.push(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma`);
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
+      const parent = geminiParentEnvProblem(env);
+      if (parent) blockers.push(parent);
+      // Login sem inferência (agy models) no HOME privado de descoberta do projeto; fora de um repo não há onde rodar.
+      let auth: { method: string; detail: string } | null = null;
+      if (root) {
+        const { home } = createPrivateHome(chainStateDir(root, "catalog", env), env);
+        const a = geminiAuthPreflight(resolved, { ...probeEnv, HOME: home }, effectiveCfg, null);
+        auth = { method: a.method, detail: a.detail };
+        if (a.method !== "subscription") blockers.push(`login do agy: ${a.method} (${a.detail})`);
+      }
       ready.gemini = blockers.length === 0;
       providers.gemini = { installed: true, path: resolved.command, source: resolved.source, version: caps.version, capabilities: caps.flags,
-        missingRequired: caps.missingRequired, sandbox, verified, blockers };
+        missingRequired: caps.missingRequired, sandbox, verified, ...(auth ? { auth } : {}), blockers };
     }
   } else providers.gemini = { enabled: false, note: "executors.gemini.enabled=false" };
 
@@ -196,6 +208,16 @@ export function formatDoctor(r: DoctorReport): string {
   lines.push(`projeto: ${String(proj.root ?? "(fora de repositório Git)")} | config: ${String(proj.config)}`);
   for (const [p, info] of Object.entries(r.providers as Record<string, Record<string, unknown>>)) {
     lines.push(`\n[${p}]`);
+    if (p === "gemini") {
+      if (info.enabled === false) { lines.push("  desligado (executors.gemini.enabled=false)"); continue; }
+      if (!info.installed) { lines.push(`  não disponível: ${String(info.reason)}`); continue; }
+      const sb = info.sandbox as { ok: boolean; reason?: string };
+      const auth = info.auth as { method?: string; detail?: string } | undefined;
+      lines.push(`  ${String(info.path)} versão ${String(info.version ?? "?")} | verificada: ${info.verified ? "sim" : "não"} | sandbox-exec: ${sb.ok ? "ok" : `falhou (${sb.reason ?? "?"})`}`);
+      if (auth) lines.push(`  login: ${String(auth.method)} — ${String(auth.detail)}`);
+      for (const b of info.blockers as string[]) lines.push(`  bloqueio: ${b}`);
+      continue;
+    }
     if (!info.installed) {
       lines.push(`  não disponível: ${String(info.reason)}`);
       continue;

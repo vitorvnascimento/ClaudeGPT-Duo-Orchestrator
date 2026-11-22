@@ -23,8 +23,12 @@ function setup(extra: Record<string, unknown> = {}): Sandbox {
 function req(over: Record<string, unknown> = {}) {
   return baseRequest("claude", { executor: "gemini", model: "gemini-4-argon-high", ...over });
 }
+// Plataforma injetada (darwin): os testes offline não dependem do sistema que roda a suíte.
 async function run(s: Sandbox, r: Record<string, unknown>, env: Record<string, string> = {}, gemini: DelegateOptions["gemini"] = { verified: VERIFIED, sandbox: false }) {
-  return delegate({ cwd: s.root, requestPath: s.request(r), env: { ...s.env, ...env }, authPaths: s.authPaths, gemini });
+  return delegate({ cwd: s.root, requestPath: s.request(r), env: { ...s.env, ...env }, authPaths: s.authPaths, gemini: { platform: "darwin", ...gemini } });
+}
+async function resume(s: Sandbox, taskId: string, env: Record<string, string> = {}, gemini: DelegateOptions["gemini"] = { verified: VERIFIED, sandbox: false }) {
+  return delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, ...env }, authPaths: s.authPaths, gemini: { platform: "darwin", ...gemini } });
 }
 const agyRuns = (s: Sandbox) => s.log().filter((e) => e.cmd === "agy-run") as { args: string[]; stdin: string; home: string; tmpdir: string; cwd: string }[];
 const task = (s: Sandbox, id: unknown) => new Store(s.root).findTask(String(id))!;
@@ -95,7 +99,7 @@ describe("delegação ao gemini", () => {
     assert.equal(isVerifiedAgy("1.5.14-rc.1", "darwin"), false);
   });
 
-  it("the default list admits the exact 1.5.14 build and refuses a 1.5.14 build with metadata", { skip: process.platform !== "darwin" }, async () => {
+  it("the default list admits the exact 1.5.14 build and refuses a 1.5.14 build with metadata", async () => {
     const ok = setup();
     const good = await run(ok, req(), { FAKE_AGY_VERSION: "1.5.14", FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, { sandbox: false });
     assert.equal(good.summary.state, "succeeded", JSON.stringify(good.summary));
@@ -111,7 +115,7 @@ describe("delegação ao gemini", () => {
     }
   });
 
-  it("a --version probe that exits nonzero is never verified, even printing 1.5.14", { skip: process.platform !== "darwin" }, async () => {
+  it("a --version probe that exits nonzero is never verified, even printing 1.5.14", async () => {
     const s = setup();
     const out = await run(s, req(), { FAKE_AGY_VERSION: "1.5.14", FAKE_AGY_VERSION_EXIT: "1" }, { sandbox: false });
     assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
@@ -169,6 +173,15 @@ describe("delegação ao gemini", () => {
     assert.equal(task(s, out.summary.taskId).model.reported, "gemini-4-argon-high");
   });
 
+  it("a gemini task blocked before admission is still resumable (born in a worktree)", async () => {
+    const s = setup();
+    const blocked = await run(s, req(), { FAKE_AGY_VERSION: "1.5.2" });
+    assert.equal(blocked.summary.state, "blocked", JSON.stringify(blocked.summary));
+    assert.equal(task(s, blocked.summary.taskId).isolation, "worktree");
+    const out = await resume(s, String(blocked.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+  });
+
   it("chain state is removed after apply", async () => {
     const s = setup();
     const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 3;\n" }) });
@@ -184,6 +197,37 @@ describe("delegação ao gemini", () => {
     const s = setup();
     const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 4;\n" }), FAKE_LOG: "" }, { verified: VERIFIED });
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+  });
+});
+
+describe("limpeza do HOME do gemini por qualquer executor", () => {
+  it("apply of a codex task that closes the chain removes the chain's gemini state", async () => {
+    const { chainStateDir } = await import("../src/state/gemini-state.js");
+    const s = setup();
+    const out = await run(s, baseRequest("claude", { executor: "codex", isolation: "worktree" }), { FAKE_WRITE: JSON.stringify({ "src/app.ts": "export const app = 1;\nexport const nova = 2;\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    const chainId = t.selection?.chainId ?? t.taskId;
+    const dir = chainStateDir(s.root, chainId, s.env);
+    assert.ok(existsSync(dir));
+    const r = applyTask(s.root, t.taskId, s.env);
+    assert.ok(r.ok, r.message);
+    assert.equal(existsSync(dir), false);
+  });
+});
+
+describe("classe da cadeia para o prune", () => {
+  it("an earlier applied attempt does not make a resumed chain terminal", async () => {
+    const { classifyGeminiChain } = await import("../src/orchestration/control.js");
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 3;\n" }) });
+    const store = new Store(s.root);
+    const t = task(s, out.summary.taskId);
+    t.applied = true; store.saveTask(t);
+    const chainId = t.selection?.chainId ?? t.taskId;
+    assert.equal(classifyGeminiChain(s.root, chainId), "terminal");
+    store.updateChain(t.runId, chainId, (c) => { c.latestTaskId = "task-later"; c.status = "blocked"; });
+    assert.equal(classifyGeminiChain(s.root, chainId), "resumable");
   });
 });
 

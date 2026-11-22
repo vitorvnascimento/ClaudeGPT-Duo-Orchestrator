@@ -14,7 +14,7 @@ import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
 import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
-import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
+import { listDeniedFiles, resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
@@ -119,7 +119,8 @@ function newTask(req: DelegationRequest, run: Run, store: Store, cfg: DuoConfig)
     brainModel: req.brainModel ?? null,
     tags: [],
     needs: req.needs ?? [],
-    isolation: req.isolation ?? "in-place",
+    // Gemini só roda em worktree: nasce assim, para que um bloqueio antes da admissão continue retomável.
+    isolation: req.isolation ?? (req.executor === "gemini" ? "worktree" : "in-place"),
     scope: req.scope.allowedPaths,
     constraints: req.constraints ?? [],
     acceptanceCriteria: req.acceptance.criteria,
@@ -835,7 +836,9 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     for (const target of t.targets) for (const d of target.missingAncestors) mkdirSync(d, { recursive: true });
     const attempt = attemptTmpDir(chainDir);
     ctx.cleanups?.push(() => attempt.cleanup());
-    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
+    // Arquivos negados presentes na worktree: a busca recursiva que os alcança é negada (sem a lista, toda busca é negada).
+    const deniedFiles = listDeniedFiles(execCwd, cfg.scope.deny) ?? undefined;
+    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind), ...(deniedFiles ? { deniedFiles } : {}) }, { nodePath: process.execPath });
     let profilePath: string | null = null;
     if (ctx.gemini?.sandbox !== false) {
       const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path });
@@ -887,7 +890,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     env: execEnv,
     ...(gemPrep ? { gemini: { privateHome: gemPrep.home, tmpDir: gemPrep.attempt.path, profilePath: gemPrep.profilePath } } : {}),
     };
-    const gemAdapter = task.executor === "gemini" && ctx.gemini?.verified ? new GeminiAdapter({ verified: ctx.gemini.verified }) : adapter;
+    const gemAdapter = task.executor === "gemini" && (ctx.gemini?.verified || ctx.gemini?.platform)
+      ? new GeminiAdapter({ ...(ctx.gemini.verified ? { verified: ctx.gemini.verified } : {}), ...(ctx.gemini.platform ? { platform: ctx.gemini.platform } : {}) }) : adapter;
     plan = adapter instanceof CodexAdapter ? adapter.plan(input, effectiveCodexConfig) : gemAdapter.plan(input);
   } catch (e) {
     gemPrep?.attempt.cleanup();

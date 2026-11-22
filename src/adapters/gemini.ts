@@ -48,15 +48,17 @@ export function isVerifiedAgy(version: string | null, platform: NodeJS.Platform,
 export class GeminiAdapter implements ExecutorAdapter {
   readonly provider = "gemini" as const;
   private readonly verified: readonly VerifiedAgy[];
-  constructor(opts: { verified?: readonly VerifiedAgy[] } = {}) {
+  readonly platform: NodeJS.Platform;
+  constructor(opts: { verified?: readonly VerifiedAgy[]; platform?: NodeJS.Platform } = {}) {
     this.verified = opts.verified ?? GEMINI_VERIFIED;
+    this.platform = opts.platform ?? process.platform;
   }
 
   plan(input: InvocationInput): InvocationPlan {
     const { caps } = input;
     if (caps.missingRequired.length) throw new Error(`esta versão do agy não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}`);
-    if (!isVerifiedAgy(caps.rawVersion ?? null, process.platform, this.verified)) {
-      throw new Error(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma (${process.platform}); ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar`);
+    if (!isVerifiedAgy(caps.rawVersion ?? null, this.platform, this.verified)) {
+      throw new Error(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma (${this.platform}); ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar`);
     }
     if (!input.gemini) throw new Error("executor gemini sem HOME privado preparado pela ponte");
     if (!input.model) throw new Error("executor gemini exige modelo explícito (id gemini-*)");

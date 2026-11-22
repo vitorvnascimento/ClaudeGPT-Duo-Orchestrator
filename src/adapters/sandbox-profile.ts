@@ -48,13 +48,12 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     `(subpath ${sbplQuote(canonicalPath(p.tmpDir))})`,
     '(literal "/dev/null")', '(literal "/dev/tty")', '(regex #"^/dev/fd/")',
   ];
+  // Sempre, inclusive com alvos só de arquivo: um alvo que caia numa pasta protegida ou negada nunca ganha escrita.
   const denies: string[] = [];
-  if (p.targets.some((t) => t.isDir)) {
-    for (const d of PROTECTED) denies.push(`(subpath ${sbplQuote(join(root, d))})`);
-    for (const g of p.denyGlobs) {
-      denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
-      if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
-    }
+  for (const d of PROTECTED) denies.push(`(regex ${sbplQuote(`^${reEscape(root)}/(.*/)?${ci(reEscape(d))}(/.*)?$`)})`);
+  for (const g of p.denyGlobs) {
+    denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
+    if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
   }
   const profile = [
     "(version 1)",

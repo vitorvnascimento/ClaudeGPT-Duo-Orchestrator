@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
+import { decideToolCall, gateHookScriptPath, listDeniedFiles, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
 
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
@@ -18,7 +18,7 @@ function call(name: string, args: Record<string, unknown>, modelName = "gemini-3
 
 describe("decideToolCall", () => {
   const wt = "/WT";
-  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false };
+  const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "src/ok.ts", isDir: false }, { rel: "docs", isDir: true }], deny: DENY, readOnly: false, deniedFiles: [] };
   const canon = (p: string) => p; // caminhos já canônicos no teste puro
   it("allows only exact targets for writes", () => {
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts", Content: "1" }), allow, canon).decision, "allow");
@@ -28,6 +28,18 @@ describe("decideToolCall", () => {
     for (const p of ["/WT/src/other.ts", "/WT/.agents/hooks.json", "/WT/docs/x.key", "/WT/docs/.env", "/WT/../out.txt", "/elsewhere/a", "/WT/srcx"]) {
       assert.equal(decideToolCall(call("write_file", { Path: p, Content: "x" }), allow, canon).decision, "deny", p);
     }
+  });
+  it("protected dirs are denied in any letter case", () => {
+    const wide: GateAllowlist = { ...allow, write: [{ rel: ".", isDir: true }] };
+    for (const p of ["/WT/.AGENTS/hooks.json", "/WT/.Git/config", "/WT/.DUO/x"]) assert.equal(decideToolCall(call("write_file", { Path: p }), wide, canon).decision, "deny", p);
+  });
+  it("recursive search is denied when it reaches a denied file of the worktree", () => {
+    const withDenied: GateAllowlist = { ...allow, deniedFiles: ["docs/a.key", "config/.env"] };
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/docs" }), withDenied, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT" }), withDenied, canon).decision, "deny");
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), withDenied, canon).decision, "allow");
+    const { deniedFiles: _omit, ...noList } = allow;
+    assert.equal(decideToolCall(call("grep_search", { Query: "x", SearchPath: "/WT/src" }), noList, canon).decision, "deny", "sem a lista de negados, a busca recursiva falha fechada");
   });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");
@@ -73,6 +85,12 @@ describe("resolveGeminiTargets", () => {
     const r = resolveGeminiTargets(wt, [{ rel: "node_modules/pkg/x.js", isDir: false }], ["node_modules"]);
     assert.equal(r.ok, false);
   });
+  it("protected targets (.agents, .git, .duo, any case) are refused before setup", () => {
+    const wt = tmp("duo-gate-wt-");
+    for (const rel of [".agents/hooks.json", ".AGENTS/hooks.json", ".git/config", ".duo/config.json", ".Duo", "src/.git/x"]) {
+      assert.equal(resolveGeminiTargets(wt, [{ rel, isDir: false }], []).ok, false, rel);
+    }
+  });
   it("target escaping the worktree after realpath is refused", () => {
     const wt = tmp("duo-gate-wt-");
     const outside = tmp("duo-gate-out-");
@@ -99,6 +117,24 @@ describe("arquivos do hook", () => {
     assert.deepEqual(JSON.parse(readFileSync(files.allowlistPath, "utf8")), allow);
   });
 
+  it("each gate setup gets its own log (no evidence from an earlier attempt)", () => {
+    const wt = tmp("duo-gate-wt-");
+    const home = tmp("duo-gate-home-");
+    const a: GateAllowlist = { worktreeRoot: wt, write: [], deny: DENY, readOnly: true, deniedFiles: [] };
+    const first = writeGateFiles(wt, home, a, { nodePath: process.execPath });
+    writeFileSync(first.logPath, '{"tool":"x","decision":"allow","modelName":"gemini-old"}\n');
+    const second = writeGateFiles(wt, home, a, { nodePath: process.execPath });
+    assert.notEqual(second.logPath, first.logPath);
+    assert.equal(existsSync(second.logPath) ? readFileSync(second.logPath, "utf8") : "", "");
+  });
+  it("listDeniedFiles finds committed and untracked denied files without following links", () => {
+    const wt = tmp("duo-gate-wt-");
+    spawnSync("git", ["init", "-q"], { cwd: wt });
+    mkdirSync(join(wt, "docs")); writeFileSync(join(wt, "docs", "a.key"), "k"); writeFileSync(join(wt, "ok.ts"), "1");
+    spawnSync("git", ["add", "."], { cwd: wt }); spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd: wt });
+    writeFileSync(join(wt, ".env"), "s");
+    assert.deepEqual(listDeniedFiles(wt, DENY)?.sort(), [".env", "docs/a.key"]);
+  });
   it("the hook script decides from stdin, logs modelName and fails closed on garbage", () => {
     const wt = tmp("duo-gate-wt-");
     const home = tmp("duo-gate-home-");

@@ -4,8 +4,9 @@ import { describe, it } from "node:test";
 import { discover, findModel, geminiModelId, geminiVariants, parseAgyModels, reportedMatchesRequested, type Catalog } from "../src/adapters/catalog.js";
 import { tierOf } from "../src/adapters/tiers.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { packageRoot } from "../src/paths.js";
 
@@ -53,6 +54,53 @@ describe("catálogo do gemini", () => {
 
 describe("descoberta do gemini", () => {
   const FAKE = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
+  it("the catalog cache is rediscovered when gemini is enabled or the agy version changes", async () => {
+    const { loadCatalog } = await import("../src/adapters/catalog.js");
+    const { Store } = await import("../src/state/store.js");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-cache-")));
+    try {
+      const home = join(base, "home"); mkdirSync(join(home, "Library", "Keychains"), { recursive: true });
+      mkdirSync(join(base, "proj", ".duo"), { recursive: true });
+      const store = new Store(join(base, "proj"));
+      const log = join(base, "log.jsonl");
+      const env = { PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: home, FAKE_LOG: log, FAKE_AGY_VERSION: "1.5.14" };
+      const calls = () => existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l.includes('"agy-models"')).length : 0;
+      const off = structuredClone(DEFAULT_CONFIG); off.executors.gemini.command = [FAKE];
+      await loadCatalog(store, off, { env });
+      assert.equal(calls(), 0);
+      const on = structuredClone(off); on.executors.gemini.enabled = true;
+      const c1 = await loadCatalog(store, on, { env });
+      assert.equal(c1.providers.gemini.ok, true);
+      assert.equal(calls(), 1);
+      await loadCatalog(store, on, { env });
+      assert.equal(calls(), 1, "mesma versão: cache");
+      await loadCatalog(store, on, { env: { ...env, FAKE_AGY_VERSION: "1.5.15" } });
+      assert.equal(calls(), 2, "versão nova do agy: redescobre");
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
+  it("a failed agy models never stores raw stderr, only the failure class", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-disc-")));
+    try {
+      const home = join(base, "home"); mkdirSync(join(home, "Library", "Keychains"), { recursive: true });
+      const cfg = structuredClone(DEFAULT_CONFIG); cfg.executors.gemini.enabled = true; cfg.executors.gemini.command = [FAKE];
+      const c = await discover(cfg, base, { PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: home, FAKE_AGY_NO_MODELS: "1" });
+      assert.equal(c.providers.gemini.ok, false);
+      assert.doesNotMatch(JSON.stringify(c.providers.gemini), /Please sign in/);
+      assert.match(String(c.providers.gemini.error), /agy models falhou/);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
+  it("a broken private HOME setup fails only the gemini catalog, not claude and codex", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-disc-")));
+    try {
+      const home = join(base, "home"); mkdirSync(join(home, "Library"), { recursive: true });
+      // O diretório de estado vira arquivo: o setup do HOME do catálogo falha.
+      writeFileSync(join(home, "Library", "Application Support"), "x");
+      const cfg = structuredClone(DEFAULT_CONFIG); cfg.executors.gemini.enabled = true; cfg.executors.gemini.command = [FAKE];
+      const c = await discover(cfg, base, { PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: home, XDG_STATE_HOME: join(base, "xdg-file") });
+      assert.equal(c.providers.gemini.ok, false);
+      assert.ok(c.providers.claude && c.providers.codex);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
   it("discovers gemini-* models through agy models with a private HOME, only when enabled", async () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-disc-")));
     try {

@@ -17,7 +17,8 @@ import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { executorEligible } from "./alternates.js";
 import { isVerifiedAgy, agyVersionLabel } from "../adapters/gemini.js";
 import { runQuick } from "../adapters/process.js";
-import { geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
@@ -207,6 +208,13 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env });
       const v = r.ok ? r.stdout.trim() || null : null;
       if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
+      else {
+        // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).
+        const sbx = probeSandbox();
+        if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
+        const login = geminiLoginProbe(resolved, env, cfg);
+        if (!login.ok) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
+      }
     }
     const parent = geminiParentEnvProblem(env);
     if (parent) gReasons.push(parent);

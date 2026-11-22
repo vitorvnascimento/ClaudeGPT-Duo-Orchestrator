@@ -1,8 +1,10 @@
 // Login do executor Gemini (agy). Não há "status" oficial sem segredo: o sinal vem do log do próprio agy, gerado por
 // um `agy models` (sem inferência) no HOME privado, com o log zerado antes para não ler linhas antigas. Prova o tipo
 // de login (conta Google pelo keyring = assinatura pessoal); se a assinatura está paga, só o aceite do dono cobre.
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createPrivateHome } from "../state/gemini-state.js";
 import type { DuoConfig } from "../config.js";
 import { runQuick } from "../adapters/process.js";
 import type { Resolved } from "../adapters/resolve.js";
@@ -20,8 +22,13 @@ export function geminiParentEnvProblem(parentEnv: NodeJS.ProcessEnv): string | n
 }
 
 function classifyAgyLog(text: string): { method: AuthMethod; detail: string } {
-  const effective = /authenticated via [a-z_]+ \(effective: ([a-z_]+)\)/.exec(text)?.[1] ?? null;
-  const authMethod = /\bauthMethod=([a-z_]+)/.exec(text)?.[1] ?? null;
+  const all = (re: RegExp) => [...new Set([...text.matchAll(re)].map((m) => m[1] as string))];
+  const effectives = all(/authenticated via [a-z_]+ \(effective: ([a-z_]+)\)/g);
+  const methods = all(/\bauthMethod=([a-z_]+)/g);
+  // Sinais diferentes no mesmo log: não dá para saber qual login a chamada usou.
+  if (effectives.length > 1 || methods.length > 1) return { method: "unknown", detail: `sinais de login conflitantes (authMethod=${methods.join("|") || "?"} effective=${effectives.join("|") || "?"})` };
+  const effective = effectives[0] ?? null;
+  const authMethod = methods[0] ?? null;
   const detail = `authMethod=${authMethod ?? "?"} effective=${effective ?? "?"}`;
   if (authMethod === "consumer" && effective === "keyring") return { method: "subscription", detail };
   if (authMethod && /api/.test(authMethod)) return { method: "api_key", detail };
@@ -55,4 +62,16 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const text = existsSync(logDir) ? readdirSync(logDir).map((f) => readFileSync(join(logDir, f), "utf8")).join("\n") : "";
   const c = classifyAgyLog(text);
   return { ...base, ...c, ok: c.method === "subscription" };
+}
+
+/** Login sem inferência (agy models) num HOME temporário só desta checagem (não disputa logs nem a limpeza das cadeias). */
+export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig): { ok: boolean; method: string; detail: string } {
+  const tmpHome = mkdtempSync(join(tmpdir(), "duo-agy-login-"));
+  try {
+    const { home } = createPrivateHome(tmpHome, env);
+    const a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null);
+    return { ok: a.method === "subscription", method: a.method, detail: a.detail };
+  } catch (e) {
+    return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})` };
+  } finally { rmSync(tmpHome, { recursive: true, force: true }); }
 }

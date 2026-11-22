@@ -1,7 +1,7 @@
 // Perfil sandbox-exec do executor Gemini. Testes com sandbox real só rodam no macOS.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -31,6 +31,8 @@ describe("buildProfile", () => {
     assert.match(p, /\(subpath "\/H"\)/);
     assert.match(p, /\(subpath "\/W\/docs\/\.agents"\)|\(subpath "\/W\/\.agents"\)/);
     assert.doesNotMatch(p, /\(subpath "\/W"\)/);
+    assert.match(p, /\(deny file-link\)/);
+    assert.match(p, /\(deny appleevent-send\)/);
   });
 
   it("refuses control characters in any path", () => {
@@ -71,6 +73,20 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     assert.match(out.stdout, /md-ok/);
     assert.match(out.stdout, /key-denied/);
     assert.ok(!existsSync(join(wt, "docs", "new", "A.KEY")));
+  });
+
+  it("denies hard links from an allowed path to a file outside", () => {
+    const base = tmp("duo-sbx-");
+    const wt = join(base, "wt");
+    mkdirSync(wt);
+    writeFileSync(join(base, "victim.txt"), "secret");
+    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: "d", abs: join(wt, "d"), isDir: true, missingAncestors: [] }], denyGlobs: [], privateHome: join(base, "h"), tmpDir: join(base, "h", "t") });
+    assert.ok(r.ok);
+    mkdirSync(join(wt, "d"));
+    const out = sh(r.ok ? r.profile : "", `ln ${JSON.stringify(join(base, "victim.txt"))} d/hl.txt && echo 1 > d/hl.txt; echo done`, wt);
+    assert.match(out.stdout, /done/);
+    assert.equal(existsSync(join(wt, "d", "hl.txt")), false);
+    assert.equal(readFileSync(join(base, "victim.txt"), "utf8"), "secret");
   });
 
   it("canonicalizes /tmp to /private/tmp", () => {

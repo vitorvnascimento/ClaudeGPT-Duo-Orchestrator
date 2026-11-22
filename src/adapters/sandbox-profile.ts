@@ -62,6 +62,11 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     "(deny file-write*)",
     `(allow file-write* ${allows.join(" ")})`,
     ...(denies.length ? [`(deny file-write* ${denies.join(" ")})`] : []),
+    // Hard link num caminho liberado gravaria no arquivo de fora; Apple Events e LaunchServices abririam
+    // processos fora do sandbox. Nada disso é usado pelo agy (verificado com a sonda real).
+    "(deny file-link)",
+    "(deny appleevent-send)",
+    '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name-regex #"^com\\.apple\\.ae\\."))',
     "",
   ].join("\n");
   return { ok: true, profile };

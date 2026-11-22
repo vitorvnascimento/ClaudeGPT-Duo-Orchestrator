@@ -350,10 +350,11 @@ describe("catálogo das contas no roteador", async () => {
   );
   const catalog = {
     discoveredAt: new Date().toISOString(),
-    cliVersions: { claude: null, codex: null },
+    cliVersions: { claude: null, codex: null, gemini: null },
     providers: {
       claude: { ok: true, source: "t", tools: [], models: claudeModels },
       codex: { ok: true, source: "t", tools, models: codexModels },
+      gemini: { ok: false, source: "t", tools: [], models: [] },
     },
   };
 
@@ -406,7 +407,7 @@ describe("catálogo das contas no roteador", async () => {
       ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, model: null, ok: true })),
       ...Array.from({ length: 3 }, () => ({ executor: "codex" as const, model: "gpt-6-sol", ok: false })),
     ]);
-    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp, catalog, { claude: null, codex: "gpt-6-astra" });
+    const r = recommend(store, loadConfig(sb.root), { kind: "implement", tags: ["ts"], risk: "medium", brain: "claude" }, allUp, catalog, { claude: null, codex: "gpt-6-astra", gemini: null });
     const astra = r.candidates.find((c) => c.model === "gpt-6-astra");
     assert.equal(astra?.evidence.n, 3);
     assert.equal(r.decision.action, "delegate");

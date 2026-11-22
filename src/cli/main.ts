@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ConfigError, loadConfig, type Provider } from "../config.js";
+import { ConfigError, EXECUTORS, loadConfig, type BrainProvider, type Provider } from "../config.js";
 import { repoRoot } from "../git.js";
 import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
 import { delegate, EXIT } from "../orchestration/delegate.js";
@@ -106,6 +106,11 @@ function str(args: Args, k: string): string | undefined {
 }
 
 function provider(v: string | undefined, flag: string): Provider {
+  if (!EXECUTORS.includes(v as Provider)) throw new Error(`${flag} deve ser claude, codex ou gemini`);
+  return v as Provider;
+}
+
+function brainProvider(v: string | undefined, flag: string): BrainProvider {
   if (v !== "claude" && v !== "codex") throw new Error(`${flag} deve ser claude ou codex`);
   return v;
 }
@@ -188,7 +193,7 @@ async function main(argv: string[]): Promise<number> {
         print("duo init requer um repositório Git (rode `git init` você mesmo se desejar).");
         return 2;
       }
-      const brain = provider(str(args, "brain") ?? "claude", "--brain");
+      const brain = brainProvider(str(args, "brain") ?? "claude", "--brain");
       const plan = planInit(root, brain);
       for (const f of plan) print(previewDiff(root, f));
       if (!args.flags.apply) {
@@ -260,7 +265,7 @@ async function main(argv: string[]): Promise<number> {
       const risk = (str(args, "risk") ?? request?.risk ?? "medium") as Risk;
       if (!["low", "medium", "high"].includes(risk)) throw new Error("--risk deve ser low, medium ou high");
       const brainArg = str(args, "brain") ?? request?.brain;
-      const brain = brainArg === undefined ? null : provider(brainArg, "--brain");
+      const brain = brainArg === undefined ? null : brainProvider(brainArg, "--brain");
       const paths = (str(args, "paths") ?? request?.scope.allowedPaths.join(",") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
       let tags: string[] = [];
       let scopeEntries: { rel: string; isDir: boolean }[] = [];
@@ -279,7 +284,7 @@ async function main(argv: string[]): Promise<number> {
       }
       const effective = await readEffectiveCodexConfig({ cwd: root, env: process.env, ignoreUserConfig: cfg.executors.codex.ignoreUserConfig,
         resolved: resolveExecutable("codex", cfg.executors.codex.command, process.env) });
-      const defaults = { claude: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env, cfg.executors.codex.ignoreUserConfig, effective) };
+      const defaults = { claude: null, gemini: null, codex: codexConfiguredModel(defaultAuthPaths(root), process.env, cfg.executors.codex.ignoreUserConfig, effective) };
       const rec = recommend(store, request?.adaptive === false ? { ...cfg, routing: { ...cfg.routing, adaptive: { ...cfg.routing.adaptive, enabled: false } } } : cfg, { kind: kind as TaskKind, tags, risk, brain, brainModel, needs, paths: scopeEntries, ...(request ? { objective: request.objective, acceptance: request.acceptance, complexity: request.complexity } : {}) }, await liveAvailability(store, cfg), catalog, defaults);
       store.telemetry({ event: "recommend", query: rec.query, decision: rec.decision });
       print(args.flags.json ? rec : formatRecommendation(rec));
@@ -342,7 +347,7 @@ async function main(argv: string[]): Promise<number> {
       return r.ok ? 0 : 1;
     }
     case "handoff": {
-      const to = provider(str(args, "to"), "--to");
+      const to = brainProvider(str(args, "to"), "--to");
       const r = writeHandoff(projectRootOf(cwd), to, str(args, "run-id"), str(args, "next"));
       print(r.content);
       print(`handoff salvo em ${r.path}`);

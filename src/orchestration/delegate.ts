@@ -11,7 +11,7 @@ import { CodexAdapter } from "../adapters/codex.js";
 import { isPidAlive, runProcess } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
-import type { ExecutorAdapter, ParsedOutcome } from "../adapters/types.js";
+import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
@@ -38,7 +38,14 @@ export const EXIT = { ok: 0, failed: 1, invalid: 2, blocked: 3, cancelled: 4 } a
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_EVENT_LOG_BYTES = 2 * 1024 * 1024;
 
-export const ADAPTERS: Record<Provider, ExecutorAdapter> = { claude: new ClaudeAdapter(), codex: new CodexAdapter() };
+/** Placeholder até o adaptador do Gemini existir: nunca invoca nada. */
+class UnavailableAdapter implements ExecutorAdapter {
+  constructor(readonly provider: Provider) {}
+  plan(): InvocationPlan { throw new Error(`executor ${this.provider} ainda não disponível nesta versão`); }
+  parser(): StreamParser { throw new Error(`executor ${this.provider} ainda não disponível nesta versão`); }
+}
+
+export const ADAPTERS: Record<Provider, ExecutorAdapter> = { claude: new ClaudeAdapter(), codex: new CodexAdapter(), gemini: new UnavailableAdapter("gemini") };
 
 export type DelegateOptions = {
   cwd: string;
@@ -167,6 +174,10 @@ function runGates(
 ): { ok: true; gates: Gates } | { ok: false; reason: string } {
   const policy = policyBlockReason(req, cfg, run);
   if (policy) return { ok: false, reason: `política: ${policy}` };
+  if (req.executor === "gemini" && !cfg.executors.gemini.enabled) {
+    return { ok: false, reason: "executor gemini desabilitado (executors.gemini.enabled=false em .duo/config.json)" };
+  }
+  if (ADAPTERS[req.executor] instanceof UnavailableAdapter) return { ok: false, reason: `executor ${req.executor} ainda não disponível nesta versão` };
 
   const readOnly = !isWriteKind(req.kind);
   const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: readOnly });

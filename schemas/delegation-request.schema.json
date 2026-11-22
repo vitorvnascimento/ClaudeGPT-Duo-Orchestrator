@@ -36,7 +36,8 @@
     "executor": {
       "enum": [
         "claude",
-        "codex"
+        "codex",
+        "gemini"
       ]
     },
     "kind": {

@@ -215,7 +215,7 @@ describe("cache por versão e modelos configurados", () => {
     const env = { ...s.env, FAKE_CLAUDE_VERSION: "2.1.283", FAKE_CODEX_VERSION: "0.157.1" };
     const count = () => s.log().filter((c) => c.cmd === "initialize" || (c.method === "model/list" && c.hasCursor !== true)).length;
     const first = await loadCatalog(store, cfg, { env });
-    assert.deepEqual(first.cliVersions, { claude: "2.1.283", codex: "0.157.1" });
+    assert.deepEqual(first.cliVersions, { claude: "2.1.283", codex: "0.157.1", gemini: null });
     await loadCatalog(store, cfg, { env });
     assert.equal(count(), 2);
     env.FAKE_CLAUDE_VERSION = "2.1.285";
@@ -224,7 +224,7 @@ describe("cache por versão e modelos configurados", () => {
     env.FAKE_CODEX_VERSION = "0.159.2";
     assert.equal((await loadCatalog(store, cfg, { env })).cliVersions.codex, "0.159.2");
     assert.equal(count(), 6);
-    assert.deepEqual(cachedCatalog(store)?.cliVersions, { claude: "2.1.285", codex: "0.159.2" });
+    assert.deepEqual(cachedCatalog(store)?.cliVersions, { claude: "2.1.285", codex: "0.159.2", gemini: null });
     invalidateCatalog(store);
     invalidateCatalog(store);
     assert.equal(existsSync(catalogPath(store)), false);

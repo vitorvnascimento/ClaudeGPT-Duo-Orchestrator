@@ -1,6 +1,6 @@
 import type { CodexRolloutEvidence } from "../adapters/codex-rollout.js";
 import type { Effort, Tier } from "../adapters/tiers.js";
-import type { Policy, Provider } from "../config.js";
+import type { BrainProvider, Policy, Provider } from "../config.js";
 
 export type TaskState = "planned" | "approved" | "running" | "blocked" | "succeeded" | "failed" | "cancelled";
 export type TaskKind = "implement" | "review" | "test" | "investigate" | "asset";
@@ -14,7 +14,7 @@ export type DelegationRequest = {
   version: 1;
   runId?: string;
   taskKey?: string;
-  brain: Provider;
+  brain: BrainProvider;
   executor: Provider;
   kind: TaskKind;
   objective: string;
@@ -154,7 +154,7 @@ export type Task = {
   history: { at: string; from: TaskState | null; to: TaskState; reason: string }[];
   createdAt: string;
   updatedAt: string;
-  brain: Provider;
+  brain: BrainProvider;
   executor: Provider;
   kind: TaskKind;
   objective: string;
@@ -199,7 +199,7 @@ export type Task = {
 export type Run = {
   rev?: number;
   runId: string;
-  brain: Provider;
+  brain: BrainProvider;
   policy: Policy;
   createdAt: string;
   updatedAt: string;

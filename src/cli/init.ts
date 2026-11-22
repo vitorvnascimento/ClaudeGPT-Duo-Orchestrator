@@ -3,7 +3,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
+import { DEFAULT_CONFIG, type BrainProvider, type DuoConfig } from "../config.js";
 import { git } from "../git.js";
 import { cliEntry, packageRoot } from "../paths.js";
 
@@ -35,7 +35,7 @@ export function duoCliCommand(env: NodeJS.ProcessEnv = process.env): string {
   return `node "${cliEntry()}"`;
 }
 
-function suggestedConfig(projectRoot: string, brain: Provider): DuoConfig {
+function suggestedConfig(projectRoot: string, brain: BrainProvider): DuoConfig {
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.defaultBrain = brain;
   try {
@@ -47,13 +47,13 @@ function suggestedConfig(projectRoot: string, brain: Provider): DuoConfig {
   return cfg;
 }
 
-export function planInit(projectRoot: string, brain: Provider): PlannedFile[] {
+export function planInit(projectRoot: string, brain: BrainProvider): PlannedFile[] {
   const tpl = (p: string) => readFileSync(join(packageRoot(), "skills", p), "utf8");
   const cli = duoCliCommand();
   const wanted: { rel: string; content: string }[] = [
     { rel: ".duo/config.json", content: `${JSON.stringify(suggestedConfig(projectRoot, brain), null, 2)}\n` },
   ];
-  const skills: { client: Provider; dir: string; refDir: string; vars: Record<string, string> }[] = [
+  const skills: { client: BrainProvider; dir: string; refDir: string; vars: Record<string, string> }[] = [
     { client: "claude", dir: ".claude/skills/duo-delegate", refDir: "reference", vars: { DUO_CLI: cli, BRAIN: "claude", EXECUTOR: "codex" } },
     { client: "codex", dir: ".agents/skills/duo-delegate", refDir: "references", vars: { DUO_CLI: cli, BRAIN: "codex", EXECUTOR: "claude" } },
   ];

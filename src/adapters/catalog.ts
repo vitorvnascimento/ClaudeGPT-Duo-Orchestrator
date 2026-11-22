@@ -69,6 +69,10 @@ export type Catalog = {
   providers: Record<Provider, ProviderCatalog>;
 };
 
+/** Fornecedor sem descoberta (ainda não implementada ou desligado). */
+const NOT_DISCOVERED_ERROR = "sem descoberta";
+export const NOT_DISCOVERED = (p: Provider): ProviderCatalog => ({ ok: false, source: p, sourceKind: "none", error: NOT_DISCOVERED_ERROR, tools: [], models: [] });
+
 const TTL_MS = 6 * 60 * 60 * 1000;
 /** Com fonte frágil, falha ou cache desatualizado, tenta de novo mais cedo. */
 const DEGRADED_TTL_MS = 60 * 60 * 1000;
@@ -418,14 +422,14 @@ export async function discover(
     discoveredAt: new Date().toISOString(),
     cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv),
     ...(inCodexSandbox(baseEnv) ? { discoveredInSandbox: true } : {}),
-    providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous) },
+    providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous), gemini: withLastKnownGood("gemini", NOT_DISCOVERED("gemini"), previous) },
   };
 }
 
 /** Versão instalada: usa a mesma execução curta e ambiente filtrado da detecção de caps. */
 export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog["cliVersions"] {
   const { env } = childEnv(baseEnv);
-  const versions: Catalog["cliVersions"] = { claude: null, codex: null };
+  const versions: Catalog["cliVersions"] = { claude: null, codex: null, gemini: null };
   for (const p of ["claude", "codex"] as const) {
     const resolved = resolveExecutable(p, cfg.executors[p].command, baseEnv);
     if (!resolved.ok) continue;
@@ -473,7 +477,8 @@ export function catalogPath(store: Store): string {
 
 /** 6 h com fontes estáveis; 1 h quando alguma conta usou fallback, falhou ou está com cache desatualizado. */
 export function catalogTtlMs(c: Catalog): number {
-  const degraded = Object.values(c.providers ?? {}).some((pc) => !pc.ok || pc.stale || pc.stable === false);
+  // Fornecedor nunca descoberto (gemini desligado) não degrada o cache dos demais.
+  const degraded = Object.values(c.providers ?? {}).some((pc) => pc.error !== NOT_DISCOVERED_ERROR && (!pc.ok || pc.stale || pc.stable === false));
   return degraded ? DEGRADED_TTL_MS : TTL_MS;
 }
 
@@ -495,7 +500,11 @@ export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?
 /** Último catálogo gravado, mesmo expirado (só para exibição, sem disparar descoberta). */
 export function cachedCatalog(store: Store): Catalog | null {
   const c = readJson<Catalog>(catalogPath(store));
-  return c && typeof c.discoveredAt === "string" && c.providers ? c : null;
+  if (!c || typeof c.discoveredAt !== "string" || !c.providers) return null;
+  // Catálogos gravados antes da v0.5 não têm o gemini.
+  c.providers.gemini ??= NOT_DISCOVERED("gemini");
+  c.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, c.cliVersions);
+  return c;
 }
 
 /**

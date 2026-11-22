@@ -2,11 +2,11 @@
 // na sessão nativa do outro cliente. Não transfere sessões nem troca a interface do VS Code.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Provider } from "../config.js";
+import type { BrainProvider } from "../config.js";
 import { dirtyPaths, headCommit } from "../git.js";
 import { Store } from "../state/store.js";
 
-export function writeHandoff(projectRoot: string, to: Provider, runId: string | undefined, next: string | undefined): { path: string; content: string } {
+export function writeHandoff(projectRoot: string, to: BrainProvider, runId: string | undefined, next: string | undefined): { path: string; content: string } {
   const store = new Store(projectRoot);
   const runs = store.listRuns();
   const run = runId ? store.loadRun(runId) : runs[runs.length - 1] ?? null;

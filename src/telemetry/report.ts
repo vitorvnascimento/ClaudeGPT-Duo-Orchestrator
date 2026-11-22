@@ -66,6 +66,7 @@ export function quotaView(store: Store, now = Date.now()): Record<Provider, Reco
   return {
     claude: { ...view("claude"), state: states.claude ?? { status: "unknown" }, remainingPercent: states.claude?.usedPercent == null ? null : Math.max(0, 100 - states.claude.usedPercent) },
     codex: { ...view("codex"), state: states.codex ?? { status: "unknown" }, remainingPercent: states.codex?.usedPercent == null ? null : Math.max(0, 100 - states.codex.usedPercent) },
+    gemini: { ...view("gemini"), state: states.gemini ?? { status: "unknown" }, remainingPercent: states.gemini?.usedPercent == null ? null : Math.max(0, 100 - states.gemini.usedPercent) },
   };
 }
 
@@ -109,7 +110,7 @@ function emptyAgg(): ProviderAgg {
 
 export function buildReport(store: Store, runId?: string): Record<string, unknown> {
   const runs = store.listRuns().filter((r) => !runId || r.runId === runId);
-  const byExecutor: Record<Provider, ProviderAgg> = { claude: emptyAgg(), codex: emptyAgg() };
+  const byExecutor: Record<Provider, ProviderAgg> = { claude: emptyAgg(), codex: emptyAgg(), gemini: emptyAgg() };
   const runSummaries: Record<string, unknown>[] = [];
   for (const run of runs) {
     const tasks = store.listTasks(run);

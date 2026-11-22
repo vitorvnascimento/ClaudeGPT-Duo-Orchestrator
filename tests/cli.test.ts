@@ -64,7 +64,7 @@ globalThis.fetch = async (url, init) => {
     assert.match(text.stdout, /\(configurado pelo usuário; não listado pela CLI\)/);
     const json = cli(s, ["models", "--json"]);
     const report = JSON.parse(json.stdout) as { cliVersions: unknown; warnings: string[]; providers: Record<string, { models: { id: string; tier: string; presumed: boolean; extraUsage: boolean; source: string }[] }> };
-    assert.deepEqual(report.cliVersions, { claude: "2.1.114", codex: "0.155.0" });
+    assert.deepEqual(report.cliVersions, { claude: "2.1.114", codex: "0.155.0", gemini: null });
     assert.deepEqual(report.warnings, []);
     const fable = report.providers.claude?.models.find((m) => m.id === "claude-fable-5-1[1m]");
     assert.equal(fable?.tier, "deep");
@@ -158,7 +158,7 @@ describe("doctor e report", () => {
     const r = cli(s, ["doctor", "--json"]);
     assert.equal(r.status, 0, r.stderr);
     const report = JSON.parse(r.stdout) as { ready: Record<string, boolean>; providers: Record<string, { version: string; auth: { method: string } }> };
-    assert.deepEqual(report.ready, { claude: true, codex: true });
+    assert.deepEqual(report.ready, { claude: true, codex: true, gemini: false });
     assert.equal(report.providers.claude?.auth.method, "subscription");
     assert.equal(report.providers.codex?.version, "0.155.0");
     assert.equal(s.execCalls().length, 0);

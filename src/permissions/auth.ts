@@ -29,6 +29,14 @@ export const BILLING_ENV = [
   "OPENAI_BASE_URL",
   "OPENAI_API_BASE",
   "AZURE_OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "AGY_ADC_AUTH",
+  "AGY_LLM_GATEWAY_MODELS",
 ];
 
 /** Variáveis internas da sessão do cérebro (inclui tokens de mensageria); não pertencem ao executor. */

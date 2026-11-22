@@ -1,9 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { duoDir } from "./paths.js";
 
-export type Provider = "claude" | "codex";
+/** Fornecedores que podem executar tarefas (executor). */
+export type Provider = "claude" | "codex" | "gemini";
+export type ExecutorProvider = Provider;
+/** Fornecedores que podem ser cérebro (o Gemini é só executor). */
+export type BrainProvider = "claude" | "codex";
+export const EXECUTORS: readonly ExecutorProvider[] = ["claude", "codex", "gemini"];
+export const BRAINS: readonly BrainProvider[] = ["claude", "codex"];
+export function assertNever(x: never): never {
+  throw new Error(`valor inesperado: ${String(x)}`);
+}
 export type Policy = "economico" | "equilibrado" | "qualidade";
 export type QuotaPreference = "balance" | "preserve-codex" | "preserve-claude";
 
@@ -15,7 +24,7 @@ export type ExecutorConfig = {
 
 export type DuoConfig = {
   version: 1;
-  defaultBrain: Provider;
+  defaultBrain: BrainProvider;
   policy: Policy;
   quotaPreference: QuotaPreference;
   limits: {
@@ -41,6 +50,8 @@ export type DuoConfig = {
       /** Desliga hooks e plugins do usuário no executor (--disable hooks/plugins): evita que gravem no projeto e economiza contexto. */
       disableUserExtensions: boolean;
     };
+    /** Antigravity CLI (agy). Desligado por padrão; command, se definido, é um único caminho absoluto. */
+    gemini: ExecutorConfig & { enabled: boolean };
   };
   billing: {
     profile: "subscription-only";
@@ -100,11 +111,12 @@ export const DEFAULT_CONFIG: DuoConfig = {
     // Preferência do usuário: Opus 5.5 como executor Claude. Exige Claude Code >= 2.1.280 (erro real observado na 2.1.114).
     claude: { command: null, model: "claude-opus-5-5", settingSources: "user", strictMcpConfig: true, disableSlashCommands: true },
     codex: { command: null, model: null, ignoreUserConfig: false, disableUserExtensions: true },
+    gemini: { command: null, model: null, enabled: false },
   },
   billing: {
     profile: "subscription-only",
     allowLoopbackProxy: false,
-    acknowledgeUnverifiableExtraUsage: { claude: false, codex: false },
+    acknowledgeUnverifiableExtraUsage: { claude: false, codex: false, gemini: false },
   },
   acceptance: { allowedCommands: [] },
   scope: {
@@ -194,21 +206,28 @@ export function loadConfig(projectRoot: string): DuoConfig {
     if (!Number.isInteger(value) || value < 1 || value > 1024 * 1024 * 1024) problems.push(`limits.${field} (inteiro de 1 a 1073741824 bytes)`);
   }
   if (cfg.billing.profile !== "subscription-only") problems.push("billing.profile (o MVP só implementa subscription-only)");
+  const gem = cfg.executors.gemini as unknown as Record<string, unknown>;
+  if (typeof gem.enabled !== "boolean") problems.push("executors.gemini.enabled (boolean)");
+  // shortcut: só caminho absoluto, sem argumentos extras (resolveExecutable repassaria flags como --dangerously-skip-permissions).
+  if (gem.command !== null && !(Array.isArray(gem.command) && gem.command.length === 1 && typeof gem.command[0] === "string" && isAbsolute(gem.command[0]))) {
+    problems.push("executors.gemini.command (null ou um único caminho absoluto, sem argumentos)");
+  }
+  if (gem.model !== null && typeof gem.model !== "string") problems.push("executors.gemini.model");
   if (typeof cfg.billing.allowLoopbackProxy !== "boolean") problems.push("billing.allowLoopbackProxy (boolean)");
   // Ciência de cobrança só vale como booleano literal: "false", 1 ou "yes" não podem autorizar créditos.
   const ack = cfg.billing.acknowledgeUnverifiableExtraUsage as unknown;
-  if (!ack || typeof ack !== "object" || !(["claude", "codex"] as const).every((p) => typeof (ack as Record<string, unknown>)[p] === "boolean")) {
-    problems.push("billing.acknowledgeUnverifiableExtraUsage.{claude,codex} (boolean)");
+  if (!ack || typeof ack !== "object" || !EXECUTORS.every((p) => typeof (ack as Record<string, unknown>)[p] === "boolean")) {
+    problems.push("billing.acknowledgeUnverifiableExtraUsage.{claude,codex,gemini} (boolean)");
   }
   if (!Array.isArray(cfg.acceptance.allowedCommands) || !cfg.acceptance.allowedCommands.every((c) => Array.isArray(c) && c.every((x) => typeof x === "string"))) {
     problems.push("acceptance.allowedCommands");
   }
-  if (!Array.isArray(cfg.routing.candidates) || !cfg.routing.candidates.every((c) => (c.executor === "claude" || c.executor === "codex") && (c.model === null || typeof c.model === "string"))) {
+  if (!Array.isArray(cfg.routing.candidates) || !cfg.routing.candidates.every((c) => EXECUTORS.includes(c.executor) && (c.model === null || typeof c.model === "string"))) {
     problems.push("routing.candidates");
   }
   if (!Number.isInteger(cfg.routing.minSamples) || cfg.routing.minSamples < 1) problems.push("routing.minSamples");
   if (!isObj(cfg.discovery) || typeof cfg.discovery.checkCliUpdates !== "boolean") problems.push("discovery.checkCliUpdates (boolean)");
-  if (!Array.isArray(cfg.routing.extraModels) || !cfg.routing.extraModels.every((m) => typeof m === "string" && /^(claude|codex):[A-Za-z0-9._:\[\]-]{1,80}(?![\s\S])/.test(m))) problems.push("routing.extraModels (lista provider:modelo)");
+  if (!Array.isArray(cfg.routing.extraModels) || !cfg.routing.extraModels.every((m) => typeof m === "string" && /^(claude|codex|gemini):[A-Za-z0-9._:\[\]-]{1,80}(?![\s\S])/.test(m))) problems.push("routing.extraModels (lista provider:modelo)");
   const adaptive = cfg.routing.adaptive;
   if (!isObj(adaptive)) problems.push("routing.adaptive (objeto)");
   else {

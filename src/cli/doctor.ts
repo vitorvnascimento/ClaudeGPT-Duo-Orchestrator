@@ -77,7 +77,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
   const ignored = root ? git(root, ["check-ignore", "-q", ".duo/x"]).ok : false;
 
   const providers: Record<string, unknown> = {};
-  const ready: Record<Provider, boolean> = { claude: false, codex: false };
+  const ready: Record<Provider, boolean> = { claude: false, codex: false, gemini: false };
   const { env: probeEnv } = childEnv(env);
   for (const p of ["claude", "codex"] as Provider[]) {
     const resolved = resolveExecutable(p, effectiveCfg.executors[p].command, env);
@@ -136,7 +136,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
   if (billingEnvPresent.length) warnings.push(`variáveis de API/gateway presentes no ambiente (removidas dos executores): ${billingEnvPresent.join(", ")}`);
 
   const latest = await loadCliLatest(new Store(projectRoot), effectiveCfg, { env, fetchImpl });
-  const versions: Record<Provider, string | null> = { claude: null, codex: null };
+  const versions: Record<"claude" | "codex", string | null> = { claude: null, codex: null };
   for (const p of ["claude", "codex"] as const) {
     const info = providers[p] as { version?: string; publishedVersion?: string | null };
     versions[p] = info.version ?? null;

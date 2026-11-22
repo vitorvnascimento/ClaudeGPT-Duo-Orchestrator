@@ -234,7 +234,7 @@ export function evaluateCandidates(
   q: RouteQuery,
   availability: AvailabilityFn,
   catalog: Catalog | null = null,
-  defaults: Record<Provider, string | null> = { claude: null, codex: null },
+  defaults: Record<Provider, string | null> = { claude: null, codex: null, gemini: null },
 ): { evals: CandidateEval[]; filteredOut: string[] } {
   const tasks = store.listRuns().flatMap((r) => store.listTasks(r));
   const min = cfg.routing.minSamples;
@@ -326,7 +326,7 @@ function providerLead(store: Store, q: RouteQuery, min: number, available: Candi
 
 function recommendResult(
   store: Store, cfg: DuoConfig, q: RouteQuery, availability: AvailabilityFn,
-  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null },
+  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null, gemini: null },
 ): Recommendation {
   const min = cfg.routing.minSamples;
   const needs = q.needs ?? [];
@@ -484,7 +484,7 @@ function recommendResult(
 
 export function recommend(
   store: Store, cfg: DuoConfig, q: RouteQuery, availability: AvailabilityFn,
-  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null },
+  catalog: Catalog | null = null, defaults: Record<Provider, string | null> = { claude: null, codex: null, gemini: null },
 ): Recommendation {
   const r = recommendResult(store, cfg, q, availability, catalog, defaults);
   if (!cfg.routing.adaptive.enabled) return r;

@@ -56,23 +56,26 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  // Só arquivos regulares (pastas e outros tipos são ignorados). Um log regular ilegível poderia conter o sinal
-  // conflitante: o resultado vira inconclusivo e bloqueia, sem exceção no preflight.
+  // Arquivos regulares são lidos e pastas ignoradas. Qualquer outra entrada (link, arquivo ilegível) pode esconder o
+  // sinal conflitante: sem evidência negativa nos logs lidos, o resultado vira inconclusivo e bloqueia.
   let text = "";
-  let unreadable = false;
+  let unaccounted = false;
   try {
     if (existsSync(logDir)) {
       text = readdirSync(logDir).flatMap((f) => {
         const p = join(logDir, f);
-        let regular = false;
-        try { regular = lstatSync(p).isFile(); } catch { unreadable = true; return []; }
-        if (!regular) return [];
-        try { return [readFileSync(p, "utf8")]; } catch { unreadable = true; return []; }
+        try {
+          const st = lstatSync(p);
+          if (st.isDirectory()) return [];
+          if (!st.isFile()) { unaccounted = true; return []; }
+          return [readFileSync(p, "utf8")];
+        } catch { unaccounted = true; return []; }
       }).join("\n");
     }
-  } catch { unreadable = true; }
-  if (unreadable) return { ...base, ok: false, method: "unknown", detail: "log do agy ilegível: login não verificável" };
+  } catch { unaccounted = true; }
   const c = classifyAgyLog(text);
+  const negative = c.method === "api_key" || c.method === "cloud" || c.conflict === true;
+  if (unaccounted && !negative) return { ...base, ok: false, method: "unknown", detail: "log do agy com entrada não lida (ilegível ou link): login não verificável" };
   if (!r.ok) {
     const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
     const failed = `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})`;

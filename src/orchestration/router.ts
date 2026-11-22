@@ -416,6 +416,9 @@ function recommendResult(
     `Saúde de cota: ${(["claude", "codex"] as const).map((p) => `${p}=${quotaStates(store)[p]?.status ?? "unknown"}`).join(" · ")}`,
   ];
   if (filteredOut.length) notes.push(`Excluídos por não terem a capacidade exigida: ${filteredOut.join(", ")}`);
+  // Gemini ligado mas fora do roteamento por scope.deny que a trava do SO não aplica: diz qual padrão.
+  const geminiDeny = cfg.executors.gemini.enabled ? unsupportedDenyGlob(cfg.scope.deny) : null;
+  if (geminiDeny) notes.push(`Gemini fora do roteamento: ${geminiDeny}`);
   const available = evals.filter((e) => e.available && eligible.includes(e));
   const best = available[0];
   // A seleção sempre descreve o candidato efetivamente escolhido (finishDecision recalcula se ele mudar).

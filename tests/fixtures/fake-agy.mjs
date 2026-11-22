@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // agy (Antigravity CLI) simulado: `--version`, `--help`, `models` e o modo headless stream-json.
 // O headless reproduz uma gravação real de tests/fixtures/agy/ (FAKE_AGY_SCENARIO) ou um relatório válido.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log, readStdin, report as fakeReport } from "./fake-common.mjs";
@@ -18,6 +18,8 @@ if (args[0] === "models") {
   if (process.env.HOME) {
     const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
     mkdirSync(d, { recursive: true });
+    if (process.env.FAKE_AGY_LOG_SUBDIR) mkdirSync(join(d, "subdir"), { recursive: true });
+    if (process.env.FAKE_AGY_LOG_UNREADABLE) { writeFileSync(join(d, "locked.log"), "authenticated via apikey (effective: apikey)\n"); chmodSync(join(d, "locked.log"), 0); }
     writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "partial-apikey"
       ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\n"
       : process.env.FAKE_AGY_AUTH === "conflict"

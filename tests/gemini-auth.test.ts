@@ -45,11 +45,15 @@ describe("preflight de login do gemini", () => {
     const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "partial-apikey", FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
     assert.equal(a.method, "api_key");
   });
-  it("an unreadable entry in the log dir never throws out of the preflight", () => {
-    const h = home();
-    mkdirSync(join(h, ".gemini", "antigravity-cli", "log", "subdir"), { recursive: true });
-    const a = geminiAuthPreflight(resolved, env(h, { FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+  it("a directory among fresh log entries is skipped and the login is still classified", () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_SUBDIR: "1" }), ack(true), null);
+    assert.equal(a.method, "subscription");
+    assert.equal(a.ok, true);
+  });
+  it("an unreadable regular log makes the login inconclusive (blocked), never an exception", { skip: process.getuid?.() === 0 }, () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1" }), ack(true), null);
     assert.equal(a.ok, false);
+    assert.equal(a.method, "unknown");
   });
   it("a stale consumer line from an earlier run does not count", () => {
     const h = home();

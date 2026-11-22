@@ -56,15 +56,22 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  // Só arquivos regulares; erro de leitura vira log vazio (sem sinal), nunca exceção no preflight.
+  // Só arquivos regulares (pastas e outros tipos são ignorados). Um log regular ilegível poderia conter o sinal
+  // conflitante: o resultado vira inconclusivo e bloqueia, sem exceção no preflight.
   let text = "";
+  let unreadable = false;
   try {
     if (existsSync(logDir)) {
       text = readdirSync(logDir).flatMap((f) => {
-        try { const p = join(logDir, f); return lstatSync(p).isFile() ? [readFileSync(p, "utf8")] : []; } catch { return []; }
+        const p = join(logDir, f);
+        let regular = false;
+        try { regular = lstatSync(p).isFile(); } catch { unreadable = true; return []; }
+        if (!regular) return [];
+        try { return [readFileSync(p, "utf8")]; } catch { unreadable = true; return []; }
       }).join("\n");
     }
-  } catch { text = ""; }
+  } catch { unreadable = true; }
+  if (unreadable) return { ...base, ok: false, method: "unknown", detail: "log do agy ilegível: login não verificável" };
   const c = classifyAgyLog(text);
   if (!r.ok) {
     const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);

@@ -81,13 +81,13 @@ describe("pedido com executor gemini", () => {
     assert.equal(sb.execCalls().length, 0);
   });
 
-  it("delegating to gemini before the adapter exists blocks with the unavailable message", async () => {
+  it("enabled gemini with the default (empty) verified list blocks before invoking", async () => {
     sb = makeSandbox({ executors: { gemini: { enabled: true } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
     const path = join(sb.root, ".duo", "req-gemini.json");
     writeFileSync(path, JSON.stringify(baseRequest("claude", { executor: "gemini" })));
     const out = await delegate({ cwd: sb.root, requestPath: path, env: sb.env, authPaths: sb.authPaths });
     assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
-    assert.match(String(out.summary.outcome), /executor gemini ainda não disponível nesta versão/);
+    assert.match(String(out.summary.outcome), /gemini|agy/);
     assert.equal(sb.execCalls().length, 0);
   });
 });

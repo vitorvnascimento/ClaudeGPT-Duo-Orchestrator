@@ -1,6 +1,7 @@
 // Comandos de controle determinísticos: cancelamento, integração de worktree, decisões e detecção de interrupção.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { removeChainState } from "../state/gemini-state.js";
 import { isPidAlive, killPidTree } from "../adapters/process.js";
 import { loadConfig } from "../config.js";
 import { captureState, git, hashPath, headCommit } from "../git.js";
@@ -85,8 +86,18 @@ export function applyTask(projectRoot: string, taskId: string): { ok: boolean; m
     if (activeSlots(projectRoot).some((slot) => slot.isolation === "in-place")) {
       return { ok: false, message: "um executor in-place está ativo; aplique depois que ele terminar" };
     }
-    return applyAdmitted(projectRoot, taskId);
+    const r = applyAdmitted(projectRoot, taskId);
+    if (r.ok) dropGeminiState(projectRoot, taskId);
+    return r;
   });
+}
+
+/** A conversa nativa do gemini só serve para retomar; depois de aplicada ou decidida, o HOME privado é apagado. */
+function dropGeminiState(projectRoot: string, taskId: string): void {
+  const store = new Store(projectRoot);
+  const task = store.findTask(taskId);
+  if (!task?.geminiStateDir) return;
+  removeChainState(task.geminiStateDir);
 }
 
 function applyAdmitted(projectRoot: string, taskId: string): { ok: boolean; message: string } {
@@ -138,6 +149,7 @@ export function acceptTask(projectRoot: string, taskId: string, accepted: boolea
   if (accepted && task.state !== "succeeded") return { ok: false, message: "só tasks succeeded podem ser aceitas; registre --reject com a justificativa" };
   task.accepted = { at: new Date().toISOString(), accepted, note };
   store.saveTask(task);
+  if (task.geminiStateDir) removeChainState(task.geminiStateDir);
   const run = store.loadRun(task.runId);
   if (run) {
     store.updateRun(run.runId, (fresh) => { fresh.decisions.push({ at: task.accepted!.at, taskId, kind: accepted ? "accepted" : "rejected", text: note || (accepted ? "aceito" : "rejeitado") }); });

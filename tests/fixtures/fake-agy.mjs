@@ -28,6 +28,9 @@ if (args[0] === "models") {
 }
 const stdin = await readStdin();
 log({ cmd: "agy-run", args, stdin, home: process.env.HOME, tmpdir: process.env.TMPDIR, cwd: process.cwd() });
+// Simula escritas do executor no cwd (worktree), como o write_file real faria.
+const writes = JSON.parse(process.env.FAKE_AGY_WRITES ?? "{}");
+for (const [rel, content] of Object.entries(writes)) { mkdirSync(dirname(join(process.cwd(), rel)), { recursive: true }); writeFileSync(join(process.cwd(), rel), content); }
 const scenario = process.env.FAKE_AGY_SCENARIO;
 if (scenario) { process.stdout.write(readFileSync(join(here, "agy", `${scenario}.ndjson`), "utf8")); process.exit(0); }
 const model = valueOf("--model") ?? "gemini-x";
@@ -35,7 +38,7 @@ const conv = valueOf("--conversation") ?? "00000000-0000-4000-8000-000000000001"
 // Simula o hook: registra o modelo em uso no log do gate, como o gate real faria.
 const gateLog = process.env.HOME ? join(process.env.HOME, "duo-gate", "gate-log.jsonl") : null;
 if (gateLog && existsSync(dirname(gateLog))) appendFileSync(gateLog, `${JSON.stringify({ tool: "write_file", decision: "allow", modelName: process.env.FAKE_AGY_SERVED_MODEL ?? model })}\n`);
-const report = { ...fakeReport([]), testsRun: [], ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
+const report = { ...fakeReport(Object.keys(writes)), testsRun: [], ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
 const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);
 emit({ event: "init", conversation_id: conv, init: { model, cwd: process.cwd(), tools: ["write_file"], permission_mode: "request-review" } });
 emit({ event: "result", result: { conversation_id: conv, status: "SUCCESS", response: JSON.stringify(report), duration_seconds: 0.5, num_turns: 1, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });

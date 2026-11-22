@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
+import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
@@ -12,6 +12,11 @@ import { isPidAlive, runProcess } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
+import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy } from "../adapters/gemini.js";
+import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
+import { buildProfile, probeSandbox } from "../adapters/sandbox-profile.js";
+import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { attemptTmpDir, chainStateDir, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
@@ -45,7 +50,8 @@ class UnavailableAdapter implements ExecutorAdapter {
   parser(): StreamParser { throw new Error(`executor ${this.provider} ainda não disponível nesta versão`); }
 }
 
-export const ADAPTERS: Record<Provider, ExecutorAdapter> = { claude: new ClaudeAdapter(), codex: new CodexAdapter(), gemini: new UnavailableAdapter("gemini") };
+export const ADAPTERS: Record<Provider, ExecutorAdapter> = { claude: new ClaudeAdapter(), codex: new CodexAdapter(), gemini: new GeminiAdapter() };
+void UnavailableAdapter;
 
 export type DelegateOptions = {
   cwd: string;
@@ -57,6 +63,15 @@ export type DelegateOptions = {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   authPaths?: AuthPaths;
+  /** Só testes/sonda: versões verificadas, plataforma, sonda do SO e sandbox (o CLI nunca passa isto). */
+  gemini?: GeminiDelegateOptions;
+};
+
+export type GeminiDelegateOptions = {
+  verified?: readonly VerifiedAgy[];
+  platform?: NodeJS.Platform;
+  probe?: () => { ok: true } | { ok: false; reason: string };
+  sandbox?: boolean;
 };
 
 export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean; quotaExceeded?: boolean; capacityUntil?: string };
@@ -171,6 +186,7 @@ function runGates(
   projectRoot: string,
   env: NodeJS.ProcessEnv,
   catalog: Catalog | null,
+  gem: GeminiDelegateOptions = {},
 ): { ok: true; gates: Gates } | { ok: false; reason: string } {
   const policy = policyBlockReason(req, cfg, run);
   if (policy) return { ok: false, reason: `política: ${policy}` };
@@ -178,6 +194,18 @@ function runGates(
     return { ok: false, reason: "executor gemini desabilitado (executors.gemini.enabled=false em .duo/config.json)" };
   }
   if (ADAPTERS[req.executor] instanceof UnavailableAdapter) return { ok: false, reason: `executor ${req.executor} ainda não disponível nesta versão` };
+  if (req.executor === "gemini") {
+    if ((gem.platform ?? process.platform) !== "darwin") return { ok: false, reason: "executor gemini exige macOS nesta versão (trava do sistema por sandbox-exec)" };
+    const parent = geminiParentEnvProblem(env);
+    if (parent) return { ok: false, reason: parent };
+    if (task.model.requested && !/^gemini-/.test(task.model.requested)) return { ok: false, reason: `modelo fora do catálogo gemini-*: ${task.model.requested}` };
+    const suffix = /-(low|medium|high|xhigh)$/.exec(task.model.requested ?? "")?.[1];
+    if (req.effort && suffix && req.effort !== suffix) return { ok: false, reason: `modelo ${task.model.requested} fixado é incompatível com o esforço pedido (${req.effort}); o esforço do gemini faz parte do id` };
+    if (gem.sandbox !== false) {
+      const probeResult = (gem.probe ?? probeSandbox)();
+      if (!probeResult.ok) return { ok: false, reason: `trava do sistema (sandbox-exec) indisponível: ${probeResult.reason}` };
+    }
+  }
 
   const readOnly = !isWriteKind(req.kind);
   const scope = validateScope(projectRoot, req.scope.allowedPaths, cfg.scope.deny, { allowWholeProject: readOnly });
@@ -189,15 +217,20 @@ function runGates(
     }
   }
 
-  const resolved = resolveExecutable(req.executor, cfg.executors[req.executor].command, env);
+  const resolved = resolveExecutable(req.executor === "gemini" ? "agy" : req.executor, cfg.executors[req.executor].command, env);
   if (!resolved.ok) return { ok: false, reason: `executor indisponível: ${resolved.reason}` };
   const { env: probeEnv } = childEnv(env);
-  const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv) : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
+  const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
+    : req.executor === "gemini" ? probe(resolved, ["--help"], AGY_FLAGS, probeEnv)
+    : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
+  if (req.executor === "gemini" && !isVerifiedAgy(caps.version, gem.platform ?? process.platform, gem.verified)) {
+    return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma; rode a sonda de contenção (tests/fixtures/agy/probe) antes de liberar` };
+  }
   if (caps.missingRequired.length) {
     return { ok: false, reason: `versão ${caps.version ?? "desconhecida"} do ${req.executor} não anuncia recursos obrigatórios: ${caps.missingRequired.join(", ")}` };
   }
   if (task.model.requested && !caps.flags.model) return { ok: false, reason: `modelo solicitado, mas esta versão do ${req.executor} não anuncia --model` };
-  if (task.effort?.requested && !(req.executor === "claude" ? caps.flags.effort : caps.flags.config)) {
+  if (task.effort?.requested && req.executor !== "gemini" && !(req.executor === "claude" ? caps.flags.effort : caps.flags.config)) {
     return { ok: false, reason: `esforço solicitado (${task.effort.requested}), mas esta versão do ${req.executor} não anuncia ${req.executor === "claude" ? "--effort" : "--config"}` };
   }
   if (task.needs.includes("image_generation") && req.executor === "codex" && !caps.flags.enable) {
@@ -553,7 +586,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
         return { exitCode: EXIT.blocked, summary: summarize(task) };
       }
       run = store.loadRun(run.runId)!;
-      const gate = runGates(execReq, task, run, cfg, projectRoot, env, catalog);
+      const gate = runGates(execReq, task, run, cfg, projectRoot, env, catalog, opts.gemini);
       if (!gate.ok) {
         blockTask(task, gate.reason);
         store.saveTask(task);
@@ -569,6 +602,15 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       }
       transition(task, "approved", resuming ? "retomada aprovada após nova verificação" : "validação e política aprovadas; autenticação será conferida no plano efetivo");
       store.saveTask(task);
+      if (task.executor === "gemini") {
+        // O gate do gemini mora no .agents/ de uma worktree descartável: nunca roda in-place.
+        if (fixedIsolation === "in-place") {
+          blockTask(task, "esta cadeia roda in-place e o executor gemini só roda em worktree; recomece sem --resume");
+          store.saveTask(task);
+          return { exitCode: EXIT.blocked, summary: summarize(task) };
+        }
+        task.isolation = "worktree";
+      }
       const lock = new ExecutorSlots(projectRoot, cfg.limits.maxConcurrentExecutors);
       const acquired = lock.admit({ taskId: task.taskId, runId: run.runId, kind: task.kind,
         requested: task.isolation, fixed: fixedIsolation, gitReady: headCommit(projectRoot) !== null });
@@ -589,7 +631,7 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
       try {
         const timeoutSec = opts.timeoutSecOverride ?? req.limits?.timeoutSec ?? cfg.limits.timeoutSec;
         const codexHome = env.CODEX_HOME ?? join(authPaths.home, ".codex");
-        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}) });
+        out = await execute({ req: execReq, task, run, cfg, store, projectRoot, env, authPaths, lock, resolved, caps, entries, resuming, adaptive, catalog, chainId: rootId, timeoutSec, codexHome, ...(opts.signal ? { signal: opts.signal } : {}), ...(opts.gemini ? { gemini: opts.gemini } : {}) });
       } finally { lock.release(); }
       if (!adaptive || (!out.verificationFailed && !out.quotaExceeded && !out.capacityUntil) || opts.signal?.aborted || store.loadRun(run.runId)?.cancelled) return out;
       if (!chainPolicy(store.loadChain(run.runId, rootId)!, { maxAttempts: cfg.routing.adaptive.maxAttempts }).canRetry) {
@@ -696,6 +738,7 @@ type ExecCtx = {
   timeoutSec: number;
   codexHome: string;
   signal?: AbortSignal;
+  gemini?: GeminiDelegateOptions;
 };
 
 async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
@@ -742,7 +785,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       }
       task.base.snapshot = snapshot.snapshot;
       const links = linkIntoWorktree(projectRoot, wt, cfg.limits.worktreeLinks);
-      task.worktreeLinks = links.linked;
+      task.worktreeLinks = task.executor === "gemini" ? [...links.linked, ".agents"] : links.linked;
       if (links.failed.length) task.limitations.push(`links indisponíveis na worktree: ${links.failed.join(", ")}`);
     } else if (!task.worktree) {
       return block(`worktree com snapshot incompleto: ${wt}; remova a cópia antes de retomar`);
@@ -751,6 +794,28 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     }
     task.worktree = wt;
     execCwd = realpathSync(wt);
+  }
+
+  let gemPrep: { home: string; attempt: ReturnType<typeof attemptTmpDir>; logPath: string; profilePath: string | null } | null = null;
+  if (task.executor === "gemini") {
+    const chainDir = chainStateDir(projectRoot, ctx.chainId, env);
+    task.geminiStateDir = chainDir;
+    sweepStaleAttempts(chainDir);
+    const { home } = createPrivateHome(chainDir, env);
+    const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
+    const t = resolveGeminiTargets(execCwd, isWriteKind(task.kind) ? entries.map((e) => ({ rel: e.rel, isDir: e.isDir })) : [], links);
+    if (!t.ok) return block(`alvos do gemini: ${t.reason}`);
+    for (const target of t.targets) for (const d of target.missingAncestors) mkdirSync(d, { recursive: true });
+    const attempt = attemptTmpDir(chainDir);
+    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
+    let profilePath: string | null = null;
+    if (ctx.gemini?.sandbox !== false) {
+      const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path });
+      if (!prof.ok) { attempt.cleanup(); return block(`perfil sandbox-exec: ${prof.reason}`); }
+      profilePath = join(home, "duo-gate", "profile.sb");
+      writeFileSync(profilePath, prof.profile);
+    }
+    gemPrep = { home, attempt, logPath: files.logPath, profilePath };
   }
 
   const prompt = buildExecutorPrompt(task, {
@@ -792,21 +857,24 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     resumeSessionId: ctx.resuming ? task.native.sessionId : null,
     artifactsDir: task.artifactsDir,
     env: execEnv,
+    ...(gemPrep ? { gemini: { privateHome: gemPrep.home, tmpDir: gemPrep.attempt.path, profilePath: gemPrep.profilePath } } : {}),
     };
-    plan = adapter instanceof CodexAdapter ? adapter.plan(input, effectiveCodexConfig) : adapter.plan(input);
+    const gemAdapter = task.executor === "gemini" && ctx.gemini?.verified ? new GeminiAdapter({ verified: ctx.gemini.verified }) : adapter;
+    plan = adapter instanceof CodexAdapter ? adapter.plan(input, effectiveCodexConfig) : gemAdapter.plan(input);
   } catch (e) {
+    gemPrep?.attempt.cleanup();
     return block(`não foi possível montar a invocação do ${task.executor}: ${(e as Error).message}`);
   }
   // Valida o plano efetivo: flags ausentes não excluem fontes, e a worktree
   // pode carregar settings diferentes das que estavam no diretório do cérebro.
   const sourceIndex = plan.args.indexOf("--setting-sources");
-  const auth = await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
+  const auth = gemPrep ? geminiAuthPreflight(ctx.resolved, plan.env, cfg, gemPrep.profilePath) : await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
     settingSources: sourceIndex < 0 ? "" : plan.args[sourceIndex + 1] ?? "",
     ignoreUserConfig: plan.args.includes("--ignore-user-config"),
     effectiveCodexConfig,
   });
   const authReason = authBlockReason(auth);
-  if (authReason) return block(`autenticação/cobrança: ${authReason}`);
+  if (authReason) { gemPrep?.attempt.cleanup(); return block(`autenticação/cobrança: ${authReason}`); }
   writeJsonAtomic(join(task.artifactsDir, "invocation.json"), redactDeep({ command: plan.command, args: plan.args, cwd: plan.cwd, enforced: plan.enforced }));
 
   let policyReason: string | null = null;
@@ -821,7 +889,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   store.saveTask(task);
   store.telemetry({ event: "task_started", runId: run.runId, taskId: task.taskId, brain: task.brain, executor: task.executor, kind: task.kind, resumed: ctx.resuming });
 
-  const parser = adapter.parser();
+  const parser = gemPrep ? (adapter as GeminiAdapter).parser(gemPrep.logPath) : adapter.parser();
   const nativeAbort = new AbortController();
   let nativeFailure: string | null = null;
   // Identidade única (catalog.ts): estrita para autorizar; alias de família não resolvido nunca vale como pedido exato.
@@ -884,6 +952,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       firstSignal: plan.firstSignal,
       signal: ctx.signal ? AbortSignal.any([ctx.signal, nativeAbort.signal]) : nativeAbort.signal,
       onSpawn: (pid) => {
+        gemPrep?.attempt.setChildPid(pid);
         task.pids.child = pid;
         store.saveTask(task);
       },
@@ -924,6 +993,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (result.stderrTail) writeFileSync(join(task.artifactsDir, "stderr.txt"), redact(result.stderrTail));
   const lastMessage = plan.lastMessagePath && existsSync(plan.lastMessagePath) ? readFileSync(plan.lastMessagePath, "utf8") : null;
   const outcome = parser.finish(lastMessage, result.stderrTail);
+  gemPrep?.attempt.cleanup();
   const lockIntact = lock.intact();
   const cancelledExternally = store.loadRun(run.runId)?.cancelled === true;
 

@@ -181,6 +181,8 @@ export type Task = {
   };
   effort?: { requested: string | null };
   native: { sessionId: string | null };
+  /** Executor gemini: HOME privado da cadeia (fora do .duo/); apagado quando a cadeia termina. */
+  geminiStateDir?: string;
   pids: { bridge: number | null; child: number | null };
   invocations: number;
   artifactsDir: string;

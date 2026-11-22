@@ -26,7 +26,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
 | A local bridge calling the official `codex exec` and `claude -p` | A gateway reusing tokens to call private endpoints |
 | Individual use, each client with its own official login | A service offering subscription login to third parties |
 | A `subscription-only` profile that blocks API, gateway and cloud access | A disguised paid API or automatic billing fallback |
-| One brain per run and up to four isolated executors per project | An autonomous swarm or a third planning AI |
+| One brain per run and several isolated executors per project (4 by default, configurable without a cap) | An autonomous swarm or a third planning AI |
 
 ## Requirements
 
@@ -286,7 +286,7 @@ Validated with real CLIs (E2E T12/T13): with history favoring Claude, the Claude
 3. **Scope**: relative paths only, no `..`, no symlinks, outside the denylist (`.env`, keys, `.git`, `.duo`…).
 4. **Compatibility**: required flags must appear in the installed version's `--help`.
 5. **Authentication**: API/gateway variables are removed from the executor environment, settings such as `apiKeyHelper` or custom providers block execution (except explicitly authorized loopback proxies), and the effective method must be confirmed as subscription authentication by official status.
-6. **Slots**: up to four worktree executors; any in-place task is exclusive.
+6. **Slots**: worktree executors up to `limits.maxConcurrentExecutors` (4 by default; any integer or `null` = no limit); any in-place task is exclusive.
 7. **Execution**: prompt through stdin, separate arguments, no shell, with timeout, output limit and process-tree termination.
 8. **Independent verification**: actually changed files (by hash), scope violations, diff of the executor's delta only, discrepancies between what the executor declared and did, changed base and acceptance commands executed by the bridge.
 
@@ -481,7 +481,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
 | Uma ponte local que chama `codex exec` e `claude -p` oficiais | Um gateway que reutiliza tokens para chamar endpoints privados |
 | Uso individual, cada cliente com seu próprio login oficial | Um serviço que oferece login de assinaturas a terceiros |
 | Perfil `subscription-only`, que bloqueia API, gateway e nuvem | Uma API paga disfarçada ou fallback automático de cobrança |
-| Um cérebro por run e até quatro executores isolados por projeto | Um enxame autônomo ou uma terceira IA planejadora |
+| Um cérebro por run e vários executores isolados por projeto (4 por padrão, configurável sem teto) | Um enxame autônomo ou uma terceira IA planejadora |
 
 ## Requisitos
 
@@ -743,7 +743,7 @@ Validado com as CLIs reais (E2E T12/T13): com histórico favorável ao Claude, o
 3. **Escopo**: só caminhos relativos, sem `..`, sem symlinks, fora da lista de negação (`.env`, chaves, `.git`, `.duo`…).
 4. **Compatibilidade**: flags obrigatórias precisam aparecer no `--help` da versão instalada.
 5. **Autenticação**: variáveis de API/gateway são removidas do ambiente do executor, configurações como `apiKeyHelper` ou provedores customizados bloqueiam a execução (exceto proxy loopback explicitamente autorizado), e o método efetivo precisa ser confirmado como assinatura pelo status oficial.
-6. **Slots**: até quatro executores em worktrees; qualquer tarefa in-place é exclusiva.
+6. **Slots**: executores em worktrees até `limits.maxConcurrentExecutors` (4 por padrão; qualquer inteiro ou `null` = sem limite); qualquer tarefa in-place é exclusiva.
 7. **Execução**: prompt pela stdin, argumentos separados, sem shell, com timeout, limite de saída e encerramento da árvore de processos.
 8. **Verificação independente**: arquivos realmente alterados (por hash), violações de escopo, diff apenas do delta do executor, divergência entre o que o executor declarou e o que fez, base alterada e comandos de aceite executados pela ponte.
 

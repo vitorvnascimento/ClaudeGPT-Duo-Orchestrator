@@ -51,7 +51,7 @@
 
 ## Parallel execution — 2026-11-04
 
-Admit up to four worktree executors under a shared guard; keep a legacy `lock.json` mirror marked `slots: true`. In-place execution is exclusive, including read-only tasks, and isolation is fixed for the chain. Run independent `duo delegate` requests in the background with `isolation: "worktree"`, distinct task keys and a shared existing `runId`; the default eight-invocation budget still applies.
+Admit up to four worktree executors under a shared guard (since 2026-11-22: 4 is the recommended default and the limit has no cap; `null` = unlimited); keep a legacy `lock.json` mirror marked `slots: true`. In-place execution is exclusive, including read-only tasks, and isolation is fixed for the chain. Run independent `duo delegate` requests in the background with `isolation: "worktree"`, distinct task keys and a shared existing `runId`; the default eight-invocation budget still applies.
 
 A detached snapshot commit includes the brain's tracked and untracked non-ignored changes, except denied paths and `.duo/`, bounded by `maxSnapshotBytes`. Dependency links default to `["node_modules"]`, use junctions for Windows directories and stay outside patches. Verification compares each worktree against its own snapshot. Under the admission guard, `duo apply` integrates one patch at a time in the brain's chosen order: touched-file drift rejects, other in-scope drift warns. A rejection requires rerunning on the current base. Quota and capacity updates use guarded read-modify-write. No automatic merge, push or integration commit.
 
@@ -140,7 +140,7 @@ Not consulted in this session (to review before related changes): Claude Code's 
 
 ## Execução paralela — 2026-11-04
 
-Admita até quatro executores em worktrees sob o mesmo guard; mantenha o espelho legado `lock.json` marcado com `slots: true`. In-place é exclusivo, inclusive para leitura, e o isolamento fica fixo na cadeia. Dispare pedidos independentes de `duo delegate` em segundo plano com `isolation: "worktree"`, chaves distintas e o mesmo `runId` existente; o orçamento padrão de oito invocações continua valendo.
+Admita até quatro executores em worktrees sob o mesmo guard (desde 22/11/2026: 4 é o padrão recomendado e o limite não tem teto; `null` = sem limite); mantenha o espelho legado `lock.json` marcado com `slots: true`. In-place é exclusivo, inclusive para leitura, e o isolamento fica fixo na cadeia. Dispare pedidos independentes de `duo delegate` em segundo plano com `isolation: "worktree"`, chaves distintas e o mesmo `runId` existente; o orçamento padrão de oito invocações continua valendo.
 
 Um commit destacado de snapshot inclui alterações rastreadas e não rastreadas não ignoradas do cérebro, exceto caminhos negados e `.duo/`, limitado por `maxSnapshotBytes`. Os links de dependências têm padrão `["node_modules"]`, usam junctions para diretórios no Windows e ficam fora dos patches. A verificação compara cada worktree com seu próprio snapshot. Sob o guard de admissão, `duo apply` integra um patch por vez, na ordem escolhida pelo cérebro: deriva nos arquivos tocados rejeita; nos demais arquivos do escopo, avisa. Rejeição exige nova execução na base atual. Cota e capacidade usam leitura-alteração-escrita protegidas. Sem merge, push ou commit de integração automático.
 

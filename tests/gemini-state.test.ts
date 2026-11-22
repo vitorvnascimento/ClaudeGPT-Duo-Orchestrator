@@ -138,3 +138,20 @@ describe("prune", () => {
     assert.ok(!removed.includes(dirsBy.terminal as string));
   });
 });
+
+describe("remoção validada", () => {
+  it("removeChainStateSafe refuses a path outside the state root or with another owner", async () => {
+    const { removeChainStateSafe } = await import("../src/state/gemini-state.js");
+    const env = fakeEnv();
+    const project = tmp("duo-gs-proj-");
+    const dir = chainStateDir(project, "c1", env);
+    const victim = tmp("duo-gs-victim-");
+    assert.equal(removeChainStateSafe(victim, project), false);
+    assert.ok(existsSync(victim));
+    assert.equal(removeChainStateSafe(dir, tmp("duo-gs-other-")), false);
+    assert.ok(existsSync(dir));
+    assert.equal(removeChainStateSafe(join(dir, "..", "..", ".."), project), false);
+    assert.equal(removeChainStateSafe(dir, project), true);
+    assert.equal(existsSync(dir), false);
+  });
+});

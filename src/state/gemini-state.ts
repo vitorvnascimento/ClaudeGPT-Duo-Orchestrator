@@ -2,9 +2,9 @@
 // O agy grava conversas, logs e cache ali (verificado: o ~/.gemini do usuário fica intacto). Só
 // Library/Keychains aponta para o real, que é onde está o login da assinatura.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export type ChainClass = "active" | "resumable" | "terminal" | "orphan";
 
@@ -104,6 +104,27 @@ export function listGeminiStates(env: NodeJS.ProcessEnv = process.env): { dir: s
 
 export function removeChainState(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Remoção a partir de um caminho guardado (ex.: task.geminiStateDir): só apaga se for exatamente
+ * .../duo/gemini-state/<sha do projeto>/<cadeia> e se o owner.json apontar para este projeto e esta cadeia.
+ */
+export function removeChainStateSafe(dir: string, projectRoot: string): boolean {
+  try {
+    const real = realpathSync(dir);
+    const chain = basename(real);
+    const hash = basename(dirname(real));
+    const stateDir = dirname(dirname(real));
+    if (basename(stateDir) !== "gemini-state" || basename(dirname(stateDir)) !== "duo") return false;
+    if (hash !== createHash("sha256").update(projectRoot).digest("hex").slice(0, 12)) return false;
+    const owner = JSON.parse(readFileSync(join(real, "owner.json"), "utf8")) as { projectRoot?: unknown; chainId?: unknown };
+    if (owner.projectRoot !== projectRoot || owner.chainId !== chain) return false;
+    rmSync(real, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

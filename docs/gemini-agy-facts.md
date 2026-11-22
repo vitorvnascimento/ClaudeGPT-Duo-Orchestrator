@@ -72,3 +72,12 @@ Segunda rodada da investigação (mesmo dia) muda o resultado. A trava do client
 
 ### Português
 `schedule` cria timers dentro da sessão do agente (não automações da conta) e foi negado pelo hook. MCP: com um servidor inerte e a permissão do agy liberada, só o hook ficou no caminho e negou; o servidor recebeu 0 chamadas. Navegador: as ferramentas existem no init, mas não são expostas ao modelo no modo headless; nenhum passo de navegador ocorreu.
+
+## Version note (2026-11-22)
+
+`agy` updated itself from 1.5.3 to **1.5.14** at 13:28 the same day (its own updater). The morning spike ran on 1.5.3; every real battery run (`docs/evidencias/gemini-battery-2026-11-22.json` and later) ran on **1.5.14**, and the schedule semantics come from the 1.5.14 changelog. The candidate verified pair is therefore `1.5.14` on `darwin`. Because the shared binary auto-updates, the duo will refuse Gemini after any update until the battery passes again on the new version.
+
+Browser: in headless 1.5.14 the browser tools are declared but never exposed to the model, and `browserEnabled` is not a session setting, so the browser probe cannot be exercised at runtime (inconclusive by design).
+
+### Português
+O `agy` se atualizou sozinho de 1.5.3 para 1.5.14 às 13:28; toda a bateria real rodou na 1.5.14, que é o par candidato a verificado (1.5.14, darwin). Como o binário compartilhado se atualiza sozinho, o duo recusa o Gemini depois de cada atualização até a bateria passar de novo. Navegador: no headless da 1.5.14 as ferramentas não são expostas ao modelo e não há configuração de sessão para ligá-las, então a sonda não tem como ser exercitada.

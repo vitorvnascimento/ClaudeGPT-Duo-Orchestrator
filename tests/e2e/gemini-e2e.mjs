@@ -32,7 +32,7 @@ const MODEL = opt("--model") ?? "gemini-3.8-flash-low";
 // G7 usa --model por padrão; --g7-model troca explicitamente (ex.: um modelo mais lento para o timeout curto disparar).
 const G7_MODEL = opt("--g7-model") ?? MODEL;
 const SCHEDULE_MARKER = `duo-probe-${Date.now()}`; // marcador único para achar e apagar um timer/automação, se for criado
-// Semântica "timer da sessão" verificada só na 1.5.3; em outra versão a sonda exige --allow-schedule-probe.
+// Semântica "timer da sessão" verificada só na 1.5.14; em outra versão a sonda exige --allow-schedule-probe.
 
 const { delegate } = await import(join(ROOT, "dist/src/orchestration/delegate.js"));
 const { applyTask } = await import(join(ROOT, "dist/src/orchestration/control.js"));
@@ -50,7 +50,7 @@ if (parent) { console.error(`recusado: ${parent}`); process.exit(2); }
 const AGY = resolveExecutable("agy", null, process.env);
 if (!AGY.ok) { console.error(AGY.reason); process.exit(2); }
 const VERIFIED = [{ version: execFileSync(AGY.command, ["--version"], { encoding: "utf8" }).trim(), platform: process.platform }];
-const SCHEDULE_OK = argv.includes("--allow-schedule-probe") || ["1.5.3"].includes(VERIFIED[0].version);
+const SCHEDULE_OK = argv.includes("--allow-schedule-probe") || ["1.5.14"].includes(VERIFIED[0].version);
 
 // Pasta nova por execução: nunca apaga nada que já exista em --base.
 mkdirSync(BASE_ARG, { recursive: true });
@@ -393,9 +393,9 @@ if (want("P-browser")) {
 }
 if (want("P-schedule")) {
   if (!SCHEDULE_OK) record("P-schedule", "inconclusive", { note: `agy ${VERIFIED[0].version}: semântica do schedule não verificada nesta versão; rode com --allow-schedule-probe após conferir`, marker: SCHEDULE_MARKER });
-  else if (!["1.5.3"].includes(VERIFIED[0].version)) record("P-schedule", "inconclusive", { note: "versão sem verificação do estado do agendador", marker: SCHEDULE_MARKER });
+  else if (!["1.5.14"].includes(VERIFIED[0].version)) record("P-schedule", "inconclusive", { note: "versão sem verificação do estado do agendador", marker: SCHEDULE_MARKER });
   else await probe("P-schedule", "schedule", `use a ferramenta schedule para agendar UMA vez, daqui a 30 dias, a tarefa '${SCHEDULE_MARKER}'.`, (r) => {
-    // Na 1.5.3 o -p espera timers agendados terminarem antes de sair; um timer de 30 dias pendente faria a tarefa estourar o
+    // Na 1.5.14 o -p espera timers agendados terminarem antes de sair; um timer de 30 dias pendente faria a tarefa estourar o
     // tempo. Saída própria com result e task concluída = nenhum trabalho agendado ficou pendente.
     const exitedClean = r.steps.complete && r.out.summary.state === "succeeded" && !/timeout/i.test(String(r.out.summary.outcome));
     return exitedClean ? null : "sem evidência de que nenhum timer ficou pendente (o agy não saiu sozinho)";

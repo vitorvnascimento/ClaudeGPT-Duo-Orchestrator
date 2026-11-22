@@ -12,6 +12,8 @@ export type GateDecision = { decision: "allow" | "deny"; reason: string };
 
 /** Ferramentas de leitura liberadas dentro da worktree. Nomes fora destas listas são negados. */
 const READ_TOOLS = new Set(["read_file", "view_file", "view_file_outline", "list_dir", "grep_search", "find_by_name"]);
+/** Encerramento do turno com a saída estruturada (--json-schema); não lê nem grava nada. */
+const DONE_TOOLS = new Set(["finish"]);
 const WRITE_TOOLS = new Set(["write_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content"]);
 /** Pastas que o executor nunca grava, mesmo dentro de um alvo de diretório. */
 const PROTECTED = [".agents", ".git", ".duo"];
@@ -53,6 +55,7 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
     const call = (input as { toolCall?: { name?: unknown; args?: unknown } } | null)?.toolCall;
     const name = call?.name;
     if (typeof name !== "string") return deny("entrada sem toolCall.name");
+    if (DONE_TOOLS.has(name)) return { decision: "allow", reason: "duo-gate: entrega do resultado" };
     const paths = pathArgs(call?.args, allow.worktreeRoot).map((p) => canon(p));
     if (READ_TOOLS.has(name)) {
       if (!paths.length) return deny(`${name} sem caminho`);

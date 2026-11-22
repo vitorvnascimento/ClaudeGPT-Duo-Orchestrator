@@ -47,6 +47,9 @@ describe("decideToolCall", () => {
       assert.equal(decideToolCall(call(name, { CommandLine: "ls", Path: "/WT/src/ok.ts" }), allow, canon).decision, "deny", name);
     }
   });
+  it("finish (structured result delivery) is allowed, even in read-only mode", () => {
+    assert.equal(decideToolCall(call("finish", { Result: "{}" }), { ...allow, readOnly: true }, canon).decision, "allow");
+  });
   it("malformed input → deny", () => {
     for (const bad of [null, 1, "x", {}, { toolCall: null }, { toolCall: { name: 3 } }]) {
       assert.equal(decideToolCall(bad, allow, canon).decision, "deny");

@@ -62,6 +62,21 @@ describe("CLI com gemini", () => {
   });
 });
 
+describe("executores simultâneos acima do recomendado", () => {
+  it("doctor avisa quando maxConcurrentExecutors passa de 4 ou é null", () => {
+    for (const value of [8, null]) {
+      sb = makeSandbox({ limits: { maxConcurrentExecutors: value } });
+      const r = spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd: sb.root, env: sb.env, encoding: "utf8" });
+      const report = JSON.parse(r.stdout) as { warnings: string[] };
+      assert.ok(report.warnings.some((w) => /maxConcurrentExecutors/.test(w) && /recomendado/.test(w)), JSON.stringify(report.warnings));
+      sb.cleanup(); sb = undefined;
+    }
+    sb = makeSandbox();
+    const ok = JSON.parse(spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd: sb.root, env: sb.env, encoding: "utf8" }).stdout) as { warnings: string[] };
+    assert.ok(!ok.warnings.some((w) => /maxConcurrentExecutors/.test(w)));
+  });
+});
+
 describe("disponibilidade e cota do gemini", () => {
   it("live availability returns a gemini entry (unverified → unavailable) without breaking the others", async () => {
     sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });

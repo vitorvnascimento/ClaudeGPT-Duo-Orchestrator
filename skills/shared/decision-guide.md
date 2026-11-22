@@ -59,7 +59,7 @@ Segredos e credenciais, push/publicação/deploy, exclusões destrutivas, compra
 
 ## Orçamento
 
-Por padrão, até 8 invocações delegadas por run (incluindo retentativas) e 4 executores simultâneos por projeto; `maxConcurrentExecutors` aceita 1..4. Estimativas de custo do cliente não são saldo de assinatura.
+Por padrão, até 8 invocações delegadas por run (incluindo retentativas) e 4 executores simultâneos por projeto (padrão recomendado); `maxConcurrentExecutors` aceita qualquer inteiro >= 1 ou `null` (sem limite) — suba só se precisar, e lembre que `maxDelegationsPerRun` também limita o paralelismo de um run. Estimativas de custo do cliente não são saldo de assinatura.
 
 ## Execução paralela
 

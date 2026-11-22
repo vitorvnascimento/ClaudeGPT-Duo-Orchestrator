@@ -12,7 +12,7 @@ import { readJson, reclaimStale, renameWithRetry, withFileLock, writeJsonAtomic 
 
 const roots: string[] = [];
 const owners: ExecutorSlots[] = [];
-const slots = (p: string, max: number) => { const owner = new ExecutorSlots(p, max); owners.push(owner); return owner; };
+const slots = (p: string, max: number | null) => { const owner = new ExecutorSlots(p, max); owners.push(owner); return owner; };
 const root = () => { const p = mkdtempSync(join(tmpdir(), "duo-slots-")); roots.push(p); return p; };
 afterEach(() => { for (const owner of owners.splice(0)) owner.release(); for (const p of roots.splice(0)) rmSync(p, { recursive: true, force: true }); });
 const req = (patch: Partial<AdmitRequest> = {}): AdmitRequest => ({ taskId: "task-teste-000000", runId: "run-teste-000000", kind: "implement", requested: "worktree", fixed: null, gitReady: true, ...patch });
@@ -23,6 +23,14 @@ it("admite até max e bloqueia o seguinte", () => {
   assert.equal(slots(p, 2).admit(req()).ok, true);
   assert.match(JSON.stringify(slots(p, 2).admit(req())), /limite de 2/);
 });
+it("sem teto: admite além de 4 com max maior ou null", () => {
+  const p = root();
+  for (let i = 0; i < 6; i++) assert.equal(slots(p, 6).admit(req()).ok, true, `slot ${i}`);
+  assert.equal(slots(p, 6).admit(req()).ok, false);
+  const q = root();
+  for (let i = 0; i < 9; i++) assert.equal(slots(q, null).admit(req()).ok, true, `ilimitado ${i}`);
+});
+
 it("in-place ativo bloqueia qualquer nova admissão", () => {
   const p = root();
   slots(p, 4).admit(req({ requested: "in-place" }));

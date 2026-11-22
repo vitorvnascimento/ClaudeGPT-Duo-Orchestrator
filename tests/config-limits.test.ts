@@ -51,9 +51,9 @@ describe("limites numéricos da config", () => {
     }
   });
 
-  it("maxConcurrentExecutors aceita 1..4 e recusa 0, 5 e 2.5", () => {
-    for (const value of [1, 2, 3, 4]) assert.equal(loadConfig(writeLimits({ maxConcurrentExecutors: value })).limits.maxConcurrentExecutors, value);
-    for (const value of [0, 5, 2.5]) assert.throws(() => loadConfig(writeLimits({ maxConcurrentExecutors: value })), /maxConcurrentExecutors/);
+  it("maxConcurrentExecutors: 4 é o padrão recomendado, sem teto (qualquer inteiro >= 1 ou null = sem limite)", () => {
+    for (const value of [1, 4, 5, 16, 100, null]) assert.equal(loadConfig(writeLimits({ maxConcurrentExecutors: value })).limits.maxConcurrentExecutors, value);
+    for (const value of [0, -1, 2.5, "4"]) assert.throws(() => loadConfig(writeLimits({ maxConcurrentExecutors: value })), /maxConcurrentExecutors/);
   });
 
   it("padrões: 4 executores simultâneos, 8 delegações por run, links node_modules", () => {

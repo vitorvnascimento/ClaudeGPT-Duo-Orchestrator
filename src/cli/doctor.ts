@@ -167,6 +167,10 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
   };
 
   const warnings: string[] = [];
+  const mce = effectiveCfg.limits.maxConcurrentExecutors;
+  if (mce === null || mce > 4) {
+    warnings.push(`limits.maxConcurrentExecutors=${mce === null ? "null (sem limite)" : mce} acima do recomendado (4): cada executor (Codex ou agy) sobe processos e MCPs próprios; acompanhe a memória. O orçamento por run (limits.maxDelegationsPerRun=${effectiveCfg.limits.maxDelegationsPerRun}) também limita o paralelismo de uma orquestração.`);
+  }
   if (env.CODEX_SANDBOX_NETWORK_DISABLED === "1" || env.CODEX_SANDBOX) {
     warnings.push("processo rodando dentro do sandbox do Codex: `duo delegate` precisará de aprovação para executar fora do sandbox (rede e login do executor).");
   }

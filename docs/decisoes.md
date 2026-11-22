@@ -21,7 +21,7 @@
 | 15 | A violation is reported, **not reverted** | Never discard work; the user decides |
 | 16 | State in JSON/JSONL with atomic writes to `.duo/` | Simple, local, inspectable; no database or SaaS |
 | 17 | State machine `planned → approved → running → succeeded / failed / blocked / cancelled`, with `blocked → approved` on resumption | Explicit resumption, reusing the native session and keeping the original base to avoid repeating changes |
-| 18 | Default limits: 8 invocations per run and 4 executors per project (configurable 1..4) | Shared `runId` bounds parallel dispatches and retries; any in-place task remains exclusive |
+| 18 | Default limits: 8 invocations per run and 4 executors per project (recommended default; no upper cap since 2026-11-22, `null` = unlimited) | Shared `runId` bounds parallel dispatches and retries; any in-place task remains exclusive |
 | 19 | Metrics with explicit source (`native`, `local-estimate`, `local-measure`, `manual`, `unavailable`) and separate native schemas | Avoids adding providers together and double-counting cache (in Claude, `input_tokens` excludes cache; in Codex, `cached_input_tokens` is a subset) |
 | 20 | Optional worktree, integrated by `duo apply` only if HEAD and hashes of files touched by the patch have not changed | Rejects a diff against an outdated base |
 | 21 | On Windows, reject `.cmd` shims | Running them would require a shell; configure the `.exe` or `[node, script]` |
@@ -110,7 +110,7 @@ Not consulted in this session (to review before related changes): Claude Code's 
 | 15 | Violação é reportada, **não revertida** | Nunca descartar trabalho; o usuário decide |
 | 16 | Estado em JSON/JSONL com escrita atômica em `.duo/` | Simples, local, inspecionável; sem banco nem SaaS |
 | 17 | Máquina de estados `planned → approved → running → succeeded / failed / blocked / cancelled`, com `blocked → approved` na retomada | Retomada explícita, reutilizando a sessão nativa e mantendo a base original para não repetir mudanças |
-| 18 | Limites padrão: 8 invocações por run e 4 executores por projeto (configurável 1..4) | O mesmo `runId` limita disparos paralelos e retentativas; qualquer tarefa in-place continua exclusiva |
+| 18 | Limites padrão: 8 invocações por run e 4 executores por projeto (padrão recomendado; sem teto desde 22/11/2026, `null` = sem limite) | O mesmo `runId` limita disparos paralelos e retentativas; qualquer tarefa in-place continua exclusiva |
 | 19 | Métricas com origem explícita (`native`, `local-estimate`, `local-measure`, `manual`, `unavailable`) e esquemas nativos separados | Evita somar fornecedores e contar cache em dobro (no Claude, `input_tokens` exclui cache; no Codex, `cached_input_tokens` é subconjunto) |
 | 20 | Worktree opcional, integrado por `duo apply` somente se HEAD e hashes dos arquivos tocados pelo patch não mudaram | Rejeita diff sobre base desatualizada |
 | 21 | No Windows, recusar shims `.cmd` | Executá-los exigiria shell; configure o `.exe` ou `[node, script]` |

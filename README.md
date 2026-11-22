@@ -294,7 +294,7 @@ A model's "completed" with a failing test becomes `failed`. Nothing is automatic
 
 ## Parallel executors
 
-One brain can run **up to four independent executors in separate worktrees in the same existing run**. Use `isolation: "worktree"`, the same `runId` and a distinct `taskKey` in every parallel request. Assign separate writable files and enough context for each executor to finish without another executor's patch.
+One brain can run **several independent executors in separate worktrees in the same existing run** — four by default (recommended), and more when you raise `limits.maxConcurrentExecutors` (any integer, or `null` for no limit; `duo doctor` warns above four because each executor starts its own processes and MCP servers). Use `isolation: "worktree"`, the same `runId` and a distinct `taskKey` in every parallel request. Assign separate writable files and enough context for each executor to finish without another executor's patch.
 
 The defaults in the target project's `.duo/config.json` are:
 
@@ -751,7 +751,7 @@ Um "completed" do modelo com teste falhando vira `failed`. Nada é revertido aut
 
 ## Executores paralelos
 
-Um cérebro pode executar **até quatro executores independentes em worktrees separadas no mesmo run existente**. Use `isolation: "worktree"`, o mesmo `runId` e um `taskKey` diferente em cada pedido paralelo. Separe os arquivos graváveis e forneça contexto suficiente para cada executor terminar sem depender do patch de outro.
+Um cérebro pode executar **vários executores independentes em worktrees separadas no mesmo run existente**: quatro por padrão (recomendado), e mais quando você sobe `limits.maxConcurrentExecutors` (qualquer inteiro, ou `null` para sem limite; o `duo doctor` avisa acima de quatro, porque cada executor sobe processos e MCPs próprios). Use `isolation: "worktree"`, o mesmo `runId` e um `taskKey` diferente em cada pedido paralelo. Separe os arquivos graváveis e forneça contexto suficiente para cada executor terminar sem depender do patch de outro.
 
 Os padrões no `.duo/config.json` do projeto de trabalho são:
 

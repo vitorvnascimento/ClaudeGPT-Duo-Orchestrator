@@ -30,7 +30,8 @@ export type DuoConfig = {
   limits: {
     maxDelegationsPerRun: number;
     qualityBudgetAuthorized: boolean;
-    maxConcurrentExecutors: number;
+    /** Executores simultâneos por projeto. 4 é o padrão recomendado; sem teto: qualquer inteiro >= 1, ou null = sem limite. */
+    maxConcurrentExecutors: number | null;
     worktreeLinks: string[];
     timeoutSec: number;
     maxPromptBytes: number;
@@ -189,7 +190,8 @@ export function loadConfig(projectRoot: string): DuoConfig {
   if (!["economico", "equilibrado", "qualidade"].includes(cfg.policy)) problems.push("policy");
   if (!["balance", "preserve-codex", "preserve-claude"].includes(cfg.quotaPreference)) problems.push("quotaPreference");
   if (!Number.isInteger(cfg.limits.maxDelegationsPerRun) || cfg.limits.maxDelegationsPerRun < 1) problems.push("limits.maxDelegationsPerRun");
-  if (!Number.isInteger(cfg.limits.maxConcurrentExecutors) || cfg.limits.maxConcurrentExecutors < 1 || cfg.limits.maxConcurrentExecutors > 4) problems.push("limits.maxConcurrentExecutors (inteiro de 1 a 4)");
+  const mce = cfg.limits.maxConcurrentExecutors;
+  if (mce !== null && (!Number.isInteger(mce) || mce < 1)) problems.push("limits.maxConcurrentExecutors (inteiro >= 1, ou null para sem limite)");
   const rawLimits = (raw as { limits?: Record<string, unknown> } | null)?.limits;
   if (!rawLimits || !Object.hasOwn(rawLimits, "worktreeLinks")) {
     cfg.limits.worktreeLinks = cfg.limits.worktreeLinks.filter((p) => !isDenied(p, cfg.scope.deny));

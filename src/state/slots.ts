@@ -72,7 +72,8 @@ function refreshMirror(root: string): boolean {
 export class ExecutorSlots {
   private own: SlotInfo | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
-  constructor(private readonly projectRoot: string, private readonly max: number) {}
+  /** max: teto de executores simultâneos; null = sem limite (o padrão recomendado da config é 4). */
+  constructor(private readonly projectRoot: string, private readonly max: number | null) {}
 
   admit(req: AdmitRequest): AdmitResult {
     return withAdmission(this.projectRoot, () => {
@@ -83,11 +84,13 @@ export class ExecutorSlots {
       }
       const slots = activeSlots(this.projectRoot), holders = slots.map((s) => `${s.taskId}, pid ${s.pid}`).join("; ");
       if (slots.some((s) => s.isolation === "in-place")) return { ok: false, reason: `outro executor in-place está ativo (${holders}); aguarde ele terminar` };
-      if (slots.length >= this.max) return { ok: false, reason: `limite de ${this.max} executores simultâneos atingido (${holders})` };
+      if (this.max !== null && slots.length >= this.max) return { ok: false, reason: `limite de ${this.max} executores simultâneos atingido (${holders}); suba limits.maxConcurrentExecutors em .duo/config.json se precisar de mais` };
       if (req.fixed === "in-place" && slots.length) return { ok: false, reason: `cadeia fixa in-place requer o projeto livre (${holders}); aguarde os executores terminarem` };
       const isolation = (req.fixed ?? req.requested) === "in-place" && !slots.length ? "in-place" : "worktree";
       if (isolation === "worktree" && !req.gitReady) return { ok: false, reason: "execução paralela requer um repositório git com ao menos um commit" };
-      const slot = Array.from({ length: this.max }, (_, i) => i).find((i) => !existsSync(join(dir, `slot-${i}.json`)));
+      // Primeiro índice livre (sem teto: cresce conforme a ocupação; com teto, nunca passa de max - 1).
+      let slot: number | undefined;
+      for (let i = 0; this.max === null || i < this.max; i++) if (!existsSync(join(dir, `slot-${i}.json`))) { slot = i; break; }
       if (slot === undefined) return { ok: false, reason: "slots indisponíveis: registro de executor inválido; verifique .duo/locks/" };
       const info: SlotInfo = { slot, pid: process.pid, taskId: req.taskId, runId: req.runId, nonce: randomBytes(16).toString("hex"), startedAt: new Date().toISOString(), isolation, kind: req.kind };
       const path = join(dir, `slot-${slot}.json`);

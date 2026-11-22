@@ -145,13 +145,24 @@ export function activeSlots(projectRoot: string): SlotInfo[] {
     .filter((name) => /^slot-\d+\.json$/.test(name))
     .flatMap((name) => {
       const fileSlot = Number(name.slice(5, -5));
-      const s = readJson<unknown>(join(dir, name));
+      const s = readSlot(join(dir, name));
       const slot = isWellFormedSlot(s) && s.slot === fileSlot ? s : malformedSlot(fileSlot);
       return slotActive(projectRoot, slot) ? [slot] : [];
     });
   const legacy = readJson<LockInfo & { slots?: boolean }>(join(duoDir(projectRoot), "lock.json"));
   if (legacy && !legacy.slots && validPid(legacy.pid) && isPidAlive(legacy.pid)) slots.push({ ...legacy, slot: -1, isolation: "in-place", kind: "implement" });
   return slots.sort((a, b) => a.slot - b.slot);
+}
+
+/**
+ * Lê um slot tolerando BOM. JSON inválido vira null. Erro de leitura: null, ou lança com `strict`
+ * (a recuperação precisa distinguir "ilegível agora" de "malformado").
+ */
+function readSlot(path: string, strict = false): unknown {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { if (strict) throw error; return null; }
+  try { return JSON.parse(text.replace(/^\uFEFF/, "")); } catch { return null; }
 }
 
 /** Use complete argv for wrappers and paths with spaces, then check cwd for the remaining candidates. */
@@ -168,6 +179,7 @@ export function inspectCodexProcesses(slot: SlotInfo): CodexProcessProbeResult {
   const executable = new RegExp(`(?:^|[/\\s])(?:${escaped}|codex(?:\\.[cm]?js)?)(?=\\s|$)`);
   for (const line of ps.stdout.trimEnd().split("\n")) {
     const row = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (row && Number(row[1]) === 0) continue; // kernel_task
     if (!row || !validPid(Number(row[1]))) return unknown;
     const pid = Number(row[1]);
     if (pid === process.pid) continue;
@@ -196,11 +208,9 @@ export function recoverSlotsLocked(root: string): SlotInfo[] {
   let removed = false;
   for (const name of readdirSync(dir).filter(name => /^slot-\d+\.json$/.test(name))) {
     const path = join(dir, name);
-    let text: string;
-    try { text = readFileSync(path, "utf8"); }
+    let slot: unknown;
+    try { slot = readSlot(path, true); }
     catch { continue; } // sumiu, ou erro de leitura (permissão, E/S): não prova que o dono acabou, o slot continua bloqueando
-    let slot: unknown = null;
-    try { slot = JSON.parse(text.replace(/^\uFEFF/, "")); } catch { slot = null; }
     const valid = isWellFormedSlot(slot) && slot.slot === Number(name.slice(5, -5));
     if (valid ? slotActive(root, slot as SlotInfo) : mtimeAge(path) <= 10_000) continue;
     removeWithRetry(path);
@@ -226,8 +236,8 @@ export function releaseOrphanSlot(
   return withAdmission(projectRoot, () => {
     const dir = locksDir(projectRoot);
     const matches = readdirSync(dir).filter((name) => /^slot-\d+\.json$/.test(name))
-      .map((name) => ({ path: join(dir, name), fileSlot: Number(name.slice(5, -5)), slot: readJson<SlotInfo>(join(dir, name)) }))
-      .filter(({ fileSlot, slot }) => isWellFormedSlot(slot) && slot.slot === fileSlot && slot.exclusive === true && slot.nonce === nonce);
+      .map((name) => ({ path: join(dir, name), fileSlot: Number(name.slice(5, -5)), slot: readSlot(join(dir, name)) as SlotInfo | null }))
+      .filter(({ fileSlot, slot }) => isWellFormedSlot(slot) && slot.slot === fileSlot && (slot.exclusive === true || pendingSpawn(slot)) && slot.nonce === nonce);
     const slot = matches[0]?.slot;
     if (!slot && confirmed && activeSlots(projectRoot).some(entry => entry.pid === -1 && entry.nonce === nonce)) {
       const active = recoverSlotsLocked(projectRoot);

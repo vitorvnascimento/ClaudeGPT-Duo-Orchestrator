@@ -99,6 +99,7 @@ export function zstdFrames(data: Buffer): Buffer[] {
       if (last) break;
     }
     if (checksum) { need(4); pos += 4; }
+    if (frames.length >= 100_000) throw new RolloutReadError("rollout_zstd_invalid"); // teto antes de reter a vista
     frames.push(data.subarray(start, pos));
   }
   if (!frames.length) throw new RolloutReadError("rollout_zstd_invalid");
@@ -127,9 +128,7 @@ export function readBoundedRollout(file: string): string {
     // percorre os frames e decodifica um a um, exigindo que cada um esteja completo.
     // Cópia para um buffer só: as partes do Node guardam alocações maiores que o texto (16 KiB por frame pequeno).
     let buf = Buffer.allocUnsafe(Math.min(limit, 1024 * 1024)), total = 0;
-    const frames = zstdFrames(data);
-    if (frames.length > 100_000) throw new RolloutReadError("rollout_zstd_invalid");
-    for (const frame of frames) {
+    for (const frame of zstdFrames(data)) {
       let part: Buffer;
       try { part = zlib.zstdDecompressSync(frame, { maxOutputLength: limit - total }); }
       catch (error) {

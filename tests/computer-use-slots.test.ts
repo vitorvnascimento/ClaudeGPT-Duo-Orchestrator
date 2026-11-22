@@ -579,3 +579,26 @@ it("doctor inspeciona sem recuperar quando não consegue pegar o lock", { skip: 
   try { assert.deepEqual(inspectSlots(p), []); }
   finally { chmodSync(locks, 0o700); }
 });
+
+it("slot comum em spawning com ponte morta fica ocupado e sai por recuperação confirmada", { skip: process.platform === "win32" }, (t) => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  const cwd = join(p, ".duo/worktrees/task-exclusive-000000");
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "worktree", pid: deadPid(), nonce: "comum-spawn", startedAt: new Date(Date.now() - 60_000).toISOString(),
+    phase: "spawning", spawnStartedAt: new Date().toISOString(), spawnCommand: "claude", spawnCwd: cwd, childPid: null });
+  assert.equal(activeSlots(p).length, 1, "spawn em andamento não prova que o filho não existe");
+  assert.match(JSON.stringify(owner(p, 1).admit(req({ taskId: "task-outra-000000", exclusive: true }))), /ok":false/);
+  t.mock.method(childProcess, "spawnSync", (() => ({ status: 0, stdout: "0 kernel_task kernel_task\n1 /sbin/launchd /sbin/launchd\n" })) as unknown as typeof childProcess.spawnSync);
+  syncBuiltinESMExports();
+  try {
+    const r = releaseOrphanSlot(p, "comum-spawn", true);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(activeSlots(p).length, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("slot com BOM é lido igual na inspeção e na liberação", () => {
+  const p = root(), path = join(p, ".duo/locks/slot-0.json");
+  writeJsonAtomic(path, { ...req(), slot: 0, isolation: "in-place", exclusive: true, pid: process.pid, nonce: "com-bom", startedAt: new Date().toISOString(), childPid: null, phase: "reserved" });
+  writeFileSync(path, "﻿" + JSON.stringify(readJson(path)));
+  assert.equal(activeSlots(p)[0]?.nonce, "com-bom");
+});

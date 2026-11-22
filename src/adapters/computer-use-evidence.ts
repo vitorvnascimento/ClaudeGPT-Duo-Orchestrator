@@ -465,7 +465,8 @@ export class ComputerUseCollector {
     // Pareamento por código idêntico é em ordem. Se o rollout tem menos chamadas de um código do que o stream,
     // não dá para saber qual chamada do stream ele registrou: nenhuma captura desse código é atribuída.
     const inRollout = new Map<string, number>(), inStream = new Map<string, number>();
-    for (const c of new Set(this.rolloutCalls.values())) inRollout.set(c.signature, (inRollout.get(c.signature) ?? 0) + 1);
+    // Só a tentativa atual: chamadas iguais de uma invocação anterior (retomada) não completam a contagem.
+    for (const c of new Set(this.rolloutCalls.values())) if (Date.parse(c.at) >= this.attemptSince) inRollout.set(c.signature, (inRollout.get(c.signature) ?? 0) + 1);
     for (const c of this.streamCalls) inStream.set(c.signature, (inStream.get(c.signature) ?? 0) + 1);
     for (const c of this.signatureMatched) if ((inRollout.get(c.signature) ?? 0) < (inStream.get(c.signature) ?? 0)) this.attributed.delete(c);
   }

@@ -2,7 +2,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
+import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
+import { isVerifiedAgy } from "../adapters/gemini.js";
+import { probeSandbox } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { ConfigError, configPath, DEFAULT_CONFIG, loadConfig, type DuoConfig, type Provider } from "../config.js";
@@ -114,6 +116,26 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       blockers,
     };
   }
+
+  // Gemini (agy): só diagnóstico local, sem inferência. O teste real de contenção fica na bateria (tests/fixtures/agy/probe).
+  if (effectiveCfg.executors.gemini.enabled) {
+    const resolved = resolveExecutable("agy", effectiveCfg.executors.gemini.command, env);
+    if (!resolved.ok) providers.gemini = { installed: false, reason: resolved.reason, blockers: [resolved.reason] };
+    else {
+      const caps = probe(resolved, ["--help"], AGY_FLAGS, probeEnv);
+      const sandbox = probeSandbox();
+      const verified = isVerifiedAgy(caps.version, process.platform);
+      const blockers: string[] = [];
+      if (process.platform !== "darwin") blockers.push("executor gemini exige macOS nesta versão");
+      if (caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
+      if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
+      if (!verified) blockers.push(`versão ${caps.version ?? "desconhecida"} do agy não verificada nesta plataforma`);
+      if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
+      ready.gemini = blockers.length === 0;
+      providers.gemini = { installed: true, path: resolved.command, source: resolved.source, version: caps.version, capabilities: caps.flags,
+        missingRequired: caps.missingRequired, sandbox, verified, blockers };
+    }
+  } else providers.gemini = { enabled: false, note: "executors.gemini.enabled=false" };
 
   const claudeUserSettings = join(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "settings.json");
   const audit = {

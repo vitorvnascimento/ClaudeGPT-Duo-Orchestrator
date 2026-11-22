@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ConfigError, EXECUTORS, loadConfig, type BrainProvider, type Provider } from "../config.js";
+import { pruneGeminiStates, type ChainClass } from "../state/gemini-state.js";
 import { repoRoot } from "../git.js";
 import { acceptTask, applyTask, cancelRun, refreshInterrupted } from "../orchestration/control.js";
 import { delegate, EXIT } from "../orchestration/delegate.js";
@@ -17,6 +18,7 @@ import type { DelegationRequest, TaskKind } from "../state/types.js";
 import { packageRoot } from "../paths.js";
 import { activeSlots } from "../state/slots.js";
 import { Store } from "../state/store.js";
+import { isPidAlive } from "../adapters/process.js";
 import { buildReport, formatReportText, quotaView, setQuota } from "../telemetry/report.js";
 import { loadCliLatest, cliUpdateWarnings } from "../adapters/cli-latest.js";
 import { tierOf, extraUsage } from "../adapters/tiers.js";
@@ -72,6 +74,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   handoff: ["to", "run-id", "next"],
   quota: ["provider", "used-percent", "resets-at", "note"],
   update: ["apply", "check", "quiet"],
+  "gemini-state": ["older-than"],
 };
 const GLOBAL_FLAGS = ["json", "help", "version"];
 
@@ -108,6 +111,19 @@ function str(args: Args, k: string): string | undefined {
 function provider(v: string | undefined, flag: string): Provider {
   if (!EXECUTORS.includes(v as Provider)) throw new Error(`${flag} deve ser claude, codex ou gemini`);
   return v as Provider;
+}
+
+/** Classe da cadeia para a limpeza do HOME privado do gemini (a cadeia "catalog" é a descoberta de modelos). */
+function classifyGeminiChain(projectRoot: string, chainId: string): ChainClass {
+  if (chainId === "catalog") return "resumable";
+  const store = new Store(projectRoot);
+  const tasks = store.listRuns().flatMap((r) => store.listTasks(r))
+    .filter((t) => (t.selection?.chainRoot ?? t.selection?.chainId ?? t.taskId) === chainId);
+  if (!tasks.length) return "orphan";
+  if (tasks.some((t) => t.pids.child && isPidAlive(t.pids.child))) return "active";
+  if (tasks.some((t) => t.state === "running" || t.state === "approved")) return "active";
+  if (tasks.some((t) => t.applied || t.accepted)) return "terminal";
+  return tasks.some((t) => t.state === "blocked") ? "resumable" : "terminal";
 }
 
 function brainProvider(v: string | undefined, flag: string): BrainProvider {
@@ -345,6 +361,15 @@ async function main(argv: string[]): Promise<number> {
       const r = acceptTask(projectRootOf(cwd), taskId, !args.flags.reject, str(args, "note") ?? "");
       print(r);
       return r.ok ? 0 : 1;
+    }
+    case "gemini-state": {
+      if (args._[1] !== "prune") throw new Error("uso: duo gemini-state prune [--older-than <dias>]");
+      const days = str(args, "older-than");
+      const olderThanDays = days === undefined ? undefined : Number(days);
+      if (olderThanDays !== undefined && (!Number.isFinite(olderThanDays) || olderThanDays < 0)) throw new Error("--older-than deve ser um número de dias >= 0");
+      const removed = pruneGeminiStates({ ...(olderThanDays !== undefined ? { olderThanDays } : {}), classify: classifyGeminiChain });
+      print(removed.length ? `estados do gemini removidos (${removed.length}):\n${removed.join("\n")}` : "nenhum estado do gemini removido");
+      return 0;
     }
     case "handoff": {
       const to = brainProvider(str(args, "to"), "--to");

@@ -13,7 +13,8 @@ import { quotaBlock, quotaStates } from "./quota.js";
 import { capacityBlock } from "./capacity.js";
 import { confirmFloor, selectModel } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
-import type { DuoConfig, Provider } from "../config.js";
+import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
+import { executorEligible } from "./alternates.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
@@ -149,6 +150,11 @@ function evidenceFor(tasks: Task[], cand: Cand, q: RouteQuery, minSamples: numbe
   };
 }
 
+/** Fornecedores que o roteador pode propor: o mesmo filtro das alternativas (gemini desligado/não verificado fica fora). */
+function routable(cfg: DuoConfig, kind: TaskKind): Provider[] {
+  return EXECUTORS.filter((p) => executorEligible(p, { kind, fixedIsolation: null, cfg, platform: process.platform }));
+}
+
 export type AvailabilityFn = (executor: Provider) => { available: boolean; reasons: string[] };
 
 /** Disponibilidade real, sem inferência: CLI instalada, login por assinatura, ciência de uso extra, limite observado. */
@@ -193,10 +199,10 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
 const key = (p: Provider, m: string | null) => `${p}:${m ?? "(padrão)"}`;
 
 /** Candidatos: catálogo real quando descoberto; senão, a lista de reserva da config. */
-function candidatesFrom(cfg: DuoConfig, catalog: Catalog | null, needs: Capability[], defaults: Record<Provider, string | null>): { cands: Cand[]; filteredOut: string[] } {
+function candidatesFrom(cfg: DuoConfig, catalog: Catalog | null, needs: Capability[], defaults: Record<Provider, string | null>, kind: TaskKind = "implement"): { cands: Cand[]; filteredOut: string[] } {
   const cands: Cand[] = [];
   const filteredOut: string[] = [];
-  for (const provider of ["claude", "codex"] as Provider[]) {
+  for (const provider of routable(cfg, kind)) {
     const pc = catalog?.providers[provider];
     if (pc?.ok && pc.models.length) {
       const configured = cfg.executors[provider].model ?? defaults[provider];
@@ -239,7 +245,7 @@ export function evaluateCandidates(
   const tasks = store.listRuns().flatMap((r) => store.listTasks(r));
   const min = cfg.routing.minSamples;
   const needs = q.needs ?? [];
-  const { cands, filteredOut } = candidatesFrom(cfg, catalog, needs, defaults);
+  const { cands, filteredOut } = candidatesFrom(cfg, catalog, needs, defaults, q.kind);
   const quotas = quotaStates(store);
   const tier = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles).tier;
   const evals: CandidateEval[] = cands.map((cand) => {
@@ -333,7 +339,7 @@ function recommendResult(
   const { evals, filteredOut } = evaluateCandidates(store, cfg, q, availability, catalog, defaults);
   const assessment = assessComplexity(q, q.paths ?? [], q.tags, cfg.routing.adaptive.lightMaxFiles);
   const adaptive = cfg.routing.adaptive.enabled;
-  const selections = (["claude", "codex"] as const).flatMap((provider) => {
+  const selections = routable(cfg, q.kind).flatMap((provider) => {
     const selected = selectModel(catalog, cfg, provider, assessment.tier, { candidates: evals, floor: assessment.floor, needs, allowDowngrade: !Object.values(quotaStates(store)).some((q) => q.status === "exhausted") });
     return selected ? [{ executor: provider, ...selected }] : [];
   });

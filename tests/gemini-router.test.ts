@@ -1,0 +1,50 @@
+// Roteador, doctor e limpeza de estado com o gemini presente.
+import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { afterEach, describe, it } from "node:test";
+import { parseAgyModels, type Catalog } from "../src/adapters/catalog.js";
+import { loadConfig } from "../src/config.js";
+import { packageRoot } from "../src/paths.js";
+import { recommend, type AvailabilityFn } from "../src/orchestration/router.js";
+import { Store } from "../src/state/store.js";
+import { adaptiveCatalog } from "./adaptive-catalog.js";
+import { CLI, makeSandbox, type Sandbox } from "./helpers.js";
+
+const FAKE_AGY = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
+let sb: Sandbox | undefined;
+afterEach(() => { sb?.cleanup(); sb = undefined; });
+const allUp: AvailabilityFn = () => ({ available: true, reasons: [] });
+const withGemini: Catalog = { ...adaptiveCatalog, providers: { ...adaptiveCatalog.providers, gemini: { ok: true, source: "agy models", tools: [], models: parseAgyModels("gemini-4-argon-high\tA\ngemini-3.8-flash-low\tF\n") } } };
+
+describe("roteador com gemini", () => {
+  it("router ignores gemini when disabled", () => {
+    sb = makeSandbox();
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "implement", tags: [], risk: "medium", brain: null }, allUp, withGemini);
+    assert.notEqual(r.decision.executor, "gemini");
+    assert.ok(!JSON.stringify(r).includes("gemini-4-argon-high"));
+  });
+  it("adaptive recommendation never picks an unverified gemini even when enabled and cataloged", () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "implement", tags: [], risk: "low", brain: null }, allUp, withGemini);
+    assert.notEqual(r.decision.executor, "gemini");
+  });
+});
+
+describe("CLI com gemini", () => {
+  it("doctor shows a gemini section and never runs agy in headless mode", () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } } });
+    const env = { ...sb.env, PATH: `${join(process.execPath, "..")}:${sb.env.PATH ?? ""}` };
+    const r = spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd: sb.root, env, encoding: "utf8" });
+    const report = JSON.parse(r.stdout) as { providers: Record<string, { installed?: boolean; version?: string; sandbox?: { ok: boolean } }> };
+    assert.equal(report.providers.gemini?.version, "1.5.3", r.stdout.slice(0, 400));
+    assert.ok("sandbox" in (report.providers.gemini ?? {}));
+    assert.equal(sb.log().filter((e) => e.cmd === "agy-run").length, 0);
+  });
+  it("gemini-state prune runs and reports what it removed", () => {
+    sb = makeSandbox();
+    const r = spawnSync(process.execPath, [CLI, "gemini-state", "prune"], { cwd: sb.root, env: sb.env, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /removid/);
+  });
+});

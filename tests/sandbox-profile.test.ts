@@ -133,6 +133,19 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     assert.equal(readdirSync(join(wt, "docs")).some((n) => /\.key$/i.test(n.normalize("NFC"))), false);
     assert.ok(existsSync(join(wt, "docs", "ok.txt")));
   });
+  it("OS layer alone: inside a granted dir only ASCII names are writable; a listed accented file still is", () => {
+    const wt = tmp("duo-sbx-wt-");
+    mkdirSync(join(wt, "docs"));
+    const r = buildProfile({ worktreeRoot: wt, targets: [
+      { rel: "docs", abs: join(wt, "docs"), isDir: true, missingAncestors: [] },
+      { rel: "docs/ol\u00e1.txt", abs: join(wt, "docs", "ol\u00e1.txt"), isDir: false, missingAncestors: [] },
+    ], denyGlobs: ["**/*.key"], privateHome: join(wt, "..", "h4"), tmpDir: join(wt, "..", "h4", "tmp") });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", "echo 1 > docs/ok.txt; echo 2 > 'docs/caf\u00e9.txt'; echo 3 > 'docs/ol\u00e1.txt'", wt);
+    assert.ok(existsSync(join(wt, "docs", "ok.txt")));
+    assert.equal(existsSync(join(wt, "docs", "caf\u00e9.txt")), false);
+    assert.ok(existsSync(join(wt, "docs", "ol\u00e1.txt")));
+  });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });
     assert.ok(r.ok && r.profile.includes('(subpath "/private/tmp")'));

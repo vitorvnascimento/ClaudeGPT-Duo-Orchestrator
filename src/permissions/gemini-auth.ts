@@ -61,22 +61,23 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   // nos logs lidos, o resultado vira inconclusivo e bloqueia.
   let text = "";
   let unaccounted = false;
+  const why = new Set<string>();
   try {
     if (existsSync(logDir)) {
       text = readdirSync(logDir).flatMap((f) => {
         const p = join(logDir, f);
         try {
           const st = lstatSync(p);
-          if (st.isDirectory()) { if (readdirSync(p).length > 0) unaccounted = true; return []; }
-          if (!st.isFile()) { unaccounted = true; return []; }
+          if (st.isDirectory()) { if (readdirSync(p).length > 0) { unaccounted = true; why.add("pasta com conteúdo"); } return []; }
+          if (!st.isFile()) { unaccounted = true; why.add(st.isSymbolicLink() ? "link" : "entrada não regular"); return []; }
           return [readFileSync(p, "utf8")];
-        } catch { unaccounted = true; return []; }
+        } catch { unaccounted = true; why.add("ilegível"); return []; }
       }).join("\n");
     }
-  } catch { unaccounted = true; }
+  } catch { unaccounted = true; why.add("ilegível"); }
   const c = classifyAgyLog(text);
   const negative = c.method === "api_key" || c.method === "cloud" || c.conflict === true;
-  if (unaccounted && !negative) return { ...base, ok: false, method: "unknown", detail: "log do agy com entrada não lida (ilegível ou link): login não verificável" };
+  if (unaccounted && !negative) return { ...base, ok: false, method: "unknown", detail: `log do agy com entrada não lida (${[...why].sort().join(", ")}): login não verificável` };
   if (!r.ok) {
     const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
     const failed = `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})`;

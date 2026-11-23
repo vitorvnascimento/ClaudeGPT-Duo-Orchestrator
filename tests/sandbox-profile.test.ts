@@ -126,18 +126,23 @@ describe("sandbox real", { skip: !DARWIN }, () => {
   });
   it("Kelvin sign K: a LISTED file is written without **/*.key and denied by it (the deny rule, not the ASCII rule)", () => {
     const name = "b.\u212aey";
+    // Um vizinho inofensivo também listado prova que o perfil carregou e grava; só o nome Kelvin é negado.
     const writeWith = (deny: string[]) => {
       const wt = tmp("duo-sbx-wt-");
       mkdirSync(join(wt, "docs"));
-      const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: `docs/${name}`, abs: join(wt, "docs", name), isDir: false, missingAncestors: [] }], denyGlobs: deny, privateHome: join(wt, "..", "hk"), tmpDir: join(wt, "..", "hk", "tmp") });
+      const r = buildProfile({ worktreeRoot: wt, targets: [
+        { rel: `docs/${name}`, abs: join(wt, "docs", name), isDir: false, missingAncestors: [] },
+        { rel: "docs/ok.txt", abs: join(wt, "docs", "ok.txt"), isDir: false, missingAncestors: [] },
+      ], denyGlobs: deny, privateHome: join(wt, "..", "hk"), tmpDir: join(wt, "..", "hk", "tmp") });
       assert.ok(r.ok);
-      sh(r.ok ? r.profile : "", `echo x > 'docs/${name}'`, wt);
-      return readdirSync(join(wt, "docs"));
+      const out = sh(r.ok ? r.profile : "", `echo y > docs/ok.txt; echo x > 'docs/${name}'; exit 0`, wt);
+      assert.equal(out.status, 0, out.stderr);
+      return readdirSync(join(wt, "docs")).map((n) => n.normalize("NFC")).sort();
     };
-    // macOS normaliza o nome (vira "b.Key") antes do sandbox avaliar: sem a regra a escrita passa...
-    assert.equal(writeWith([]).length, 1);
-    // ...e com **/*.key ela é negada.
-    assert.deepEqual(writeWith(["**/*.key"]), []);
+    // O APFS preserva a grafia gravada, mas o sandbox avalia a forma normalizada (K): sem a regra a escrita passa...
+    assert.deepEqual(writeWith([]), ["b.Key", "ok.txt"]);
+    // ...e com **/*.key só ela é negada; o vizinho grava.
+    assert.deepEqual(writeWith(["**/*.key"]), ["ok.txt"]);
   });
   it("OS layer alone: inside a granted dir only ASCII names are writable; a listed accented file still is", () => {
     const wt = tmp("duo-sbx-wt-");

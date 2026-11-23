@@ -62,6 +62,8 @@ describe("preflight de login do gemini", () => {
     const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_NESTED: "1" }), ack(true), null);
     assert.equal(a.ok, false);
     assert.equal(a.method, "unknown");
+    assert.match(a.detail, /pasta com conteúdo/);
+    assert.doesNotMatch(a.detail, /ilegível|link|nested/);
   });
   it("a log symlink is not silently skipped: the login becomes inconclusive", { skip: process.platform === "win32" }, () => {
     const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_LINK: "1" }), ack(true), null);

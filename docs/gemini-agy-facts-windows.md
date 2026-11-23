@@ -7,7 +7,7 @@ Evidence:
 - full run `docs/evidencias/gemini-windows-phase0/2026-11-23T18-43-09-657Z/results.json`;
 - full run with Process Monitor `2026-11-23T19-32-41-914Z` (6,757,738 events, 8 agy launches), analyzed on the PC with `analyze-trace.mjs` at `41cac76`. The CSV stays on the PC (not committed).
 
-**Decision: GO, conditional.** No stop rule fired. Two items are not yet proven: F5 for three of the eight launches, and the timeout attribution in F3. GO holds if the owner waives both for Phase 0 (they are re-proven in the Phase 1 battery before any version is verified), or after a new complete capture with the current probe. Until one of the two is recorded here, Phase 1 may be planned but not released.
+**Decision: GO, conditional.** No stop rule fired. Two items are not yet proven: F5 for three of the eight launches, and the timeout attribution in F3. Phase 0 closes either with the owner's waiver of both (they are re-proven in the Phase 1 battery before any version is verified), or with a new run of the current probe whose analyzer verdict is `OK` over all launches **and** whose timeout run is `pass`. A rerun that is complete but not clean does not close it: a confirmed stop-rule failure (forbidden access, or a hook that does not fail closed) stops the work; an inconclusive result needs the waiver. Until one of the two is recorded here, Phase 1 may be planned but not released.
 
 | # | Question | Answer | Evidence |
 |---|----------|--------|----------|
@@ -21,7 +21,7 @@ Evidence:
 
 ## Config discovery seen in the trace
 
-agy walks up from its workspace to the drive root looking for `codeium.yaml`, `codeium.yml`, `.codeium.yaml` and `.codeium.yml` (144 not-found lookups across 6 launches, from the probe's base dir up to `C:\Users`). It also probes VCS markers (`.git`, `.jj`, `.hg`, `.citc`, `.repo`) in ancestors and searches `PATH` for `pwsh`. A `codeium.yaml` in any ancestor of a duo worktree would be loaded, so the Windows delegation preflight must refuse when one exists (Amendment B).
+agy walks up from its workspace to the drive root looking for `codeium.yaml`, `codeium.yml`, `.codeium.yaml` and `.codeium.yml` (144 not-found lookups across 6 launches, from the probe's base dir up to `C:\Users`). It also probes VCS markers (`.git`, `.jj`, `.hg`, `.citc`, `.repo`) in ancestors and searches `PATH` for `pwsh`. Any of the four names (`codeium.yaml`, `codeium.yml`, `.codeium.yaml`, `.codeium.yml`) in an ancestor of a duo worktree would be loaded, so the Windows delegation preflight must refuse when **any** of them exists in any ancestor up to the drive root (Amendment B).
 
 ## What Phase 1 must re-prove
 
@@ -43,16 +43,16 @@ INCOMPLETO: 3 lançamento(s) do agy sem criação, eventos de arquivo ou saída 
 
 # agy no Windows — fatos da Fase 0
 
-**Decisão: SEGUE, com condição.** Nenhuma regra de parada disparou. Falta prova em dois pontos: o F5 de 3 das 8 execuções e a causa do corte no timeout (F3). A decisão vale se você liberar os dois para a Fase 0 (eles são provados de novo na bateria da Fase 1, antes de liberar qualquer versão) ou depois de uma nova captura completa com a sonda atual. Até isso ficar registrado aqui, a Fase 1 pode ser planejada, mas não publicada.
+**Decisão: SEGUE, com condição.** Nenhuma regra de parada disparou. Falta prova em dois pontos: o F5 de 3 das 8 execuções e a causa do corte no timeout (F3). A Fase 0 fecha de um destes dois jeitos: você libera os dois pontos (eles são provados de novo na bateria da Fase 1, antes de liberar qualquer versão), ou uma nova rodada da sonda atual dá `OK` na análise de todas as execuções **e** `pass` no timeout. Rodada completa mas não limpa não fecha: falha confirmada de regra de parada (acesso proibido, ou hook que não falha fechado) para o trabalho; resultado inconclusivo precisa da sua liberação. Até isso ficar registrado aqui, a Fase 1 pode ser planejada, mas não publicada.
 
 - **F1:** existe `agy.exe` 1.5.15 nativo em `%LOCALAPPDATA%\agy\bin`.
 - **F2:** o modo headless com stream-json funciona como no Mac.
-- **F3:** o hook do workspace dispara pelo `cmd.exe` e falha fechado ao negar, travar ou responder lixo. No timeout, a escrita foi bloqueada e o agy matou só o `cmd.exe` (o hook ficou órfão), mas a regra atual não confirma que o corte foi no prazo: os registros são de antes do campo novo. Inconclusivo até rodar de novo.
+- **F3:** o hook do workspace dispara pelo `cmd.exe` e bloqueia a escrita quando nega, quando o script quebra com erro (o `crash.mjs` lança exceção) e quando responde lixo. No timeout (hook que fica parado sem responder), a escrita foi bloqueada e o hook viu o `cmd.exe` pai sumir perto dos 5 s enquanto ele próprio continuava vivo. Quem encerrou o pai, e por quê, não está provado: a mensagem do agy é um `exit status 1` genérico e os registros são de antes do campo novo. Inconclusivo até rodar de novo.
 - **F4:** o login da assinatura funciona com o perfil privado completo, pelo Gerenciador de Credenciais do Windows.
 - **F5:** nenhum acesso à sua config real nas 5 execuções capturadas por inteiro, que cobrem os dois caminhos de lançamento da Fase 0. A captura terminou durante a execução `crash`: `crash`, `garbage` e `timeout` ficaram sem prova.
 - **F6:** a ferramenta de escrita é `write_file`, com caminho absoluto do Windows.
 - **F7:** o `modelName` vem na entrada do hook.
 
-O agy procura `codeium.yaml` em todas as pastas acima da pasta de trabalho, até a raiz do disco. O duo vai recusar a tarefa no Windows se achar um desses arquivos.
+O agy procura `codeium.yaml`, `codeium.yml`, `.codeium.yaml` e `.codeium.yml` em todas as pastas acima da pasta de trabalho, até a raiz do disco. O duo vai recusar a tarefa no Windows se achar **qualquer um** desses quatro nomes.
 
 A Fase 1 precisa provar de novo o F5 pelos comandos do duo e o timeout com a regra nova.

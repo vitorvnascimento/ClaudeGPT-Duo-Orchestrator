@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Teste de qualidade REAL da integração Claude Code ↔ Codex, com nota de 0 a 100 e provas independentes.
 // Invoca as CLIs de verdade e CONSOME COTA. Uso:
-//   node tests/e2e/quality-test.mjs --confirm-quota --base <dir-descartável> --battery <results.json> --gemini-battery <gemini-results.json> [--only Q1,Q2] [--allow-loopback-proxy] [--no-user-hooks]
+//   node tests/e2e/quality-test.mjs --confirm-quota --base <dir-descartável> --battery <results.json> --gemini-battery <gemini-results.json> [--only Q1,Q2] [--allow-loopback-proxy] [--disable-all-claude-brain-hooks]
 //   node tests/e2e/quality-test.mjs --dry-run (só plano e invariantes; não cria repos nem chama CLIs)
 // Cada critério só pontua se TODAS as suas verificações passarem. As provas de que o GPT executou vêm do
 // próprio Codex (rollout da sessão, IDs de resposta do servidor, imagem gerada pela ferramenta), não do que a IA diz.
@@ -15,9 +15,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CLI = join(ROOT, "dist", "src", "cli", "main.js");
-// Hooks do usuário (ex.: revisão cruzada no Stop) podem mudar a resposta do cérebro. Desligá-los também desliga
-// hooks de aprovação de ferramentas, então só com opt-in explícito: --no-user-hooks.
-const NO_USER_HOOKS_FLAG = process.argv.includes("--no-user-hooks");
+// Hooks do Claude (ex.: revisão cruzada no Stop) podem mudar a resposta do cérebro. A opção desliga TODOS os hooks
+// do cérebro Claude, inclusive os de aprovação de ferramentas de plugins: só com opt-in explícito.
+const NO_USER_HOOKS_FLAG = process.argv.includes("--disable-all-claude-brain-hooks");
 const userHookArgs = NO_USER_HOOKS_FLAG ? ["--settings", JSON.stringify({ disableAllHooks: true })] : [];
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
@@ -498,15 +498,18 @@ const CRITERIA = {
 
   async Q9() {
     const r = spawnSync("npm", ["test"], { cwd: ROOT, encoding: "utf8", timeout: 10 * 60_000 });
-    const m = /# tests (\d+)[\s\S]*# pass (\d+)[\s\S]*# fail (\d+)/.exec(r.stdout);
+    // Contagens só do resumo TAP final (o último bloco "# tests ... # duration_ms"), nunca de diagnósticos no meio.
+    const summary = /# tests (\d+)\n# suites \d+\n# pass (\d+)\n# fail (\d+)\n# cancelled (\d+)\n# skipped (\d+)\n# todo (\d+)\n# duration_ms [\d.]+\s*$/.exec(r.stdout);
+    const m = summary && [summary[0], summary[1], summary[2], summary[3]];
+    const cancelled = Number(summary?.[4] ?? -1), skipped = Number(summary?.[5] ?? -1);
     // `todo` é um teste marcado como pendente (sem asserções), não falha: conta à parte e aparece na evidência.
-    const todo = Number(/# todo (\d+)/.exec(r.stdout)?.[1] ?? 0);
+    const todo = Number(summary?.[6] ?? 0);
     // Corpo de TODO roda: "not ok ... # TODO" é asserção falhando marcada como pendente, e reprova.
     const failingTodo = (r.stdout.match(/^\s*not ok \d+ .*# TODO/gm) ?? []).length;
     return {
       points: POINTS.Q9,
       title: "Suíte offline completa",
-      checks: [check("npm test: todos passam, nenhuma falha", r.status === 0 && m && Number(m[1]) === Number(m[2]) + todo && m[3] === "0" && failingTodo === 0, m ? `${m[2]}/${m[1]} (falhas: ${m[3]}, todo: ${todo}, todo falhando: ${failingTodo})` : r.stdout.slice(-300))],
+      checks: [check("npm test: todos passam, nenhuma falha", r.status === 0 && m && Number(m[1]) === Number(m[2]) + todo && m[3] === "0" && failingTodo === 0 && cancelled === 0 && skipped === 0, m ? `${m[2]}/${m[1]} (falhas: ${m[3]}, todo: ${todo}, todo falhando: ${failingTodo}, pulados: ${skipped}, cancelados: ${cancelled})` : r.stdout.slice(-300))],
     };
   },
 

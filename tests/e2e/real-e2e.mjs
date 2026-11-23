@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bateria E2E REAL: invoca `claude` e `codex` de verdade e CONSOME COTA das assinaturas.
 // Nunca roda em `npm test`. Uso:
-//   node tests/e2e/real-e2e.mjs --base <dir-descartável> --confirm-quota [--only T1,T5] [--allow-loopback-proxy] [--no-user-hooks]
+//   node tests/e2e/real-e2e.mjs --base <dir-descartável> --confirm-quota [--only T1,T5] [--allow-loopback-proxy] [--disable-all-claude-brain-hooks]
 //   node tests/e2e/real-e2e.mjs --dry-run (só plano; não cria repos nem chama CLIs)
 // Cada cenário cria um repositório Git descartável em <base>/<id>, com critérios objetivos de aprovação.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -13,9 +13,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CLI = join(ROOT, "dist", "src", "cli", "main.js");
 
-// Hooks do usuário (ex.: revisão cruzada no Stop) podem mudar a resposta do cérebro. Desligá-los também desliga
-// hooks de aprovação de ferramentas, então só com opt-in explícito: --no-user-hooks.
-const NO_USER_HOOKS_FLAG = process.argv.includes("--no-user-hooks");
+// Hooks do Claude (ex.: revisão cruzada no Stop) podem mudar a resposta do cérebro. A opção desliga TODOS os hooks
+// do cérebro Claude, inclusive os de aprovação de ferramentas de plugins: só com opt-in explícito.
+const NO_USER_HOOKS_FLAG = process.argv.includes("--disable-all-claude-brain-hooks");
 const userHookArgs = NO_USER_HOOKS_FLAG ? ["--settings", JSON.stringify({ disableAllHooks: true })] : [];
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);

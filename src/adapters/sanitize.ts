@@ -30,7 +30,13 @@ export function sanitizeEventLine(provider: Provider, line: string, redactor = r
     // trocados pelo redator e carregar a fatia de texto sob outro nome).
     const step = raw.step_update as Record<string, unknown> | undefined;
     if (step && typeof step.text_delta === "string") {
-      const pick = (k: string, ok: (v: unknown) => boolean) => (ok(step[k]) ? { [k]: step[k] } : {});
+      // Evento inteiro redigido (ex.: bloco de chave privada aberto numa linha anterior): o marcador fica, porque a
+      // bateria conta essa lacuna como evidência faltando.
+      if (ev && typeof ev.redacted === "string" && !("step_update" in ev)) return out.slice(0, 2000);
+      // O original só reconhece a fatia e mede o tamanho; os metadados vêm do evento REDIGIDO, nunca do original
+      // (um valor mascarado pelo redator não volta para o disco).
+      const red = (ev?.step_update as Record<string, unknown> | undefined) ?? {};
+      const pick = (k: string, ok: (v: unknown) => boolean) => (ok(red[k]) ? { [k]: red[k] } : {});
       const word = (v: unknown) => typeof v === "string" && /^[A-Za-z_]{1,40}$/.test(v);
       return JSON.stringify({ event: "step_update", step_update: {
         ...pick("step_index", (v) => Number.isInteger(v)), ...pick("state", word), ...pick("step_type", word),

@@ -212,6 +212,22 @@ describe("eventos do gemini", () => {
     const renamer = (l: string) => l.replaceAll("text_delta", "<redacted>").replaceAll("step_update", "<redacted2>");
     const out = sanitizeEventLine("gemini", line, renamer);
     assert.doesNotMatch(out, /PEDACO-SECRETO/);
-    assert.deepEqual(JSON.parse(out), { event: "step_update", step_update: { step_index: 2, state: "ACTIVE", step_type: "agent_response", text_delta: { omitted: true, chars: 14 } } });
+    // step_update renomeado no evento redigido: nenhum metadado sobrevive, só a medida da fatia.
+    assert.deepEqual(JSON.parse(out), { event: "step_update", step_update: { text_delta: { omitted: true, chars: 14 } } });
+  });
+  it("metadado mascarado pelo redator não volta para o log", () => {
+    const line = JSON.stringify({ event: "step_update", step_update: { step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "x" } });
+    const out = sanitizeEventLine("gemini", line, (l) => l.replaceAll("agent_response", "<redacted>"));
+    assert.doesNotMatch(out, /agent_response/);
+    assert.equal(JSON.parse(out).step_update.step_type, undefined);
+  });
+  it("bloco de chave privada aberto entre eventos do gemini mantém o marcador de evento redigido", () => {
+    const stream = createStreamRedactor();
+    const first = JSON.stringify({ event: "step_update", step_update: { step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "-----BEGIN PRIVATE KEY-----\nMIIE" } });
+    const second = JSON.stringify({ event: "step_update", step_update: { step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "abcdefgh" } });
+    sanitizeEventLine("gemini", first, stream);
+    const out = sanitizeEventLine("gemini", second, stream);
+    assert.ok(/"redacted"/.test(out), out);
+    assert.doesNotMatch(out, /abcdefgh/);
   });
 });

@@ -2,6 +2,17 @@
 
 Date: 2026-11-23. Status: approved by the owner on 2026-11-23 ("Aprovo"). Items marked *(builder's call)* were decided by Claude, not by the owner. Base: `feature/gemini-windows`, cut from v0.5.0 (`f6da48d`). Prior design: `2026-11-22-gemini-executor-design.md` (Amendment A is the macOS contract this document extends).
 
+## Amendment B (2026-11-23, Phase 0 facts on the owner's Windows PC)
+
+Evidence: `docs/evidencias/gemini-windows-phase0/2026-11-23T18-00-35-080Z` (dry run) and `2026-11-23T18-43-09-657Z` (full run), plus a Process Monitor capture analyzed on the PC (not committed). This amendment supersedes the sections below wherever they disagree.
+
+- **F1:** `agy` 1.5.15 for Windows is a native `agy.exe` in `%LOCALAPPDATA%\agy\bin` (official installer `irm https://antigravity.google/cli/install.ps1 | iex`).
+- **F4:** with `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `HOMEDRIVE`, `HOMEPATH` all private, `agy models` still logs in: `authMethod=consumer`, `effective: keyring` (Windows Credential Manager). No copy or link of the real profile is needed.
+- **F3:** the workspace `PreToolUse` hook fires on Windows and runs through `cmd.exe`. Denial blocks the write; a crashing hook and invalid output both fail closed.
+- **Hook timeout on Windows:** `agy` kills only the `cmd.exe` it started, not the process tree, and reports `command failed: exit status 1` with no timeout cause. The hook process survives as an orphan. Consequences for the duo's Windows gate hook: it must enforce its own deadline shorter than the configured hook timeout and exit when its parent disappears; the battery proves a timeout through the hook's own lifecycle log (alive without answering until near the limit, parent gone near the limit).
+- **Config discovery:** `agy` walks the parent directories of its workspace looking for `codeium.yaml` / `.codeium.yml` and VCS markers (`.git`, `.jj`, `.hg`, `.citc`, `.repo`), and searches `PATH` for `pwsh`. A `codeium.yaml` in an ancestor of a duo worktree would be loaded; the delegation preflight on Windows refuses when one exists in any ancestor of the worktree up to the drive root.
+- **F5 criterion refined:** forbidden = the owner's `.gemini` and the Antigravity/Codeium/Windsurf config and state dirs under `%USERPROFILE%`, `%APPDATA%` and `%LOCALAPPDATA%`, plus agy config files (`codeium.yaml`, `.codeium.yml`, `GEMINI.md`, `AGENTS.md`) found outside the run's private root. Only successful accesses count; a not-found result is a lookup and is reported, not failed. `PATH` searches and directory opens of ancestors are not config reads. The first capture showed zero accesses to `.gemini`, Antigravity dirs or credential dirs; the re-analysis with this criterion decides F5.
+
 ## Intent
 
 The owner works on a Windows PC as well as the Mac. On Windows, Duo 0.5.0 refuses the Gemini executor (`executor gemini exige macOS nesta versão`), so a run there can only spread work across the Claude and Codex subscriptions. The owner wants Google models as executors on Windows too, so three subscriptions share the load without losing quality.

@@ -103,7 +103,13 @@ const under = (path, prefixes) => {
  * só entra na árvore quando a própria sonda (probePid) o cria.
  * Cobertura: cada lançamento precisa ter criação, ao menos um evento de arquivo e saída; senão o rastreio está
  * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
-export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) {
+/** Resultado do Process Monitor que diz que o caminho não existe: é só uma procura, não uma leitura. */
+const NOT_FOUND = /NOT FOUND|NO SUCH|NAME INVALID|NOT A DIRECTORY|BAD NETWORK/i;
+
+/** forbidden: pastas de config/estado do dono. configNames: nomes de arquivo de config do agy que contam em qualquer
+ * pasta fora da permitida (por exemplo codeium.yaml achado numa pasta-mãe). Só acesso com sucesso vira acesso
+ * proibido; caminho inexistente vira "lookup" (o agy procurou e não achou). */
+export function createTraceAnalyzer({ probePid, launches, forbidden, allowed, configNames = null }) {
   const probe = String(probePid);
   // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync, e a sonda
   // também cria outros filhos (cmdkey, cmd, git). O lançamento só casa com o mesmo PID E o mesmo executável.
@@ -111,8 +117,10 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) 
   const imageOf = (p) => win32.basename(String(p)).toLowerCase();
   const live = new Map(); // pid vivo → índice do lançamento de origem
   const hits = [];
+  const lookups = [];
   let idx = null;
   let rows = 0;
+  let resultCol = -1;
   const startRoot = (pid, image) => {
     const i = cover.findIndex((c) => c.pid === pid && c.image === imageOf(image) && !c.created);
     if (i >= 0) { cover[i].created = true; live.set(pid, i); }
@@ -126,6 +134,7 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) 
         const col = (n) => cells.indexOf(n);
         idx = { time: col("Time of Day"), process: col("Process Name"), pid: col("PID"), op: col("Operation"), path: col("Path"), detail: col("Detail") };
         if (Object.values(idx).some((i) => i < 0)) throw new Error("CSV sem as colunas esperadas do Process Monitor (Time of Day, Process Name, PID, Operation, Path, Detail)");
+        resultCol = col("Result");
         return;
       }
       rows++;
@@ -133,7 +142,12 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) 
       const op = cells[idx.op];
       const detail = cells[idx.detail] ?? "";
       const path = cells[idx.path] ?? "";
-      const forbiddenHit = () => path && under(path, forbidden) && !under(path, allowed) && hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
+      const forbiddenHit = () => {
+        if (!path || under(path, allowed)) return;
+        if (!under(path, forbidden) && !(configNames && configNames.test(win32.basename(path)))) return;
+        const ev = { time: cells[idx.time], process: cells[idx.process], pid, op, path };
+        (NOT_FOUND.test(resultCol >= 0 ? cells[resultCol] ?? "" : "") ? lookups : hits).push(ev);
+      };
       if (op === "Process Create") {
         const child = /\bPID: (\d+)/.exec(detail)?.[1];
         if (child && pid === probe) startRoot(child, path);
@@ -161,10 +175,11 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) 
     },
     result() {
       // Ajudante ainda vivo no fim da captura: o que ele fez depois ficou de fora.
-      const pending = new Set(live.values());
-      const missing = cover.map((c, i) => (c.created && c.fs > 0 && c.exited && !pending.has(i) ? null : c.pid)).filter(Boolean);
+      const pendingCount = (i) => [...live.values()].filter((v) => v === i).length;
+      const missing = cover.map((c, i) => ({ pid: c.pid, image: c.image, created: c.created, fs: c.fs, exited: c.exited, liveDescendants: pendingCount(i) - (c.created && !c.exited ? 1 : 0) }))
+        .filter((m, i) => !(m.created && m.fs > 0 && m.exited && pendingCount(i) === 0));
       const verdict = hits.length ? "forbidden" : !idx || missing.length ? "incomplete" : "ok";
-      return { rows, hits, missingPids: missing, verdict };
+      return { rows, hits, lookups, missing, missingPids: missing.map((m) => m.pid), verdict };
     },
   };
 }

@@ -257,3 +257,50 @@ test("summarizeAlive: junta por PID, guarda o último instante, a primeira vez q
     { pid: 9, aliveMs: 60010, parentGoneAtMs: null, answered: true },
   ]);
 });
+
+const HEADER_R = '"Time of Day","Process Name","PID","Operation","Path","Result","Detail"';
+const rowR = (t, p, pid, op, path, result, detail = "") => [t, p, pid, op, path, result, detail].map((c) => `"${c}"`).join(",");
+const analyzeR = (lines, opts = {}) => {
+  const a = createTraceAnalyzer({
+    probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }],
+    forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Roaming\\Antigravity"],
+    allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"],
+    configNames: /^(\.?codeium\.ya?ml|GEMINI\.md|AGENTS\.md)$/i, ...opts,
+  });
+  for (const l of [HEADER_R, born(100), read(100, "C:\\Windows\\a"), ...lines, died(100)]) a.line(l);
+  return a.result();
+};
+
+test("trace: busca no PATH e subida de pastas fora da lista proibida não contam", () => {
+  const r = analyzeR([
+    rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local\\Programs\\Python\\pwsh.exe", "NAME NOT FOUND"),
+    rowR("10:00:02", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local", "SUCCESS"),
+  ]);
+  assert.equal(r.verdict, "ok");
+});
+
+test("trace: procura sem sucesso em pasta proibida é só tentativa; leitura com sucesso é acesso", () => {
+  const miss = analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\GEMINI.md", "NAME NOT FOUND")]);
+  assert.equal(miss.verdict, "ok");
+  assert.equal(miss.lookups.length, 1);
+  const hit = analyzeR([rowR("10:00:01", "agy.exe", "100", "ReadFile", "C:\\Users\\v\\.gemini\\GEMINI.md", "SUCCESS")]);
+  assert.equal(hit.verdict, "forbidden");
+});
+
+test("trace: arquivo de config do agy achado numa pasta-mãe é acesso; só procurado é tentativa", () => {
+  const found = analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local\\codeium.yaml", "SUCCESS")]);
+  assert.equal(found.verdict, "forbidden");
+  const looked = analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local\\.codeium.yml", "NAME NOT FOUND")]);
+  assert.equal(looked.verdict, "ok");
+  assert.equal(looked.lookups[0].path, "C:\\Users\\v\\AppData\\Local\\.codeium.yml");
+  // Dentro da raiz privada desta execução, a config é do próprio duo.
+  assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1\\ws\\codeium.yaml", "SUCCESS")]).verdict, "ok");
+});
+
+test("trace: resultado mostra a cobertura de cada lançamento que faltou, mesmo com acesso proibido", () => {
+  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }, { pid: 101, image: "agy.exe" }], forbidden: ["C:\\Users\\v\\.gemini"], allowed: [] });
+  for (const l of [HEADER, born(100), read(100, "C:\\Users\\v\\.gemini\\x"), died(100), born(101)]) a.line(l);
+  const r = a.result();
+  assert.equal(r.verdict, "forbidden");
+  assert.deepEqual(r.missing, [{ pid: "101", image: "agy.exe", created: true, fs: 0, exited: false, liveDescendants: 0 }]);
+});

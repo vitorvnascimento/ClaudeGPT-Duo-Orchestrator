@@ -104,14 +104,17 @@ const under = (path, prefixes) => {
  * Cobertura: cada lançamento precisa ter criação, ao menos um evento de arquivo e saída; senão o rastreio está
  * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
 export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }) {
-  const roots = new Set(launchPids.map(String));
   const probe = String(probePid);
-  const live = new Map(); // pid vivo → lançamento de origem
-  const cover = new Map(launchPids.map((p) => [String(p), { created: false, fs: 0, exited: false }]));
+  // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync.
+  const cover = launchPids.map((p) => ({ pid: String(p), created: false, fs: 0, exited: false }));
+  const live = new Map(); // pid vivo → índice do lançamento de origem
   const hits = [];
   let idx = null;
   let rows = 0;
-  const join = (pid, origin) => { live.set(pid, origin); if (pid === origin) cover.get(origin).created = true; };
+  const startRoot = (pid) => {
+    const i = cover.findIndex((c) => c.pid === pid && !c.created);
+    if (i >= 0) { cover[i].created = true; live.set(pid, i); }
+  };
   return {
     line(text) {
       const raw = text.replace(/^\uFEFF/, "");
@@ -129,26 +132,34 @@ export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }
       const detail = cells[idx.detail] ?? "";
       if (op === "Process Create") {
         const child = /\bPID: (\d+)/.exec(detail)?.[1];
-        if (child && pid === probe && roots.has(child)) join(child, child);
-        else if (child && live.has(pid)) join(child, live.get(pid));
+        if (child && pid === probe) startRoot(child);
+        else if (child && live.has(pid)) live.set(child, live.get(pid));
         return;
       }
       if (op === "Process Start") {
         const parent = /Parent PID: (\d+)/.exec(detail)?.[1];
-        if (parent === probe && roots.has(pid)) join(pid, pid);
-        else if (parent && live.has(parent)) join(pid, live.get(parent));
+        if (parent === probe && !live.has(pid)) startRoot(pid);
+        else if (parent && live.has(parent) && !live.has(pid)) live.set(pid, live.get(parent));
         return;
       }
       if (!live.has(pid)) return;
       const origin = live.get(pid);
-      if (op === "Process Exit") { if (pid === origin) cover.get(origin).exited = true; live.delete(pid); return; }
+      if (op === "Process Exit") {
+        if (cover[origin].pid === pid && !cover[origin].exited) cover[origin].exited = true;
+        live.delete(pid);
+        return;
+      }
       const path = cells[idx.path] ?? "";
-      if (!path || /^(Thread |Load Image|Reg|TCP|UDP|Profiling)/.test(op)) return;
-      cover.get(origin).fs++;
+      if (!path) return;
+      // Qualquer operação com caminho proibido é evidência (inclusive Load Image); só operações de arquivo contam
+      // como cobertura de acesso a arquivos.
       if (under(path, forbidden) && !under(path, allowed)) hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
+      if (!/^(Thread |Load Image|Reg|TCP|UDP|Profiling)/.test(op)) cover[origin].fs++;
     },
     result() {
-      const missing = [...cover].filter(([, c]) => !(c.created && c.fs > 0 && c.exited)).map(([p]) => p);
+      // Ajudante ainda vivo no fim da captura: o que ele fez depois ficou de fora.
+      const pending = new Set(live.values());
+      const missing = cover.map((c, i) => (c.created && c.fs > 0 && c.exited && !pending.has(i) ? null : c.pid)).filter(Boolean);
       const verdict = hits.length ? "forbidden" : !idx || missing.length ? "incomplete" : "ok";
       return { rows, hits, missingPids: missing, verdict };
     },
@@ -193,9 +204,9 @@ export function parseStream(stdout) {
  * precisa de motivo de tempo: uma falha comum do comando (exit status) não distingue estouro de travamento. */
 export const HOOK_REASON = {
   deny: /denied by pre-tool hook: probe-deny/i,
-  crash: /hook\W+jsonhook__probe_\S*\W+failed: command failed: exit status/i,
+  crash: /hook\W+jsonhook__probe_\S*\W+failed: command failed: exit status \d+$/i,
   garbage: /unmarshal result from hook jsonhook__probe_/i,
-  timeout: /hook\W+jsonhook__probe_\S*\W+failed\b.*(signal: killed|timed? ?out|deadline exceeded|context canceled)/i,
+  timeout: /hook\W+jsonhook__probe_\S*\W+failed\b.*(signal: killed|timed? ?out|deadline exceeded|context canceled)$/i,
 };
 const ANY_HOOK_FAILURE = /jsonhook__probe_/i;
 const PATH_ARG = /path|file/i;
@@ -203,6 +214,9 @@ const PATH_ARG = /path|file/i;
 /** Resultado de uma execução de sonda. Arquivo ausente só prova a trava quando a escrita do caminho exato do alvo
  * (argumento de caminho resolvido contra a pasta de trabalho) chegou ao hook e o stream mostra a mesma escrita
  * terminando no erro típico daquele hook. */
+/** Ferramentas que não gravam e que o hook pode registrar legitimamente (mesma lista de leitura do gate do duo). */
+const KNOWN_NON_WRITE = new Set(["read_file", "view_file", "view_file_outline", "list_dir", "grep_search", "find_by_name", "finish"]);
+
 export function classifyRun(hook, { target, workspace, fileExists, hookLines, steps }, pathApi = win32) {
   const want = pathApi.resolve(workspace, target).toLowerCase();
   const isTarget = (args) => Object.entries(args ?? {}).some(([k, v]) => PATH_ARG.test(k) && typeof v === "string" && pathApi.resolve(workspace, v).toLowerCase() === want);
@@ -211,13 +225,16 @@ export function classifyRun(hook, { target, workspace, fileExists, hookLines, st
   if (hook === "allow-log") {
     if (fileExists && hookSaw) return "pass";
     if (!hookLines.length && steps.some((s) => ANY_HOOK_FAILURE.test(s.message))) return "hook-cmd-failed";
-    // Só "hook não rodou" quando o hook não registrou nada e a escrita do alvo aconteceu. Hook que registrou algo que a
-    // sonda não reconhece (stdin ilegível, ferramenta nova) fica inconclusivo.
-    if (!hookLines.length && (fileExists || writes.some((s) => s.state === "DONE"))) return "hook-not-run";
+    // "Hook não rodou" quando a escrita do alvo aconteceu e o hook ou não registrou nada, ou só registrou chamadas
+    // legíveis de ferramentas conhecidas que não gravam. Registro ilegível ou ferramenta desconhecida fica inconclusivo.
+    const onlyUnrelated = hookLines.every((l) => !l.stdinError && KNOWN_NON_WRITE.has(l.toolName));
+    if (onlyUnrelated && (fileExists || writes.some((s) => s.state === "DONE"))) return "hook-not-run";
     return "inconclusive";
   }
   if (fileExists || writes.some((s) => s.state === "DONE")) return "fail";
   const reason = HOOK_REASON[hook];
-  if (hookSaw && writes.some((s) => s.state === "ERROR" && reason.test(s.message))) return "pass";
+  // O motivo vem antes do stderr do hook: texto que o próprio script imprimiu não conta como causa.
+  const cause = (m) => m.split(/,?\s*stderr:/i)[0];
+  if (hookSaw && writes.some((s) => s.state === "ERROR" && reason.test(cause(s.message)))) return "pass";
   return "inconclusive";
 }

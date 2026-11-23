@@ -170,3 +170,39 @@ test("classifyRun: controle allow-log separa hook que não rodou, comando quebra
   assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ stdinError: "SyntaxError", toolName: null, args: null }], stream: done }), "inconclusive");
   assert.equal(run("allow-log", A, { fileExists: true, hookLines: [hookLine(`C:\\ws\\${A}`, "save_file")], stream: done }), "inconclusive");
 });
+
+test("trace: ajudante ainda vivo quando o lançamento sai deixa o rastreio incompleto", () => {
+  const r = analyze([
+    born(100), read(100, "C:\\Windows\\a"),
+    row("10:00:02", "agy.exe", "100", "Process Create", "C:\\h.exe", "PID: 300, Command line: h"),
+    died(100),
+  ], [100]);
+  assert.equal(r.verdict, "incomplete");
+  const ok = analyze([
+    born(100), read(100, "C:\\Windows\\a"),
+    row("10:00:02", "agy.exe", "100", "Process Create", "C:\\h.exe", "PID: 300, Command line: h"),
+    died(100), died(300, "10:00:10"),
+  ], [100]);
+  assert.equal(ok.verdict, "ok");
+});
+
+test("trace: Load Image de DLL no perfil real é acesso proibido", () => {
+  const r = analyze([born(100), read(100, "C:\\Windows\\a"), row("10:00:01", "agy.exe", "100", "Load Image", "C:\\Users\\v\\.gemini\\x.dll"), died(100)], [100]);
+  assert.equal(r.verdict, "forbidden");
+});
+
+test("trace: PID repetido entre lançamentos exige um ciclo de vida para cada um", () => {
+  assert.equal(analyze([born(100), read(100, "C:\\Windows\\a"), died(100)], [100, 100]).verdict, "incomplete");
+  assert.equal(analyze([born(100), read(100, "C:\\Windows\\a"), died(100), born(100), read(100, "C:\\Windows\\b", "10:01:00"), died(100, "10:01:09")], [100, 100]).verdict, "ok");
+});
+
+test("classifyRun: texto do stderr não vale como motivo de tempo esgotado", () => {
+  const M = "probe-timeout.txt";
+  assert.equal(run("timeout", M, { hookLines: [hookLine(`C:\\ws\\${M}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr: at C:\\hooks\\timeout.mjs:3 signal: killed') }), "inconclusive");
+});
+
+test("classifyRun: hook legível que só viu outras ferramentas e escrita concluída = hook não rodou na escrita", () => {
+  const A = "probe-allow-log.txt";
+  const done = step("write_file", "DONE", { Path: `C:\\ws\\${A}` });
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ toolName: "list_dir", args: { Path: "." } }], stream: done }), "hook-not-run");
+});

@@ -16,57 +16,59 @@ let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
 function home(): string { const d = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-auth-"))); dirs.push(d); return d; }
 const env = (h: string, extra: Record<string, string> = {}) => ({ PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`, HOME: h, ...extra });
+// Pasta de trabalho privada para a checagem (no Windows ela é obrigatória).
+const work = (): { cwd: string } => ({ cwd: home() });
 const ack = (v: boolean) => { const c = structuredClone(DEFAULT_CONFIG); c.billing.acknowledgeUnverifiableExtraUsage.gemini = v; return c; };
 
 describe("preflight de login do gemini", () => {
   it("passes with the keyring consumer signal and acknowledgment", () => {
     const h = home();
-    const a = geminiAuthPreflight(resolved, env(h), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(h), ack(true), null, work());
     assert.equal(a.method, "subscription");
     assert.equal(a.ok, true);
     assert.equal(authBlockReason(a), null);
     assert.doesNotMatch(a.detail, /@/);
   });
   it("blocks without acknowledgment", () => {
-    const a = geminiAuthPreflight(resolved, env(home()), ack(false), null);
+    const a = geminiAuthPreflight(resolved, env(home()), ack(false), null, work());
     assert.match(String(authBlockReason(a)), /acknowledgeUnverifiableExtraUsage\.gemini/);
   });
   it("blocks when the signal is an API key", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "apikey" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "apikey" }), ack(true), null, work());
     assert.equal(a.method, "api_key");
     assert.notEqual(authBlockReason(a), null);
   });
   it("conflicting login signals in one log are unknown, never subscription", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "conflict" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "conflict" }), ack(true), null, work());
     assert.equal(a.method, "unknown");
     assert.equal(a.ok, false);
     assert.match(a.detail, /conflitantes/);
   });
   it("a partial log with only the effective API-key signal is api_key, even when agy models fails", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "partial-apikey", FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "partial-apikey", FAKE_AGY_NO_MODELS: "1" }), ack(true), null, work());
     assert.equal(a.method, "api_key");
   });
   it("a directory among fresh log entries is skipped and the login is still classified", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_SUBDIR: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_SUBDIR: "1" }), ack(true), null, work());
     assert.equal(a.method, "subscription");
     assert.equal(a.ok, true);
   });
   it("an unreadable regular log blocks: unknown with a consumer log, api_key evidence kept", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1" }), ack(true), null, work());
     assert.equal(a.ok, false);
     assert.equal(a.method, "unknown");
-    const b = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1", FAKE_AGY_AUTH: "apikey" }), ack(true), null);
+    const b = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1", FAKE_AGY_AUTH: "apikey" }), ack(true), null, work());
     assert.equal(b.method, "api_key");
   });
   it("a non-empty subdirectory in the log dir makes the login inconclusive (a nested log could hold api_key)", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_NESTED: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_NESTED: "1" }), ack(true), null, work());
     assert.equal(a.ok, false);
     assert.equal(a.method, "unknown");
     assert.match(a.detail, /pasta com conteúdo/);
     assert.doesNotMatch(a.detail, /ilegível|link|nested/);
   });
   it("a log symlink is not silently skipped: the login becomes inconclusive", { skip: process.platform === "win32" }, () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_LINK: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_LINK: "1" }), ack(true), null, work());
     assert.equal(a.ok, false);
     assert.equal(a.method, "unknown");
   });
@@ -75,11 +77,11 @@ describe("preflight de login do gemini", () => {
     const logDir = join(h, ".gemini", "antigravity-cli", "log");
     mkdirSync(logDir, { recursive: true });
     writeFileSync(join(logDir, "old.log"), "authenticated via keyring (effective: keyring)\nauthMethod=consumer\n");
-    const a = geminiAuthPreflight(resolved, env(h, { FAKE_AGY_AUTH: "apikey" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(h, { FAKE_AGY_AUTH: "apikey" }), ack(true), null, work());
     assert.equal(a.method, "api_key");
   });
   it("blocks when agy models fails, without echoing raw stderr", () => {
-    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_NO_MODELS: "1" }), ack(true), null, work());
     assert.equal(a.ok, false);
     assert.notEqual(authBlockReason(a), null);
     assert.doesNotMatch(a.detail, /Please sign in/);
@@ -88,5 +90,13 @@ describe("preflight de login do gemini", () => {
   it("parent env with Google credentials is a problem before sanitizing", () => {
     assert.match(String(geminiParentEnvProblem({ GEMINI_API_KEY: "x", PATH: "/bin" })), /GEMINI_API_KEY/);
     assert.equal(geminiParentEnvProblem({ PATH: "/bin" }), null);
+  });
+});
+
+describe("preflight de login do gemini no Windows", () => {
+  it("recusa sem pasta de trabalho privada, antes de rodar o agy", () => {
+    const a = geminiAuthPreflight(resolved, env(home()), ack(true), null, { platform: "win32" });
+    assert.equal(a.ok, false);
+    assert.match(a.detail, /sem pasta de trabalho privada/);
   });
 });

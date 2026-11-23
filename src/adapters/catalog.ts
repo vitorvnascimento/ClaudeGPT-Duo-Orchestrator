@@ -8,9 +8,9 @@
 // `routing.candidates` da config. A resposta de cada fonte é validada: formato inesperado cai para a próxima.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { childEnv, codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
@@ -22,7 +22,7 @@ import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { classifyErrorText } from "./types.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
-import { chainStateDir, claimChainState, createPrivateHome } from "../state/gemini-state.js";
+import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, privateProfileEnv, withMetadataProfile } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation" | "computer_use";
@@ -443,7 +443,7 @@ function withLastKnownGood(provider: Provider, fresh: ProviderCatalog, previous:
 }
 
 /** agy models num HOME privado do projeto (nunca toca o ~/.gemini do usuário). Só roda com o gemini ligado. */
-async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.ProcessEnv, env: NodeJS.ProcessEnv): Promise<ProviderCatalog> {
+async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.ProcessEnv, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): Promise<ProviderCatalog> {
   if (!cfg.executors.gemini.enabled) return NOT_DISCOVERED("gemini");
   const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
   if (!resolved.ok) return { ok: false, source: "agy models", sourceKind: "none", error: resolved.reason, tools: [], models: [] };
@@ -451,10 +451,22 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
   let r: ReturnType<typeof runQuick>;
   try {
     // Setup do HOME dentro do try: uma falha aqui derruba só o catálogo do gemini, nunca o Promise.all.
-    const dir = chainStateDir(cwd, "catalog", baseEnv);
-    const { home } = createPrivateHome(dir, baseEnv);
+    const dir = chainStateDir(cwd, "catalog", baseEnv, platform);
+    const { home } = createPrivateHome(dir, baseEnv, platform);
     release = claimChainState(dir);
-    r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
+    if (platform === "win32") {
+      // Windows: perfil inteiro privado e uma pasta de trabalho nova e vazia a cada consulta, conferida contra config do
+      // agy acima dela (o agy procura nas pastas acima). O script de um lançador relativo vira absoluto antes.
+      const tmp = join(home, "tmp");
+      mkdirSync(tmp, { recursive: true });
+      const work = mkdtempSync(join(home, "work-"));
+      try {
+        const found = agyConfigAbove(work);
+        if (found) throw Object.assign(new Error("config do agy acima"), { code: `config do agy acima: ${basename(found)}` });
+        const launch = launcherFor(resolved, cwd);
+        r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000 });
+      } finally { rmSync(work, { recursive: true, force: true }); }
+    } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
   } catch (e) {
     const error = `HOME privado do catálogo indisponível (${(e as NodeJS.ErrnoException).code ?? "erro"})`;
     return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
@@ -474,20 +486,21 @@ export async function discover(
   cwd: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
   previous: Catalog | null = null,
-  opts: { appServerTimeoutMs?: number; cliVersions?: Catalog["cliVersions"] } = {},
+  opts: { appServerTimeoutMs?: number; cliVersions?: Catalog["cliVersions"]; platform?: NodeJS.Platform } = {},
 ): Promise<Catalog> {
   const { env } = childEnv(baseEnv);
-  const [claude, codex, gemini] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs), discoverGemini(cfg, cwd, baseEnv, env)]);
+  const platform = opts.platform ?? process.platform;
+  const [claude, codex, gemini] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs), discoverGemini(cfg, cwd, baseEnv, env, platform)]);
   return {
     discoveredAt: new Date().toISOString(),
-    cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv),
+    cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv, platform),
     ...(inCodexSandbox(baseEnv) ? { discoveredInSandbox: true } : {}),
     providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous), gemini: withLastKnownGood("gemini", gemini, previous) },
   };
 }
 
 /** Versão instalada: usa a mesma execução curta e ambiente filtrado da detecção de caps. */
-export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog["cliVersions"] {
+export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Catalog["cliVersions"] {
   const { env } = childEnv(baseEnv);
   const versions: Catalog["cliVersions"] = { claude: null, codex: null, gemini: null };
   for (const p of ["claude", "codex"] as const) {
@@ -500,7 +513,12 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv): Catalog
   if (cfg.executors.gemini.enabled) {
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, baseEnv);
     if (resolved.ok) {
-      const r = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+      let r: ReturnType<typeof runQuick>;
+      try {
+        r = platform === "win32"
+          ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
+          : runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+      } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; } // perfil de sondagem indisponível: versão desconhecida
       // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.
       const out = r.ok ? r.stdout.trim() : "";
       versions.gemini = !out ? null : /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?$/.test(out) ? out : `sha256:${createHash("sha256").update(out).digest("hex").slice(0, 16)}`;

@@ -2,6 +2,8 @@
 // A versão declarada é só informativa: o que vale é o que o --help anuncia.
 import { runQuick } from "./process.js";
 import type { Resolved } from "./resolve.js";
+import { childEnv } from "../permissions/auth.js";
+import { launcherFor, withMetadataProfile } from "../state/gemini-state.js";
 
 export type Capabilities = {
   version: string | null;
@@ -94,14 +96,25 @@ export function capabilitiesFromHelp(help: string, version: string | null, specs
   return { version, rawVersion, flags, missingRequired, divergences };
 }
 
-export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], specs: Record<string, FlagSpec>, env: NodeJS.ProcessEnv): Capabilities & { error?: string } {
-  const v = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], specs: Record<string, FlagSpec>, env: NodeJS.ProcessEnv, cwd?: string): Capabilities & { error?: string } {
+  const v = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env, cwd });
   const version = parseVersion(v.stdout + v.stderr);
   // Mesma regra da bateria: só a saída padrão de um --version bem-sucedido identifica a versão.
   const rawVersion = v.ok ? v.stdout.trim() || null : null;
-  const h = runQuick(resolved.command, [...resolved.prefixArgs, ...helpArgs], { env });
+  const h = runQuick(resolved.command, [...resolved.prefixArgs, ...helpArgs], { env, cwd });
   if (!h.ok && !h.stdout) {
     return { ...capabilitiesFromHelp("", version, specs, rawVersion), error: h.error ?? (h.stderr.slice(0, 300) || "falha ao ler --help") };
   }
   return capabilitiesFromHelp(h.stdout + "\n" + h.stderr, version, specs, rawVersion);
+}
+
+/** --version e --help do agy. No Windows rodam com perfil e pasta de trabalho privados e descartáveis (o agy acha
+ * config pelo perfil e nas pastas acima da pasta de trabalho); nunca lança: falha vira `error`. */
+/** profileError: recusa local do perfil de sondagem (mensagem do próprio duo, segura para mostrar); `error` pode
+ * trazer stderr do agy e nunca vai cru para relatório. */
+export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Capabilities & { error?: string; profileError?: string } {
+  if (platform !== "win32") return probe(resolved, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
+  const launch = { ...resolved, ...launcherFor(resolved) };
+  try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd), "win32"); }
+  catch (e) { const msg = (e as Error).message; return { ...capabilitiesFromHelp("", null, AGY_FLAGS, null), error: msg, profileError: msg }; }
 }

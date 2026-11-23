@@ -12,7 +12,8 @@ import { attemptTmpDir, chainStateDir, createPrivateHome, geminiStateRoot, listG
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
 function tmp(prefix: string): string { const d = realpathSync(mkdtempSync(join(tmpdir(), prefix))); dirs.push(d); return d; }
-function fakeEnv(): NodeJS.ProcessEnv { const home = tmp("duo-gs-home-"); mkdirSync(join(home, "Library", "Keychains"), { recursive: true }); return { HOME: home, XDG_STATE_HOME: join(home, ".state") }; }
+// LOCALAPPDATA dentro do temporário: no Windows nativo o estado vai para lá (sem ele a raiz é recusada).
+function fakeEnv(): NodeJS.ProcessEnv { const home = tmp("duo-gs-home-"); mkdirSync(join(home, "Library", "Keychains"), { recursive: true }); return { HOME: home, XDG_STATE_HOME: join(home, ".state"), USERPROFILE: home, LOCALAPPDATA: join(home, "AppData", "Local") }; }
 
 describe("HOME privado", () => {
   it("state dir is 0700 and outside the project; owner.json holds no prompt text", () => {
@@ -21,12 +22,12 @@ describe("HOME privado", () => {
     const dir = chainStateDir(project, "chain-1", env);
     assert.ok(dir.startsWith(geminiStateRoot(env)));
     assert.ok(!dir.startsWith(project));
-    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    if (process.platform !== "win32") assert.equal(statSync(dir).mode & 0o777, 0o700); // modos POSIX
     const owner = JSON.parse(readFileSync(join(dir, "owner.json"), "utf8")) as Record<string, unknown>;
     assert.deepEqual(Object.keys(owner).sort(), ["chainId", "createdAt", "projectRoot"]);
   });
 
-  it("createPrivateHome links only Library/Keychains and seeds swarm off", () => {
+  it("createPrivateHome links only Library/Keychains and seeds swarm off", { skip: process.platform === "win32" }, () => {
     const env = fakeEnv();
     const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
     const { home } = createPrivateHome(dir, env);
@@ -239,9 +240,9 @@ describe("HOME privado concorrente", () => {
 });
 
 describe("HOME privado idempotente", () => {
-  it("createPrivateHome twice works when the real Keychains does not exist (dangling link)", () => {
+  it("createPrivateHome twice works when the real Keychains does not exist (dangling link)", { skip: process.platform === "win32" }, () => {
     const home = tmp("duo-gs-nohome-");
-    const env = { HOME: home };
+    const env = { HOME: home, LOCALAPPDATA: join(home, "AppData", "Local") };
     const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
     createPrivateHome(dir, env);
     assert.doesNotThrow(() => createPrivateHome(dir, env));

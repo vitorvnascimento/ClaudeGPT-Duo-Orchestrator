@@ -48,14 +48,26 @@ const BRAIN_SESSION_ENV = [
   /^CODEX_(THREAD_ID|SESSION_ID)$/,
 ];
 
-export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> = {}): { env: NodeJS.ProcessEnv; removed: string[] } {
+/** Nome de variável de cobrança; no Windows compara em maiúsculas (lá `Anthropic_Api_Key` vale como a oficial). */
+export function isBillingEnvName(k: string, platform: NodeJS.Platform = process.platform): boolean {
+  return BILLING_ENV.includes(platform === "win32" ? k.toUpperCase() : k);
+}
+
+/** No Windows o nome da variável não diferencia caixa: `gemini_api_key` vale como `GEMINI_API_KEY`, e um `Home` herdado
+ * competiria com o `HOME` de `extra`. Lá a comparação é pelo nome em maiúsculas. */
+export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> = {}, platform: NodeJS.Platform = process.platform): { env: NodeJS.ProcessEnv; removed: string[] } {
+  const win = platform === "win32";
+  const norm = (k: string) => (win ? k.toUpperCase() : k);
+  const overridden = new Set(Object.keys(extra).map(norm));
   const env: NodeJS.ProcessEnv = {};
   const removed: string[] = [];
   for (const [k, v] of Object.entries(base)) {
-    if (BILLING_ENV.includes(k) || BRAIN_SESSION_ENV.some((re) => re.test(k))) {
+    const n = norm(k);
+    if (BILLING_ENV.includes(n) || BRAIN_SESSION_ENV.some((re) => re.test(n))) {
       removed.push(k);
       continue;
     }
+    if (win && overridden.has(n)) continue;
     env[k] = v;
   }
   return { env: { ...env, ...extra }, removed: removed.sort() };
@@ -1067,7 +1079,7 @@ export async function checkAuth(
     provider,
     conflicts: settings.conflicts,
     warnings: settings.warnings,
-    removedEnv: removed.filter((k) => BILLING_ENV.includes(k)),
+    removedEnv: removed.filter((k) => isBillingEnvName(k)),
     extraUsage,
     ...(provider === "codex" ? { codexConfigSource: effective ? "config/read" as const : "fallback" as const, unverifiableConflicts: unverifiable } : {}),
   } as const;

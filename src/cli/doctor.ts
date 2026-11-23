@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe } from "../adapters/capabilities.js";
+import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe, probeAgy } from "../adapters/capabilities.js";
 import { isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
@@ -183,16 +183,19 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     const resolved = resolveExecutable("agy", effectiveCfg.executors.gemini.command, env);
     if (!resolved.ok) providers.gemini = { installed: false, reason: resolved.reason, blockers: [resolved.reason] };
     else {
-      const caps = probe(resolved, ["--help"], AGY_FLAGS, probeEnv);
+      const caps = probeAgy(resolved, env);
       const sandbox = probeSandbox();
       const verified = isVerifiedAgy(caps.rawVersion ?? null, process.platform);
       const blockers: string[] = [];
       if (process.platform !== "darwin") blockers.push("executor gemini exige macOS nesta versão");
       const denyProblem = unsupportedDenyGlob(effectiveCfg.scope.deny);
       if (denyProblem) blockers.push(denyProblem);
-      if (caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
+      // Sonda que nem rodou (perfil privado recusado, por exemplo config do agy acima da pasta): esse é o problema.
+      const probeFailed = Boolean(caps.profileError);
+      if (caps.profileError) blockers.push(`sonda do agy: ${caps.profileError}`);
+      if (!probeFailed && caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
       if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
-      if (!verified) blockers.push(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}`);
+      if (!probeFailed && !verified) blockers.push(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}`);
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
       const parent = geminiParentEnvProblem(env);
       if (parent) blockers.push(parent);

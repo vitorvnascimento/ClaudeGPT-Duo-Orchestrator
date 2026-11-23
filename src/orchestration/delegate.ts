@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, type Capabilities } from "../adapters/capabilities.js";
+import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, probeAgy, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, readRolloutEvidence, sha256File } from "../adapters/codex-rollout.js";
 import { canonicalAppId, ComputerUseCollector, sanitizeComputerUseLine } from "../adapters/computer-use-evidence.js";
@@ -250,7 +250,7 @@ function runGates(
   if (!resolved.ok) return { ok: false, reason: `executor indisponível: ${resolved.reason}` };
   const { env: probeEnv } = childEnv(env);
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
-    : req.executor === "gemini" ? probe(resolved, ["--help"], AGY_FLAGS, probeEnv)
+    : req.executor === "gemini" ? probeAgy(resolved, env, gem.platform ?? process.platform)
     : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
   if (req.executor === "gemini" && !isVerifiedAgy(caps.rawVersion ?? null, gem.platform ?? process.platform, gem.verified)) {
     return { ok: false, reason: `versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar` };
@@ -903,13 +903,14 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let releaseClaim: (() => void) | null = null;
   let gemPrep: { home: string; attempt: ReturnType<typeof attemptTmpDir>; logPath: string; profilePath: string | null } | null = null;
   if (task.executor === "gemini") {
+    // Raiz do estado pela plataforma real (a mesma que o apply usa para remover); a injetada só muda o perfil.
     const chainDir = chainStateDir(projectRoot, ctx.chainId, env);
     task.geminiStateDir = chainDir;
     task.geminiChainId = ctx.chainId;
     releaseClaim = claimChainState(chainDir);
     ctx.cleanups?.push(releaseClaim);
     sweepStaleAttempts(chainDir);
-    const { home } = createPrivateHome(chainDir, env);
+    const { home } = createPrivateHome(chainDir, env, ctx.gemini?.platform ?? process.platform);
     // Worktree criada para outro executor (troca no --resume): o .agents do gate nunca entra no patch.
     if (!(task.worktreeLinks ?? []).includes(".agents")) { task.worktreeLinks = [...(task.worktreeLinks ?? []), ".agents"]; store.saveTask(task); }
     const links = (task.worktreeLinks ?? []).filter((l) => l !== ".agents");
@@ -982,7 +983,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   // Valida o plano efetivo: flags ausentes não excluem fontes, e a worktree
   // pode carregar settings diferentes das que estavam no diretório do cérebro.
   const sourceIndex = plan.args.indexOf("--setting-sources");
-  const auth = gemPrep ? geminiAuthPreflight(ctx.resolved, plan.env, cfg, gemPrep.profilePath) : await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
+  const auth = gemPrep ? geminiAuthPreflight(ctx.resolved, plan.env, cfg, gemPrep.profilePath, { cwd: gemPrep.attempt.path, platform: ctx.gemini?.platform ?? process.platform }) : await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
     settingSources: sourceIndex < 0 ? "" : plan.args[sourceIndex + 1] ?? "",
     ignoreUserConfig: plan.args.includes("--ignore-user-config"),
     effectiveCodexConfig,

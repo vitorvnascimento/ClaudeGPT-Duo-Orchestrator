@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { loadSchema, validate } from "../schema.js";
 import type { ExecutorReport } from "../state/types.js";
-import { childEnv } from "../permissions/auth.js";
+import { privateProfileEnv } from "../state/gemini-state.js";
 import { validateGeminiArgv } from "./gemini-argv.js";
 import { writeExecutorSchema } from "./report-schema.js";
 import { SANDBOX_EXEC } from "./sandbox-profile.js";
@@ -78,7 +78,7 @@ export class GeminiAdapter implements ExecutorAdapter {
     }
     const bad = validateGeminiArgv(args);
     if (bad) throw new Error(`argv do agy recusado: ${bad}`);
-    const { env } = childEnv(input.env, { HOME: input.gemini.privateHome, TMPDIR: input.gemini.tmpDir });
+    const { env } = privateProfileEnv(input.env, { home: input.gemini.privateHome, tmpDir: input.gemini.tmpDir }, this.platform);
     const agy = [input.resolved.command, ...input.resolved.prefixArgs];
     let command = agy[0] as string;
     let fullArgs = [...agy.slice(1), ...args];

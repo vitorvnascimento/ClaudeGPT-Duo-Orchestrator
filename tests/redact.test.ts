@@ -193,3 +193,17 @@ describe("redação por stream", () => {
     assert.equal(stream("público"), "público");
   });
 });
+
+describe("eventos do gemini", () => {
+  it("text_delta vira só o tamanho: uma chave partida entre eventos nunca fica recuperável no log", () => {
+    const step = (text_delta: string, state = "ACTIVE") => JSON.stringify({ event: "step_update", step_update: { conversation_id: "c", step_index: 1, state, step_type: "agent_response", text_delta } });
+    const parts = ["sk-ant-api03-", "AAAABBBBCCCC", "DDDDEEEEFFFF"];
+    const logged = parts.map((p) => sanitizeEventLine("gemini", step(p)));
+    for (const [i, line] of logged.entries()) {
+      const ev = JSON.parse(line);
+      assert.deepEqual(ev.step_update.text_delta, { omitted: true, chars: parts[i]!.length });
+      assert.equal(ev.step_update.state, "ACTIVE");
+    }
+    assert.doesNotMatch(logged.join("\n"), /sk-ant|AAAABBBB|DDDDEEEE/);
+  });
+});

@@ -23,6 +23,15 @@ export function sanitizeEventLine(provider: Provider, line: string, redactor = r
   } catch {
     ev = undefined;
   }
+  if (provider === "gemini") {
+    // O agy fatia a resposta em text_delta: uma credencial partida entre eventos não casa com nenhum padrão do
+    // redator, e os pedaços gravados recomporiam o texto. No log fica só o tamanho de cada fatia.
+    const step = raw.step_update as Record<string, unknown> | undefined;
+    if (step && typeof step.text_delta === "string") {
+      const redactedStep = (ev?.step_update as Record<string, unknown> | undefined) ?? {};
+      return JSON.stringify({ ...(ev ?? {}), step_update: { ...redactedStep, text_delta: { omitted: true, chars: step.text_delta.length } } });
+    }
+  }
   if (provider === "codex") {
     const item = raw.item as Record<string, unknown> | undefined;
     if (item?.type === "reasoning") {

@@ -1,7 +1,7 @@
 // Testes dos helpers puros do teste de fatos do Gemini no Windows. Rodam em qualquer SO (usam path.win32).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, resolveAgy, parseStream, classifyRun } from "./lib.mjs";
+import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, resolveAgy, parseStream, classifyRun, summarizeAlive } from "./lib.mjs";
 
 test("redact: e-mail, token longo e pasta do perfil em todas as grafias", () => {
   const tok = "a".repeat(20) + "B9_-" + "c".repeat(16);
@@ -231,4 +231,29 @@ test("classifyRun: hook que só viu escrita em outro arquivo e escrita do alvo c
   const done = step("write_file", "DONE", { Path: `C:\\ws\\${A}` });
   assert.equal(run("allow-log", A, { fileExists: true, hookLines: [hookLine("C:\\ws\\other.txt")], stream: done }), "hook-not-run");
   assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ toolName: "write_file", args: { Content: "x" } }], stream: done }), "inconclusive");
+});
+
+test("classifyRun: no Windows o tempo esgotado vale pelo registro de vida do hook cortado perto do limite", () => {
+  const M = "probe-timeout.txt";
+  const failed = 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:';
+  const stream = step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, failed);
+  const go = (alive, extra = {}) => classifyRun("timeout", { target: M, workspace: WS, fileExists: false, hookLines: [{ ...hookLine(`C:\\ws\\${M}`), pid: 7 }], steps: parseStream(stream).steps, alive, hookTimeoutMs: 5000, ...extra });
+  const a = (o) => [{ pid: 7, aliveMs: 4750, parentGoneAtMs: null, answered: false, ...o }];
+  assert.equal(go(a({})), "pass"); // árvore inteira morta: as anotações param perto dos 5 s
+  assert.equal(go(a({ aliveMs: 5300, parentGoneAtMs: 5300 })), "pass"); // só o cmd.exe morto: o hook viu o pai sumir
+  assert.equal(go(a({ aliveMs: 900 })), "inconclusive"); // cortado cedo: não foi o limite de tempo
+  assert.equal(go(a({ aliveMs: 30_000 })), "inconclusive"); // cortado muito depois: o limite configurado não valeu
+  assert.equal(go(a({ aliveMs: 60_000, answered: true })), "inconclusive"); // o hook chegou a responder
+  assert.equal(go(a({ pid: 8 })), "inconclusive"); // registro de outro processo
+  assert.equal(go([]), "inconclusive");
+  assert.equal(go(a({}), { fileExists: true }), "fail");
+  assert.equal(go(a({}), { steps: parseStream(step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, "Access is denied.")).steps }), "inconclusive");
+});
+
+test("summarizeAlive: junta por PID, guarda o último instante, a primeira vez que o pai sumiu e a resposta", () => {
+  const text = ['{"pid":7,"aliveMs":300}', '{"pid":7,"aliveMs":550}', "lixo", '{"pid":7,"aliveMs":5300,"parentGone":true}', '{"pid":9,"aliveMs":60010,"answered":true}', '{"pid":7,"aliveMs":4'].join("\n");
+  assert.deepEqual(summarizeAlive(text), [
+    { pid: 7, aliveMs: 5300, parentGoneAtMs: 5300, answered: false },
+    { pid: 9, aliveMs: 60010, parentGoneAtMs: null, answered: true },
+  ]);
 });

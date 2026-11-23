@@ -1,0 +1,153 @@
+{
+  "runId": "2026-11-23T18-00-35-080Z",
+  "platform": "win32",
+  "node": {
+    "version": "v24.22.1",
+    "execDir": "C:\\Program Files\\nodejs"
+  },
+  "probePid": 36432,
+  "rootBase": "%USERPROFILE%\\AppData\\Local\\duo-probe-win",
+  "root": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-00-35-080Z",
+  "launches": [
+    {
+      "label": "agy --version",
+      "pid": 33244,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:00:35.311Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy --help",
+      "pid": 27412,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:00:35.453Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy models",
+      "pid": 4804,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:00:37.356Z",
+      "exit": 0,
+      "error": null
+    }
+  ],
+  "f1": {
+    "kind": "exe",
+    "path": "%USERPROFILE%\\AppData\\Local\\agy\\bin\\agy.exe",
+    "script": null,
+    "launcher": [
+      "%USERPROFILE%\\AppData\\Local\\agy\\bin\\agy.exe"
+    ],
+    "version": "1.5.15",
+    "versionExit": 0,
+    "help": [
+      ""
+    ]
+  },
+  "f4": {
+    "exit": 0,
+    "models": [
+      "gemini-4-neon-high\tGemini 4 Neon (High)",
+      "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+      "gemini-4-neon-low\tGemini 4 Neon (Low)",
+      "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+      "gemini-4-argon-high\tGemini 4 Argon (High)",
+      "gemini-4-argon-low\tGemini 4 Argon (Low)",
+      "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+      "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+      "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+      "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+      "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
+      "gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)",
+      "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+      "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+      "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)"
+    ],
+    "stderrTail": "Fetching available models...\n",
+    "createdUnderPrivateRoot": [
+      "home/",
+      "home\\.gemini/",
+      "home\\.gemini\\antigravity-cli/",
+      "home\\.gemini\\antigravity-cli\\brain/",
+      "home\\.gemini\\antigravity-cli\\builtin/",
+      "home\\.gemini\\antigravity-cli\\builtin\\.checksum",
+      "home\\.gemini\\antigravity-cli\\builtin\\.manifest",
+      "home\\.gemini\\antigravity-cli\\builtin\\keep.txt",
+      "home\\.gemini\\antigravity-cli\\builtin\\plugins/",
+      "home\\.gemini\\antigravity-cli\\builtin\\skills/",
+      "home\\.gemini\\antigravity-cli\\cache/",
+      "home\\.gemini\\antigravity-cli\\cache\\default_project_id.txt",
+      "home\\.gemini\\antigravity-cli\\cache\\onboarding.json",
+      "home\\.gemini\\antigravity-cli\\cli.log",
+      "home\\.gemini\\antigravity-cli\\conversations/",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db-shm",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db-wal",
+      "home\\.gemini\\antigravity-cli\\crashes/",
+      "home\\.gemini\\antigravity-cli\\installation_id",
+      "home\\.gemini\\antigravity-cli\\jetski_state.pbtxt",
+      "home\\.gemini\\antigravity-cli\\last_check.timestamp",
+      "home\\.gemini\\antigravity-cli\\log/",
+      "home\\.gemini\\antigravity-cli\\log\\cli-20261123_150035.log",
+      "home\\.gemini\\antigravity-cli\\updater/",
+      "home\\.gemini\\antigravity-cli\\updater\\update.lock",
+      "home\\.gemini\\antigravity-cli\\updater\\update_status.json",
+      "home\\.gemini\\config/",
+      "home\\.gemini\\config\\.migrated",
+      "home\\.gemini\\config\\config.json",
+      "home\\.gemini\\config\\mcp_config.json",
+      "home\\.gemini\\config\\projects/",
+      "home\\.gemini\\config\\projects\\default-cli-project.json",
+      "home\\AppData/",
+      "home\\AppData\\Local/",
+      "home\\AppData\\Roaming/",
+      "hooks/",
+      "hooks\\allow-log.mjs",
+      "hooks\\crash.mjs",
+      "hooks\\deny.mjs",
+      "hooks\\garbage.mjs",
+      "hooks\\timeout.mjs",
+      "hooks\\_record.mjs",
+      "tmp/"
+    ],
+    "verdict": "proceed",
+    "methods": [
+      "consumer"
+    ],
+    "effectives": [
+      "keyring"
+    ],
+    "authLines": [
+      "I1123 15:00:35.628985      93 model_configs.go:230] Auth mode is unspecified, skipping fetchAvailableModels and returning empty response",
+      "I1123 15:00:35.742538      43 server.go:4891] Auth succeeded, refreshing features and managers",
+      "W1123 15:00:35.742538     213 rpcs_plugin_auth.go:110] Not reloading plugin MCP servers: cannot get the signed-in user: error getting token source: You are not logged into Antigravity.",
+      "I1123 15:00:35.750597       1 auth_provider.go:816] [AuthProvider] SetEnableBusinessLogin called with enable: true",
+      "I1123 15:00:35.767346     307 keyring.go:64] keyringAuth: loaded token, expiry=2026-11-23 15:58:44.1595554 -0300 -03 expired=false",
+      "I1123 15:00:35.767346       1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)",
+      "I1123 15:00:35.767346       1 server_oauth.go:221] applyAuthResult: email=<email>, authMethod=consumer, quotaProject=",
+      "I1123 15:00:35.767346       1 server_oauth.go:226] OAuth: authenticated successfully as <email>",
+      "I1123 15:00:35.767346       1 server_oauth.go:235] b.codeAssistClient.AuthProvider (0x11ce2cfa6780) is same as b.cliAuth (0x11ce2cfa6780)",
+      "I1123 15:00:37.098202     302 experiment_manager.go:66] Starting experiment refresh after login",
+      "I1123 15:00:37.099279     302 experiment_manager.go:70] Experiments refreshed after login"
+    ],
+    "real": {
+      "APPDATA": [
+        "antigravity"
+      ],
+      "LOCALAPPDATA": [
+        "agy",
+        "antigravity"
+      ],
+      "userGemini": true,
+      "credentialTargets": [
+        "Destino: LegacyGeneric:target=gemini:antigravity"
+      ]
+    }
+  },
+  "quota": null,
+  "stop": null
+}

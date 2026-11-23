@@ -1,0 +1,704 @@
+{
+  "runId": "2026-11-23T18-43-09-657Z",
+  "platform": "win32",
+  "node": {
+    "version": "v24.22.1",
+    "execDir": "C:\\Program Files\\nodejs"
+  },
+  "probePid": 32140,
+  "rootBase": "%USERPROFILE%\\AppData\\Local\\duo-probe-win",
+  "root": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z",
+  "launches": [
+    {
+      "label": "agy --version",
+      "pid": 31156,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:10.006Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy --help",
+      "pid": 32788,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:10.195Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy models",
+      "pid": 38776,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:11.979Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy headless (allow-log)",
+      "pid": 31816,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:23.562Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy headless (deny)",
+      "pid": 25828,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:33.501Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy headless (crash)",
+      "pid": 26336,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:43:44.351Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy headless (garbage)",
+      "pid": 31000,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:44:01.151Z",
+      "exit": 0,
+      "error": null
+    },
+    {
+      "label": "agy headless (timeout)",
+      "pid": 33532,
+      "image": "agy.exe",
+      "time": "2026-11-23T18:44:21.666Z",
+      "exit": 0,
+      "error": null
+    }
+  ],
+  "f1": {
+    "kind": "exe",
+    "path": "%USERPROFILE%\\AppData\\Local\\agy\\bin\\agy.exe",
+    "script": null,
+    "launcher": [
+      "%USERPROFILE%\\AppData\\Local\\agy\\bin\\agy.exe"
+    ],
+    "version": "1.5.15",
+    "versionExit": 0,
+    "help": [
+      ""
+    ]
+  },
+  "f4": {
+    "exit": 0,
+    "models": [
+      "gemini-4-neon-high\tGemini 4 Neon (High)",
+      "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+      "gemini-4-neon-low\tGemini 4 Neon (Low)",
+      "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+      "gemini-4-argon-high\tGemini 4 Argon (High)",
+      "gemini-4-argon-low\tGemini 4 Argon (Low)",
+      "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+      "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+      "gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)",
+      "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+      "gemini-pro-orchestrator-neon\tOrchestrator (Neon)",
+      "gemini-pro-orchestrator-g1-pro\tOrchestrator (Argon)",
+      "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+      "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+      "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)"
+    ],
+    "stderrTail": "Fetching available models...\n",
+    "createdUnderPrivateRoot": [
+      "home/",
+      "home\\.gemini/",
+      "home\\.gemini\\antigravity-cli/",
+      "home\\.gemini\\antigravity-cli\\brain/",
+      "home\\.gemini\\antigravity-cli\\builtin/",
+      "home\\.gemini\\antigravity-cli\\builtin\\.checksum",
+      "home\\.gemini\\antigravity-cli\\builtin\\.manifest",
+      "home\\.gemini\\antigravity-cli\\builtin\\keep.txt",
+      "home\\.gemini\\antigravity-cli\\builtin\\plugins/",
+      "home\\.gemini\\antigravity-cli\\builtin\\skills/",
+      "home\\.gemini\\antigravity-cli\\cache/",
+      "home\\.gemini\\antigravity-cli\\cache\\default_project_id.txt",
+      "home\\.gemini\\antigravity-cli\\cache\\onboarding.json",
+      "home\\.gemini\\antigravity-cli\\cli.log",
+      "home\\.gemini\\antigravity-cli\\conversations/",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db-shm",
+      "home\\.gemini\\antigravity-cli\\conversation_summaries.db-wal",
+      "home\\.gemini\\antigravity-cli\\crashes/",
+      "home\\.gemini\\antigravity-cli\\crashes\\<token>",
+      "home\\.gemini\\antigravity-cli\\installation_id",
+      "home\\.gemini\\antigravity-cli\\jetski_state.pbtxt",
+      "home\\.gemini\\antigravity-cli\\last_check.timestamp",
+      "home\\.gemini\\antigravity-cli\\log/",
+      "home\\.gemini\\antigravity-cli\\log\\cli-20261123_154310.log",
+      "home\\.gemini\\antigravity-cli\\updater/",
+      "home\\.gemini\\antigravity-cli\\updater\\update.lock",
+      "home\\.gemini\\antigravity-cli\\updater\\update_status.json",
+      "home\\.gemini\\config/",
+      "home\\.gemini\\config\\.migrated",
+      "home\\.gemini\\config\\config.json",
+      "home\\.gemini\\config\\mcp_config.json",
+      "home\\.gemini\\config\\projects/",
+      "home\\.gemini\\config\\projects\\default-cli-project.json",
+      "home\\AppData/",
+      "home\\AppData\\Local/",
+      "home\\AppData\\Roaming/",
+      "hooks/",
+      "hooks\\allow-log.mjs",
+      "hooks\\crash.mjs",
+      "hooks\\deny.mjs",
+      "hooks\\garbage.mjs",
+      "hooks\\timeout.mjs",
+      "hooks\\_record.mjs",
+      "tmp/"
+    ],
+    "verdict": "proceed",
+    "methods": [
+      "consumer"
+    ],
+    "effectives": [
+      "keyring"
+    ],
+    "authLines": [
+      "I1123 15:43:10.416597      69 model_configs.go:230] Auth mode is unspecified, skipping fetchAvailableModels and returning empty response",
+      "I1123 15:43:10.572474     210 server.go:4891] Auth succeeded, refreshing features and managers",
+      "W1123 15:43:10.572474     201 rpcs_plugin_auth.go:110] Not reloading plugin MCP servers: cannot get the signed-in user: error getting token source: You are not logged into Antigravity.",
+      "I1123 15:43:10.584053       1 auth_provider.go:816] [AuthProvider] SetEnableBusinessLogin called with enable: true",
+      "I1123 15:43:10.616575     250 keyring.go:64] keyringAuth: loaded token, expiry=2026-11-23 15:58:44.1595554 -0300 -03 expired=false",
+      "I1123 15:43:10.616575       1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)",
+      "I1123 15:43:10.616575       1 server_oauth.go:221] applyAuthResult: email=<email>, authMethod=consumer, quotaProject=",
+      "I1123 15:43:10.616575       1 server_oauth.go:226] OAuth: authenticated successfully as <email>",
+      "I1123 15:43:10.616575       1 server_oauth.go:235] b.codeAssistClient.AuthProvider (0x72b5d176ff0) is same as b.cliAuth (0x72b5d176ff0)",
+      "I1123 15:43:11.725720     341 experiment_manager.go:66] Starting experiment refresh after login",
+      "I1123 15:43:11.727302     341 experiment_manager.go:70] Experiments refreshed after login"
+    ],
+    "real": {
+      "APPDATA": [
+        "antigravity"
+      ],
+      "LOCALAPPDATA": [
+        "agy",
+        "antigravity"
+      ],
+      "userGemini": true,
+      "credentialTargets": [
+        "Destino: LegacyGeneric:target=gemini:antigravity"
+      ]
+    }
+  },
+  "quota": {
+    "model": "gemini-3.8-flash-low",
+    "runs": [
+      {
+        "hook": "allow-log",
+        "outcome": "pass",
+        "exit": 0,
+        "timedOut": false,
+        "status": "SUCCESS",
+        "events": [
+          "init",
+          "step_update",
+          "result"
+        ],
+        "steps": [
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-allow-log\\probe-allow-log.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "DONE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-allow-log\\probe-allow-log.txt"
+            },
+            "message": ""
+          }
+        ],
+        "fileExists": true,
+        "hookLines": [
+          {
+            "hook": "allow-log",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\allow-log.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-allow-log.jsonl"
+            ],
+            "pid": 16760,
+            "ppid": 35048,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-allow-log\\probe-allow-log.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          }
+        ],
+        "hookTimeoutS": 10,
+        "alive": [],
+        "stderrTail": ""
+      },
+      {
+        "hook": "deny",
+        "outcome": "pass",
+        "exit": 0,
+        "timedOut": false,
+        "status": "SUCCESS",
+        "events": [
+          "init",
+          "step_update",
+          "result"
+        ],
+        "steps": [
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-deny\\probe-deny.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-deny\\probe-deny.txt"
+            },
+            "message": "tool call denied by pre-tool hook: probe-deny"
+          }
+        ],
+        "fileExists": false,
+        "hookLines": [
+          {
+            "hook": "deny",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\deny.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-deny.jsonl"
+            ],
+            "pid": 32024,
+            "ppid": 32856,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-deny\\probe-deny.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          }
+        ],
+        "hookTimeoutS": 10,
+        "alive": [],
+        "stderrTail": ""
+      },
+      {
+        "hook": "crash",
+        "outcome": "pass",
+        "exit": 0,
+        "timedOut": false,
+        "status": "SUCCESS",
+        "events": [
+          "init",
+          "step_update",
+          "result"
+        ],
+        "steps": [
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-crash\\probe-crash.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-crash\\probe-crash.txt"
+            },
+            "message": "JSON hook \"jsonhook__probe_PreToolUse_0_0\" failed: command failed: exit status 1, stderr: file:///%USERPROFILE%/AppData/Local/duo-probe-win/2026-11-23T18-43-09-657Z/hooks/crash.mjs:3\r\nthrow new Error(\"probe-crash\");\r\n      ^\r\n\r\nError: probe-crash\r\n    at file:///%USERPROFILE%/AppData/Local/duo-probe-win/2026-11-23T18-43-09-657Z/hooks/crash.mjs:3:7\r\n    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)\r\n    at async node:internal/modules/esm/loader:647:26\r\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\r\n\r\nNode.js v24.22.1"
+          }
+        ],
+        "fileExists": false,
+        "hookLines": [
+          {
+            "hook": "crash",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\crash.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-crash.jsonl"
+            ],
+            "pid": 38720,
+            "ppid": 37548,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-crash\\probe-crash.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          }
+        ],
+        "hookTimeoutS": 10,
+        "alive": [],
+        "stderrTail": ""
+      },
+      {
+        "hook": "garbage",
+        "outcome": "pass",
+        "exit": 0,
+        "timedOut": false,
+        "status": "SUCCESS",
+        "events": [
+          "init",
+          "step_update",
+          "result"
+        ],
+        "steps": [
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "message": "failed to unmarshal result from hook jsonhook__probe_PreToolUse_0_0 via protojson: not json: proto: syntax error (line 1:1): invalid value not"
+          },
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "message": "failed to unmarshal result from hook jsonhook__probe_PreToolUse_0_0 via protojson: not json: proto: syntax error (line 1:1): invalid value not"
+          },
+          {
+            "tool": "run_command",
+            "state": "ACTIVE",
+            "params": {
+              "CommandLine": "Set-Content -Path .\\probe-garbage.txt -Value \"OK\" -NoNewline"
+            },
+            "message": ""
+          },
+          {
+            "tool": "run_command",
+            "state": "ERROR",
+            "params": {
+              "CommandLine": "Set-Content -Path .\\probe-garbage.txt -Value \"OK\" -NoNewline"
+            },
+            "message": "failed to unmarshal result from hook jsonhook__probe_PreToolUse_0_0 via protojson: not json: proto: syntax error (line 1:1): invalid value not"
+          }
+        ],
+        "fileExists": false,
+        "hookLines": [
+          {
+            "hook": "garbage",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\garbage.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-garbage.jsonl"
+            ],
+            "pid": 28928,
+            "ppid": 12508,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          },
+          {
+            "hook": "garbage",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\garbage.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-garbage.jsonl"
+            ],
+            "pid": 25428,
+            "ppid": 34176,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-garbage\\probe-garbage.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          },
+          {
+            "hook": "garbage",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\garbage.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-garbage.jsonl"
+            ],
+            "pid": 33844,
+            "ppid": 19920,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "run_command",
+            "args": {
+              "CommandLine": "Set-Content -Path .\\probe-garbage.txt -Value \"OK\" -NoNewline",
+              "WaitMsBeforeAsync": 5000,
+              "toolSummary": "Create probe-garbage.txt file"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          }
+        ],
+        "hookTimeoutS": 10,
+        "alive": [],
+        "stderrTail": ""
+      },
+      {
+        "hook": "timeout",
+        "outcome": "pass",
+        "exit": 0,
+        "timedOut": false,
+        "status": "SUCCESS",
+        "events": [
+          "init",
+          "step_update",
+          "result"
+        ],
+        "steps": [
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "message": "JSON hook \"jsonhook__probe_PreToolUse_0_0\" failed: command failed: exit status 1, stderr:"
+          },
+          {
+            "tool": "write_file",
+            "state": "ACTIVE",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "message": ""
+          },
+          {
+            "tool": "write_file",
+            "state": "ERROR",
+            "params": {
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "message": "JSON hook \"jsonhook__probe_PreToolUse_0_0\" failed: command failed: exit status 1, stderr:"
+          }
+        ],
+        "fileExists": false,
+        "hookLines": [
+          {
+            "hook": "timeout",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\timeout.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-timeout.jsonl"
+            ],
+            "pid": 37680,
+            "ppid": 38604,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          },
+          {
+            "hook": "timeout",
+            "argv": [
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooks\\timeout.mjs",
+              "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\hooklog-timeout.jsonl"
+            ],
+            "pid": 16764,
+            "ppid": 35356,
+            "parents": {
+              "parent": "cmd.exe",
+              "grandparent": "agy.exe",
+              "error": null
+            },
+            "stdinError": null,
+            "toolName": "write_file",
+            "args": {
+              "Content": "OK",
+              "Path": "%USERPROFILE%\\AppData\\Local\\duo-probe-win\\2026-11-23T18-43-09-657Z\\ws-timeout\\probe-timeout.txt"
+            },
+            "modelName": "gemini-3.8-flash-low",
+            "keys": [
+              "artifactDirectoryPath",
+              "conversationId",
+              "cwd",
+              "hookEventName",
+              "lastUserInput",
+              "modelName",
+              "stepIdx",
+              "toolCall",
+              "transcriptPath",
+              "workspacePaths"
+            ]
+          }
+        ],
+        "hookTimeoutS": 5,
+        "alive": [
+          {
+            "pid": 37680,
+            "aliveMs": 5159,
+            "parentGoneAtMs": 5159,
+            "answered": false
+          },
+          {
+            "pid": 16764,
+            "aliveMs": 5219,
+            "parentGoneAtMs": 5219,
+            "answered": false
+          }
+        ],
+        "stderrTail": ""
+      }
+    ]
+  },
+  "stop": null
+}

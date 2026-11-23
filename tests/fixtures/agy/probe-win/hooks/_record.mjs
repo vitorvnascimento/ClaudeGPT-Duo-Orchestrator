@@ -21,6 +21,7 @@ export function record(hook) {
     appendFileSync(process.argv[2], `${JSON.stringify({
       hook,
       argv: process.argv.slice(1),
+      pid: process.pid,
       ppid: process.ppid,
       parents: parentChain(),
       stdinError,

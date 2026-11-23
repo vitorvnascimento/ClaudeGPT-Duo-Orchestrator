@@ -204,7 +204,8 @@ export function parseStream(stdout) {
 }
 
 /** Mensagem do agy que prova a falha/negação vinda do hook "probe" (formatos vistos no macOS 1.5.x). O tempo esgotado
- * precisa de motivo de tempo: uma falha comum do comando (exit status) não distingue estouro de travamento. */
+ * precisa de motivo de tempo: uma falha comum do comando (exit status) não distingue estouro de travamento. No Windows
+ * esse motivo não vem na mensagem; classifyRun aceita no lugar o registro de vida do próprio hook (summarizeAlive). */
 export const HOOK_REASON = {
   deny: /denied by pre-tool hook: probe-deny/i,
   crash: /hook\W+jsonhook__probe_\S*\W+failed: command failed: exit status \d+$/i,
@@ -212,6 +213,25 @@ export const HOOK_REASON = {
   timeout: /hook\W+jsonhook__probe_\S*\W+failed\b.*(signal: killed|timed? ?out|deadline exceeded|context canceled)$/i,
 };
 const ANY_HOOK_FAILURE = /jsonhook__probe_/i;
+const HOOK_FAILED = /hook\W+jsonhook__probe_\S*\W+failed\b/i;
+/** Folga da medição do corte: o relógio do agy começa antes do Node do hook subir, e o hook anota a cada 250 ms. */
+const CUT_EARLY_MS = 1000;
+const CUT_LATE_MS = 5000;
+
+/** Resume o <log>.alive do hook de tempo esgotado, por PID: último instante vivo, quando o pai sumiu e se respondeu. */
+export function summarizeAlive(text) {
+  const by = new Map();
+  for (const line of String(text).split(/\r?\n/)) {
+    let t; try { t = JSON.parse(line); } catch { continue; }
+    if (!Number.isInteger(t?.pid) || typeof t.aliveMs !== "number") continue;
+    const s = by.get(t.pid) ?? { pid: t.pid, aliveMs: 0, parentGoneAtMs: null, answered: false };
+    s.aliveMs = Math.max(s.aliveMs, t.aliveMs);
+    if (t.parentGone) s.parentGoneAtMs ??= t.aliveMs;
+    if (t.answered) s.answered = true;
+    by.set(t.pid, s);
+  }
+  return [...by.values()];
+}
 const PATH_ARG = /path|file/i;
 
 /** Resultado de uma execução de sonda. Arquivo ausente só prova a trava quando a escrita do caminho exato do alvo
@@ -220,7 +240,7 @@ const PATH_ARG = /path|file/i;
 /** Ferramentas que não gravam e que o hook pode registrar legitimamente (mesma lista de leitura do gate do duo). */
 const KNOWN_NON_WRITE = new Set(["read_file", "view_file", "view_file_outline", "list_dir", "grep_search", "find_by_name", "finish"]);
 
-export function classifyRun(hook, { target, workspace, fileExists, hookLines, steps }, pathApi = win32) {
+export function classifyRun(hook, { target, workspace, fileExists, hookLines, steps, alive = [], hookTimeoutMs = 0 }, pathApi = win32) {
   const want = pathApi.resolve(workspace, target).toLowerCase();
   const isTarget = (args) => Object.entries(args ?? {}).some(([k, v]) => PATH_ARG.test(k) && typeof v === "string" && pathApi.resolve(workspace, v).toLowerCase() === want);
   const hookSaw = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && isTarget(l.args));
@@ -240,5 +260,15 @@ export function classifyRun(hook, { target, workspace, fileExists, hookLines, st
   // O motivo vem antes do stderr do hook: texto que o próprio script imprimiu não conta como causa.
   const cause = (m) => m.split(/,?\s*stderr:/i)[0];
   if (hookSaw && writes.some((s) => s.state === "ERROR" && reason.test(cause(s.message)))) return "pass";
+  // Windows: o agy corta o hook com "exit status 1", sem motivo de tempo. Vale como prova quando o próprio hook que viu
+  // a escrita do alvo anotou que ficou vivo e sem responder até o limite configurado e foi cortado perto dele.
+  if (hook === "timeout" && hookTimeoutMs > 0) {
+    const cutNearLimit = (l) => alive.some((a) => {
+      const cutAt = a.parentGoneAtMs ?? a.aliveMs;
+      return a.pid === l.pid && !a.answered && cutAt >= hookTimeoutMs - CUT_EARLY_MS && cutAt <= hookTimeoutMs + CUT_LATE_MS;
+    });
+    const sawCut = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && isTarget(l.args) && cutNearLimit(l));
+    if (sawCut && writes.some((s) => s.state === "ERROR" && HOOK_FAILED.test(cause(s.message)))) return "pass";
+  }
   return "inconclusive";
 }

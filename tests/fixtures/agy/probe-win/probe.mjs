@@ -8,7 +8,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readSyn
 import { homedir } from "node:os";
 import path, { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authVerdict, classifyRun, hookCommand, parseStream, privateEnv, redact, resolveAgy } from "./lib.mjs";
+import { authVerdict, classifyRun, hookCommand, parseStream, privateEnv, redact, resolveAgy, summarizeAlive } from "./lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === "win32";
@@ -145,7 +145,8 @@ for (const hook of HOOKS) {
   if (gi.status !== 0) finish(5, `STOP sonda: git init falhou em ${ws}`);
   const log = join(root, `hooklog-${hook}.jsonl`);
   writeFileSync(log, "");
-  const hooks = { probe: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: hookCommands[hook], timeout: hook === "timeout" ? 5 : 10 }] }] } };
+  const hookTimeoutS = hook === "timeout" ? 5 : 10;
+  const hooks = { probe: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: hookCommands[hook], timeout: hookTimeoutS }] }] } };
   writeFileSync(join(ws, ".agents", "hooks.json"), `${JSON.stringify(hooks, null, 2)}\n`);
   const target = `probe-${hook}.txt`;
   const prompt = `Create the file ${target} in the current directory containing the word OK, using your file-writing tool. Do nothing else.`;
@@ -155,8 +156,9 @@ for (const hook of HOOKS) {
   const stream = parseStream(r.stdout ?? "");
   const hookLines = readFileSync(log, "utf8").split(/\r?\n/).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return { unparsable: l.slice(0, 200) }; } });
   const fileExists = existsSync(join(ws, target));
-  const outcome = classifyRun(hook, { target, workspace: ws, fileExists, hookLines, steps: stream.steps }, path);
-  runs.push({ hook, outcome, exit: r.status, timedOut: r.error?.code === "ETIMEDOUT", status: stream.status, events: stream.events, steps: stream.steps, fileExists, hookLines, stderrTail: (r.stderr ?? "").slice(-2000) });
+  const alive = existsSync(`${log}.alive`) ? summarizeAlive(readFileSync(`${log}.alive`, "utf8")) : [];
+  const outcome = classifyRun(hook, { target, workspace: ws, fileExists, hookLines, steps: stream.steps, alive, hookTimeoutMs: hookTimeoutS * 1000 }, path);
+  runs.push({ hook, outcome, exit: r.status, timedOut: r.error?.code === "ETIMEDOUT", status: stream.status, events: stream.events, steps: stream.steps, fileExists, hookLines, hookTimeoutS, alive, stderrTail: (r.stderr ?? "").slice(-2000) });
   if (outcome === "fail") finish(4, `STOP F3: ${hook} não falhou fechado (a escrita aconteceu)`);
   if (outcome === "hook-not-run") finish(4, "STOP F3: hook não disparou para a escrita");
 }

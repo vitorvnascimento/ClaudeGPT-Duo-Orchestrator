@@ -100,8 +100,11 @@ export function parseCsvLine(line) {
  * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
 /** Resultado do Process Monitor que diz que o caminho não existe: é só uma procura, não uma leitura. */
 const NOT_FOUND = /NOT FOUND|NO SUCH|NAME INVALID|NOT A DIRECTORY|BAD NETWORK/i;
-/** Resultados que provam que a operação aconteceu (listar até o fim ou ler até o fim também são sucesso). */
-const SUCCESS = /^(SUCCESS|BUFFER OVERFLOW|NO MORE (FILES|ENTRIES)|END OF FILE|REPARSE)$/i;
+/** Resultados que provam que a operação aconteceu (listar até o fim ou ler até o fim também são sucesso). REPARSE fica
+ * de fora: é um passo intermediário ao resolver junction/link, antes do resultado final da abertura. */
+const SUCCESS = /^(SUCCESS|BUFFER OVERFLOW|NO MORE (FILES|ENTRIES)|END OF FILE)$/i;
+/** Falhas conhecidas: a abertura não aconteceu. Qualquer outro resultado (vazio, REPARSE, desconhecido) é incerto. */
+const KNOWN_FAILURE = /^(ACCESS DENIED|SHARING VIOLATION|PRIVILEGE NOT HELD|IS DIRECTORY|FILE LOCKED WITH (ONLY )?READERS|FILE LOCKED WITH WRITERS|INVALID PARAMETER|DELETE PENDING|CANNOT DELETE|NOT REPARSE POINT|OPLOCK NOT GRANTED|INVALID DEVICE REQUEST|FAST IO DISALLOWED)$/i;
 
 const CONFIG_DIR = /antigravity|gemini|codeium|windsurf/i;
 const HOME_CONFIG = /^\.(gemini|codeium|antigravity|windsurf)/i;
@@ -114,6 +117,7 @@ const CONFIG_FILE = /^(\.?codeium\.ya?ml|GEMINI\.md|AGENTS\.md)$/i;
 export function tracePolicy({ home, appData, localAppData, runRoot, agyPath, nodeDir, probeBase = localAppData && win32.join(localAppData, "duo-probe-win") }) {
   const low = (p) => String(p).toLowerCase().replace(/\\+$/, "");
   const inside = (path, base) => { if (!base) return false; const b = low(base); const q = low(path); return q === b || q.startsWith(`${b}\\`); };
+  const partsUnder = (path, base) => (inside(path, base) && low(path) !== low(base) ? String(path).slice(String(base).replace(/\\+$/, "").length + 1).split("\\") : []);
   const firstUnder = (path, base) => (inside(path, base) && low(path) !== low(base) ? String(path).slice(String(base).replace(/\\+$/, "").length + 1).split("\\")[0] : null);
   const agyDir = agyPath ? win32.dirname(agyPath) : null;
   // Só o layout oficial (%LOCALAPPDATA%\agy\bin) libera a pasta acima de bin; outra pasta bin libera só ela mesma.
@@ -123,10 +127,13 @@ export function tracePolicy({ home, appData, localAppData, runRoot, agyPath, nod
     if (inside(path, runRoot)) return "allowed";
     if (CONFIG_FILE.test(win32.basename(path))) return "forbidden";
     if (inside(path, agyRoot) || inside(path, nodeDir)) return "allowed";
-    if (inside(path, probeBase)) return "forbidden";
+    // A pasta-mãe das execuções em si é só subida de pasta; o que há dentro dela (outras execuções) é proibido.
+    if (inside(path, probeBase) && low(path) !== low(probeBase)) return "forbidden";
     const h = firstUnder(path, home);
     if (h && HOME_CONFIG.test(h)) return "forbidden";
-    for (const base of [appData, localAppData]) { const c = firstUnder(path, base); if (c && CONFIG_DIR.test(c)) return "forbidden"; }
+    // Em AppData, qualquer nível conta: o estado do Codeium/Gemini pode morar dentro de outro app
+    // (por exemplo Code\User\globalStorage\Codeium.codeium).
+    for (const base of [appData, localAppData]) if (partsUnder(path, base).some((c) => CONFIG_DIR.test(c))) return "forbidden";
     return "other";
   };
 }
@@ -144,6 +151,7 @@ export function createTraceAnalyzer({ probePid, launches, policy }) {
   const hits = [];
   const lookups = [];
   const failed = [];
+  const unknown = [];
   let idx = null;
   let rows = 0;
   let resultCol = -1;
@@ -172,7 +180,7 @@ export function createTraceAnalyzer({ probePid, launches, policy }) {
         if (policy(path) !== "forbidden") return;
         const result = resultCol >= 0 ? cells[resultCol] ?? "" : "";
         const ev = { time: cells[idx.time], process: cells[idx.process], pid, op, path, result };
-        (SUCCESS.test(result) ? hits : NOT_FOUND.test(result) ? lookups : failed).push(ev);
+        (SUCCESS.test(result) ? hits : NOT_FOUND.test(result) ? lookups : KNOWN_FAILURE.test(result) ? failed : unknown).push(ev);
       };
       if (op === "Process Create") {
         const child = /\bPID: (\d+)/.exec(detail)?.[1];
@@ -204,8 +212,8 @@ export function createTraceAnalyzer({ probePid, launches, policy }) {
       const pendingCount = (i) => [...live.values()].filter((v) => v === i).length;
       const missing = cover.map((c, i) => ({ pid: c.pid, image: c.image, created: c.created, fs: c.fs, exited: c.exited, liveDescendants: pendingCount(i) - (c.created && !c.exited ? 1 : 0) }))
         .filter((m, i) => !(m.created && m.fs > 0 && m.exited && pendingCount(i) === 0));
-      const verdict = hits.length ? "forbidden" : !idx || resultCol < 0 || missing.length ? "incomplete" : "ok";
-      return { rows, hits, lookups, failed, missing, missingPids: missing.map((m) => m.pid), noResultColumn: !!idx && resultCol < 0, verdict };
+      const verdict = hits.length ? "forbidden" : !idx || resultCol < 0 || unknown.length || missing.length ? "incomplete" : "ok";
+      return { rows, hits, lookups, failed, unknown, missing, missingPids: missing.map((m) => m.pid), noResultColumn: !!idx && resultCol < 0, verdict };
     },
   };
 }
@@ -257,7 +265,9 @@ const ANY_HOOK_FAILURE = /jsonhook__probe_/i;
 const HOOK_FAILED = /hook\W+jsonhook__probe_\S*\W+failed\b/i;
 /** Folga da medição do corte: o relógio do agy começa antes do Node do hook subir, e o hook anota a cada 250 ms. */
 const CUT_EARLY_MS = 1000;
-const CUT_LATE_MS = 5000;
+const CUT_LATE_MS = 1000;
+/** O hook confere o pai a cada 250 ms: o último instante com o pai vivo pode passar do limite por no máximo isso, com folga. */
+const PARENT_ALIVE_SLACK_MS = 500;
 
 /** Resume o <log>.alive do hook de tempo esgotado, por PID: último instante vivo, quando o pai sumiu e se respondeu. */
 export function summarizeAlive(text) {
@@ -265,8 +275,9 @@ export function summarizeAlive(text) {
   for (const line of String(text).split(/\r?\n/)) {
     let t; try { t = JSON.parse(line); } catch { continue; }
     if (!Number.isInteger(t?.pid) || typeof t.aliveMs !== "number") continue;
-    const s = by.get(t.pid) ?? { pid: t.pid, aliveMs: 0, parentGoneAtMs: null, answered: false };
+    const s = by.get(t.pid) ?? { pid: t.pid, aliveMs: 0, parentGoneAtMs: null, lastParentAliveMs: 0, answered: false };
     s.aliveMs = Math.max(s.aliveMs, t.aliveMs);
+    if (!t.parentGone) s.lastParentAliveMs = Math.max(s.lastParentAliveMs, t.aliveMs);
     if (t.parentGone) s.parentGoneAtMs ??= t.aliveMs;
     if (t.answered) s.answered = true;
     by.set(t.pid, s);
@@ -307,7 +318,8 @@ export function classifyRun(hook, { target, workspace, fileExists, hookLines, st
     const cutNearLimit = (l) => alive.some((a) => {
       // Só o marcador de pai sumido prova o corte; o último batimento sozinho só prova que o hook estava vivo.
       const cutAt = a.parentGoneAtMs;
-      return a.pid === l.pid && !a.answered && cutAt !== null && cutAt >= hookTimeoutMs - CUT_EARLY_MS && cutAt <= hookTimeoutMs + CUT_LATE_MS;
+      return a.pid === l.pid && !a.answered && cutAt !== null && cutAt >= hookTimeoutMs - CUT_EARLY_MS && cutAt <= hookTimeoutMs + CUT_LATE_MS
+        && (a.lastParentAliveMs ?? Infinity) <= hookTimeoutMs + PARENT_ALIVE_SLACK_MS;
     });
     const sawCut = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && isTarget(l.args) && cutNearLimit(l));
     if (sawCut && writes.some((s) => s.state === "ERROR" && HOOK_FAILED.test(cause(s.message)))) return "pass";

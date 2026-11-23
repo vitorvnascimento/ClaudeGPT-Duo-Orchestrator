@@ -24,7 +24,8 @@ const runRoot = typeof res.root === "string" ? res.root.replace(/%USERPROFILE%/g
 if (!runRoot || /<token>|<email>/.test(runRoot)) { console.error("results.json sem a raiz privada da execução legível"); process.exit(2); }
 const where = spawnSync("cmd.exe", ["/d", "/c", "where", "agy"], { encoding: "utf8", timeout: 15_000 });
 const agy = resolveAgy(where.stdout ?? "", (p) => readFileSync(p, "utf8"));
-const policy = tracePolicy({ home: homedir(), appData: process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), localAppData, runRoot, agyPath: agy.path, nodeDir: dirname(process.execPath) });
+const probeBase = typeof res.rootBase === "string" ? res.rootBase.replace(/%USERPROFILE%/gi, homedir()) : join(localAppData, "duo-probe-win");
+const policy = tracePolicy({ home: homedir(), appData: process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), localAppData, runRoot, probeBase, agyPath: agy.path, nodeDir: dirname(process.execPath) });
 
 if (!Number.isInteger(res.probePid)) { console.error("results.json sem o PID da sonda"); process.exit(2); }
 const analyzer = createTraceAnalyzer({ probePid: res.probePid, launches, policy });
@@ -37,6 +38,8 @@ for (const h of r.hits) { const k = redact(`${h.process} ${h.op} ${h.path}`, hom
 for (const [k, n] of groups) console.log(`${n}x ${k}`);
 console.log(`eventos lidos: ${r.rows}; lançamentos do agy: ${launchPids.length}`);
 if (r.noResultColumn) console.log("o CSV não tem a coluna Result: sem ela não dá para saber se um acesso aconteceu");
+if (r.unknown.length) console.log(`eventos em pasta proibida com resultado incerto (vazio, REPARSE ou desconhecido): ${r.unknown.length}`);
+for (const u of r.unknown.slice(0, 20)) console.log(`  ${redact(`${u.process} ${u.op} ${u.path} [${u.result || "sem resultado"}]`, homedir())}`);
 if (r.failed.length) console.log(`aberturas que falharam em pasta proibida (acesso negado etc.; não são acesso): ${r.failed.length}`);
 const lookupNames = new Map();
 for (const l of r.lookups) { const k = redact(l.path, homedir()); lookupNames.set(k, (lookupNames.get(k) ?? 0) + 1); }

@@ -243,7 +243,7 @@ test("classifyRun: no Windows o tempo esgotado vale pelo registro de vida do hoo
   const failed = 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:';
   const stream = step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, failed);
   const go = (alive, extra = {}) => classifyRun("timeout", { target: M, workspace: WS, fileExists: false, hookLines: [{ ...hookLine(`C:\\ws\\${M}`), pid: 7 }], steps: parseStream(stream).steps, alive, hookTimeoutMs: 5000, ...extra });
-  const a = (o) => [{ pid: 7, aliveMs: 4750, parentGoneAtMs: null, answered: false, ...o }];
+  const a = (o) => [{ pid: 7, aliveMs: 4750, parentGoneAtMs: null, lastParentAliveMs: 4750, answered: false, ...o }];
   assert.equal(go(a({})), "inconclusive"); // sem marcador de pai sumido: não prova que o hook foi cortado
   assert.equal(go(a({ aliveMs: 5300, parentGoneAtMs: 5300 })), "pass"); // só o cmd.exe morto: o hook viu o pai sumir
   assert.equal(go(a({ aliveMs: 900 })), "inconclusive"); // cortado cedo: não foi o limite de tempo
@@ -258,8 +258,8 @@ test("classifyRun: no Windows o tempo esgotado vale pelo registro de vida do hoo
 test("summarizeAlive: junta por PID, guarda o último instante, a primeira vez que o pai sumiu e a resposta", () => {
   const text = ['{"pid":7,"aliveMs":300}', '{"pid":7,"aliveMs":550}', "lixo", '{"pid":7,"aliveMs":5300,"parentGone":true}', '{"pid":9,"aliveMs":60010,"answered":true}', '{"pid":7,"aliveMs":4'].join("\n");
   assert.deepEqual(summarizeAlive(text), [
-    { pid: 7, aliveMs: 5300, parentGoneAtMs: 5300, answered: false },
-    { pid: 9, aliveMs: 60010, parentGoneAtMs: null, answered: true },
+    { pid: 7, aliveMs: 5300, parentGoneAtMs: 5300, lastParentAliveMs: 550, answered: false },
+    { pid: 9, aliveMs: 60010, parentGoneAtMs: null, lastParentAliveMs: 60010, answered: true },
   ]);
 });
 
@@ -343,4 +343,31 @@ test("trace: CSV sem a coluna Result não prova nada", () => {
   const r6 = (t, p, pid, op, path, d = "") => [t, p, pid, op, path, d].map((c) => `"${c}"`).join(",");
   for (const l of [H, r6("1", "node.exe", String(PROBE), "Process Create", "C:\\agy\\agy.exe", "PID: 100, Command line: agy"), r6("2", "agy.exe", "100", "ReadFile", "C:\\Windows\\a"), r6("3", "agy.exe", "100", "Process Exit", "", "Exit Status: 0")]) a.line(l);
   assert.equal(a.result().verdict, "incomplete");
+});
+
+test("timeout: pai visto vivo muito depois do limite não prova o corte no prazo", () => {
+  const M = "probe-timeout.txt";
+  const failed = 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:';
+  const go = (alive) => classifyRun("timeout", { target: M, workspace: WS, fileExists: false, hookLines: [{ ...hookLine(`C:\\ws\\${M}`), pid: 7 }], steps: parseStream(step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, failed)).steps, alive, hookTimeoutMs: 5000 });
+  assert.equal(go([{ pid: 7, aliveMs: 5100, parentGoneAtMs: 5100, lastParentAliveMs: 4850, answered: false }]), "pass");
+  assert.equal(go([{ pid: 7, aliveMs: 9900, parentGoneAtMs: 9900, lastParentAliveMs: 9650, answered: false }]), "inconclusive");
+  assert.equal(go([{ pid: 7, aliveMs: 5200, parentGoneAtMs: 5200, lastParentAliveMs: 5950, answered: false }]), "inconclusive");
+});
+
+test("política: estado aninhado de app (Codeium dentro do VS Code) é proibido", () => {
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Roaming\\Code\\User\\globalStorage\\Codeium.codeium\\state.json"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Roaming\\Code\\User\\settings.json"), "other");
+});
+
+test("política: a pasta-mãe das execuções em si é subida de pasta; só as outras execuções são proibidas", () => {
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\duo-probe-win"), "other");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run0"), "forbidden");
+  const custom = tracePolicy({ ...POLICY_OPTS, runRoot: "C:\\Users\\v\\AppData\\Local\\probe-tests\\run1", probeBase: "C:\\Users\\v\\AppData\\Local\\probe-tests" });
+  assert.equal(custom("C:\\Users\\v\\AppData\\Local\\probe-tests\\run0\\home\\.gemini\\config\\config.json"), "forbidden");
+});
+
+test("trace: resultado desconhecido ou REPARSE intermediário em pasta proibida deixa o rastreio incompleto", () => {
+  assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "ReadFile", "C:\\Users\\v\\.gemini\\x", "")]).verdict, "incomplete");
+  assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\x", "REPARSE")]).verdict, "incomplete");
+  assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\x", "SHARING VIOLATION")]).verdict, "ok");
 });

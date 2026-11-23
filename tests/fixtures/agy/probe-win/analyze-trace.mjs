@@ -13,8 +13,9 @@ import { createTraceAnalyzer, redact, resolveAgy } from "./lib.mjs";
 const [csvPath, resultsPath] = process.argv.slice(2);
 if (!csvPath || !resultsPath) { console.error("uso: node analyze-trace.mjs <procmon.csv> <results.json>"); process.exit(2); }
 const res = JSON.parse(readFileSync(resultsPath, "utf8"));
-const launchPids = (res.launches ?? []).map((l) => l.pid).filter(Number.isInteger);
-if (!launchPids.length) { console.error("results.json sem PIDs de lançamento do agy"); process.exit(2); }
+const launches = (res.launches ?? []).filter((l) => Number.isInteger(l.pid) && typeof l.image === "string");
+if (!launches.length) { console.error("results.json sem PIDs e executáveis de lançamento do agy"); process.exit(2); }
+const launchPids = launches.map((l) => l.pid);
 
 // Permitido: só a raiz privada DESTA execução (não as de execuções anteriores), mais as pastas de instalação do agy e
 // do Node recalculadas nesta máquina. O results.json foi limpo por redact: o perfil volta a partir de %USERPROFILE%.
@@ -29,7 +30,7 @@ if (agy.script) { const m = /^(.*\\node_modules\\(?:@[^\\]+\\)?[^\\]+)/i.exec(ag
 const forbidden = [join(homedir(), ".gemini"), process.env.APPDATA, localAppData].filter(Boolean);
 
 if (!Number.isInteger(res.probePid)) { console.error("results.json sem o PID da sonda"); process.exit(2); }
-const analyzer = createTraceAnalyzer({ probePid: res.probePid, launchPids, forbidden, allowed });
+const analyzer = createTraceAnalyzer({ probePid: res.probePid, launches, forbidden, allowed });
 const rl = createInterface({ input: createReadStream(csvPath, { encoding: "utf8" }), crlfDelay: Infinity });
 for await (const line of rl) analyzer.line(line);
 const r = analyzer.result();

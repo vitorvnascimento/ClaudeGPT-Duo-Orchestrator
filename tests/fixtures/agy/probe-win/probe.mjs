@@ -96,7 +96,7 @@ const launcher = agy.kind === "cmd-js" ? [process.execPath, agy.script]
 function runAgy(label, args, extra = {}) {
   waitEnter(label);
   const r = spawnSync(launcher[0], [...launcher.slice(1), ...args], { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, ...extra });
-  res.launches.push({ label, pid: r.pid ?? null, time: new Date().toISOString(), exit: r.status, error: r.error?.code ?? null });
+  res.launches.push({ label, pid: r.pid ?? null, image: path.basename(launcher[0]), time: new Date().toISOString(), exit: r.status, error: r.error?.code ?? null });
   return r;
 }
 

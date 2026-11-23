@@ -56,7 +56,8 @@ const born = (pid) => row("09:59:59", "node.exe", String(PROBE), "Process Create
 const read = (pid, path, t = "10:00:00", p = "agy.exe") => row(t, p, String(pid), "ReadFile", path);
 const died = (pid, t = "10:00:09") => row(t, "agy.exe", String(pid), "Process Exit", "", "Exit Status: 0");
 const analyze = (lines, launchPids) => {
-  const a = createTraceAnalyzer({ probePid: PROBE, launchPids, forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Local"], allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"] });
+  const launches = launchPids.map((pid) => ({ pid, image: "agy.exe" }));
+  const a = createTraceAnalyzer({ probePid: PROBE, launches, forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Local"], allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"] });
   for (const l of [HEADER, ...lines]) a.line(l);
   return a.result();
 };
@@ -205,4 +206,29 @@ test("classifyRun: hook legível que só viu outras ferramentas e escrita conclu
   const A = "probe-allow-log.txt";
   const done = step("write_file", "DONE", { Path: `C:\\ws\\${A}` });
   assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ toolName: "list_dir", args: { Path: "." } }], stream: done }), "hook-not-run");
+});
+
+test("trace: filho da sonda com o mesmo PID mas outro executável (git) não cobre o lançamento do agy", () => {
+  const r = analyze([
+    row("09:59:00", "node.exe", String(PROBE), "Process Create", "C:\\Program Files\\Git\\cmd\\git.exe", "PID: 100, Command line: git init -q"),
+    read(100, "C:\\Windows\\g", "09:59:01", "git.exe"), died(100, "09:59:02"),
+    born(100), read(100, "C:\\Users\\v\\.gemini\\x"), died(100),
+  ], [100]);
+  assert.equal(r.verdict, "forbidden");
+});
+
+test("trace: executável de ajudante dentro do perfil real é acesso proibido", () => {
+  const r = analyze([
+    born(100), read(100, "C:\\Windows\\a"),
+    row("10:00:02", "agy.exe", "100", "Process Create", "C:\\Users\\v\\.gemini\\bin\\h.exe", "PID: 300, Command line: h"),
+    died(100), died(300, "10:00:10"),
+  ], [100]);
+  assert.equal(r.verdict, "forbidden");
+});
+
+test("classifyRun: hook que só viu escrita em outro arquivo e escrita do alvo concluída = hook não rodou na escrita", () => {
+  const A = "probe-allow-log.txt";
+  const done = step("write_file", "DONE", { Path: `C:\\ws\\${A}` });
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [hookLine("C:\\ws\\other.txt")], stream: done }), "hook-not-run");
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ toolName: "write_file", args: { Content: "x" } }], stream: done }), "inconclusive");
 });

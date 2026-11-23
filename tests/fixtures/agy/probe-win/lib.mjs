@@ -103,16 +103,18 @@ const under = (path, prefixes) => {
  * só entra na árvore quando a própria sonda (probePid) o cria.
  * Cobertura: cada lançamento precisa ter criação, ao menos um evento de arquivo e saída; senão o rastreio está
  * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
-export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }) {
+export function createTraceAnalyzer({ probePid, launches, forbidden, allowed }) {
   const probe = String(probePid);
-  // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync.
-  const cover = launchPids.map((p) => ({ pid: String(p), created: false, fs: 0, exited: false }));
+  // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync, e a sonda
+  // também cria outros filhos (cmdkey, cmd, git). O lançamento só casa com o mesmo PID E o mesmo executável.
+  const cover = launches.map((l) => ({ pid: String(l.pid), image: String(l.image).toLowerCase(), created: false, fs: 0, exited: false }));
+  const imageOf = (p) => win32.basename(String(p)).toLowerCase();
   const live = new Map(); // pid vivo → índice do lançamento de origem
   const hits = [];
   let idx = null;
   let rows = 0;
-  const startRoot = (pid) => {
-    const i = cover.findIndex((c) => c.pid === pid && !c.created);
+  const startRoot = (pid, image) => {
+    const i = cover.findIndex((c) => c.pid === pid && c.image === imageOf(image) && !c.created);
     if (i >= 0) { cover[i].created = true; live.set(pid, i); }
   };
   return {
@@ -130,15 +132,17 @@ export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }
       const pid = cells[idx.pid];
       const op = cells[idx.op];
       const detail = cells[idx.detail] ?? "";
+      const path = cells[idx.path] ?? "";
+      const forbiddenHit = () => path && under(path, forbidden) && !under(path, allowed) && hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
       if (op === "Process Create") {
         const child = /\bPID: (\d+)/.exec(detail)?.[1];
-        if (child && pid === probe) startRoot(child);
-        else if (child && live.has(pid)) live.set(child, live.get(pid));
+        if (child && pid === probe) startRoot(child, path);
+        else if (child && live.has(pid)) { forbiddenHit(); live.set(child, live.get(pid)); }
         return;
       }
       if (op === "Process Start") {
         const parent = /Parent PID: (\d+)/.exec(detail)?.[1];
-        if (parent === probe && !live.has(pid)) startRoot(pid);
+        if (parent === probe && !live.has(pid)) startRoot(pid, cells[idx.process]);
         else if (parent && live.has(parent) && !live.has(pid)) live.set(pid, live.get(parent));
         return;
       }
@@ -149,11 +153,10 @@ export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }
         live.delete(pid);
         return;
       }
-      const path = cells[idx.path] ?? "";
       if (!path) return;
-      // Qualquer operação com caminho proibido é evidência (inclusive Load Image); só operações de arquivo contam
-      // como cobertura de acesso a arquivos.
-      if (under(path, forbidden) && !under(path, allowed)) hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
+      // Qualquer operação com caminho proibido é evidência (inclusive Load Image e o executável de um filho); só
+      // operações de arquivo contam como cobertura de acesso a arquivos.
+      forbiddenHit();
       if (!/^(Thread |Load Image|Reg|TCP|UDP|Profiling)/.test(op)) cover[origin].fs++;
     },
     result() {
@@ -227,7 +230,8 @@ export function classifyRun(hook, { target, workspace, fileExists, hookLines, st
     if (!hookLines.length && steps.some((s) => ANY_HOOK_FAILURE.test(s.message))) return "hook-cmd-failed";
     // "Hook não rodou" quando a escrita do alvo aconteceu e o hook ou não registrou nada, ou só registrou chamadas
     // legíveis de ferramentas conhecidas que não gravam. Registro ilegível ou ferramenta desconhecida fica inconclusivo.
-    const onlyUnrelated = hookLines.every((l) => !l.stdinError && KNOWN_NON_WRITE.has(l.toolName));
+    const otherFile = (l) => WRITE_TOOLS.has(l.toolName) && Object.entries(l.args ?? {}).some(([k, v]) => PATH_ARG.test(k) && typeof v === "string") && !isTarget(l.args);
+    const onlyUnrelated = hookLines.every((l) => !l.stdinError && (KNOWN_NON_WRITE.has(l.toolName) || otherFile(l)));
     if (onlyUnrelated && (fileExists || writes.some((s) => s.state === "DONE"))) return "hook-not-run";
     return "inconclusive";
   }

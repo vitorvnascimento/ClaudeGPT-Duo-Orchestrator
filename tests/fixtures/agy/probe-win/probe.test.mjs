@@ -75,6 +75,6 @@ test("dry-run: log antigo do --version não conta como login do models", () => {
 test("dry-run: registra o PID de cada lançamento do agy para o rastreio", () => {
   const { res } = runDry("authMethod=consumer (effective: keyring)");
   assert.deepEqual(res.launches.map((l) => l.label), ["agy --version", "agy --help", "agy models"]);
-  assert.ok(res.launches.every((l) => Number.isInteger(l.pid)));
+  assert.ok(res.launches.every((l) => Number.isInteger(l.pid) && l.image === "agy"));
   assert.ok(Number.isInteger(res.probePid));
 });

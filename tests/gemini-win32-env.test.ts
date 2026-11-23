@@ -38,8 +38,11 @@ describe("geminiParentEnvProblem no Windows", () => {
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { agyConfigAbove, chainStateDir, createPrivateHome, geminiStateRoot, launcherFor, privateProfileEnv, probeRoot, pruneGeminiStates, sweepProbeDirs, withMetadataProfile } from "../src/state/gemini-state.js";
+import { agyConfigAbove, chainStateDir, createPrivateHome, geminiStateRoot, launcherFor, privateProfileEnv, probeRoot, pruneGeminiStates, removeProbeDir, sweepProbeDirs, withMetadataProfile } from "../src/state/gemini-state.js";
 import { chmodSync, readdirSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+// Pasta redirecionada: junction no Windows (não exige privilégio), link simbólico no POSIX.
+const redirect = (target: string, link: string) => symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
 import { utimesSync } from "node:fs";
 
 const temps: string[] = [];
@@ -267,34 +270,44 @@ describe("limpeza: dono incerto e raiz nova indisponível", () => {
 describe("pasta de estado redirecionada", () => {
   // Link em cada nível abaixo do LOCALAPPDATA: duo, gemini-state e probes.
   for (const level of ["duo", "gemini-state", "probes"] as const) {
-    it(`link em ${level} é recusado antes de criar qualquer coisa no destino`, { skip: process.platform === "win32" }, () => {
+    it(`link em ${level} é recusado antes de criar qualquer coisa no destino`, () => {
       const base = tempDir("duo-w32-junction-");
       const local = join(base, "local");
       const chain = ["duo", "gemini-state", "probes"];
       const upTo = chain.slice(0, chain.indexOf(level));
       mkdirSync(join(local, ...upTo), { recursive: true });
       const outside = join(base, "fora"); mkdirSync(outside);
-      symlinkSync(outside, join(local, ...upTo, level));
+      redirect(outside, join(local, ...upTo, level));
       assert.throws(() => probeRoot({ LOCALAPPDATA: local }, "win32"), /redirecionada/);
       assert.deepEqual(readdirSync(outside), [], "nada criado no destino do link");
     });
   }
 
-  it("prune não lista nem apaga cadeias através de uma raiz redirecionada", { skip: process.platform === "win32" }, () => {
+  it("prune não lista nem apaga cadeias através de uma raiz redirecionada", () => {
     const base = tempDir("duo-w32-prune-junction-");
     const local = join(base, "local");
     mkdirSync(join(local, "duo"), { recursive: true });
     const target = join(base, "alvo"); mkdirSync(target);
-    symlinkSync(target, join(local, "duo", "gemini-state"));
+    redirect(target, join(local, "duo", "gemini-state"));
     const project = join(base, "proj"); mkdirSync(project);
     // Cadeia já existente no destino do link (criada à mão: o chainStateDir do Windows recusaria o caminho).
-    const chain = join(target, "abc", "c1");
+    // Hash real do projeto: nenhuma diferença de hash pode esconder um caminho de remoção inseguro.
+    const chain = join(target, createHash("sha256").update(project).digest("hex").slice(0, 12), "c1");
     mkdirSync(chain, { recursive: true });
     writeFileSync(join(chain, "owner.json"), JSON.stringify({ projectRoot: project, chainId: "c1" }));
     assert.throws(() => chainStateDir(project, "c2", { LOCALAPPDATA: local }, "win32"), /redirecionada/);
     const errors: string[] = [];
     pruneGeminiStates({ classify: () => "orphan", onScanError: (w, r) => errors.push(`${w}: ${r}`) }, { LOCALAPPDATA: local, HOME: base, XDG_STATE_HOME: join(base, "xdg") }, "win32");
     assert.ok(existsSync(chain), "cadeia no destino do link continua");
+    // XDG apontando para a mesma árvore: a passada antiga também não apaga através do link.
+    pruneGeminiStates({ classify: () => "orphan", onScanError: () => {} }, { LOCALAPPDATA: local, HOME: base, XDG_STATE_HOME: local }, "win32");
+    assert.ok(existsSync(chain), "nem pela raiz antiga");
+    // Mesma pasta com outra grafia (sistema de arquivos sem diferença de caixa): comparação por identidade, não por texto.
+    const alias = join(base, "LOCAL");
+    if (existsSync(alias)) {
+      pruneGeminiStates({ classify: () => "orphan", onScanError: () => {} }, { LOCALAPPDATA: local, HOME: base, XDG_STATE_HOME: alias }, "win32");
+      assert.ok(existsSync(chain), "nem por um apelido de caixa diferente");
+    }
     assert.ok(errors.some((e) => /raiz do estado/.test(e)));
   });
 
@@ -307,5 +320,20 @@ describe("pasta de estado redirecionada", () => {
       pruneGeminiStates({ classify: () => "orphan", onScanError: (w, r) => errors.push(`${w}: ${r}`) }, { HOME: base, XDG_STATE_HOME: xdg, LOCALAPPDATA: join(base, "local") }, "win32");
       assert.ok(errors.some((e) => /raiz antiga/.test(e)), JSON.stringify(errors));
     } finally { chmodSync(xdg, 0o700); }
+  });
+});
+
+describe("limpeza de perfil de sonda redirecionado e base na raiz da unidade", () => {
+  it("removeProbeDir não apaga nada no destino de um link", () => {
+    const base = tempDir("duo-w32-rmlink-");
+    const target = join(base, "alvo"); mkdirSync(target); writeFileSync(join(target, "importante.txt"), "x");
+    const link = join(base, "duo-agy-meta-x");
+    redirect(target, link);
+    removeProbeDir(link);
+    assert.ok(existsSync(join(target, "importante.txt")));
+  });
+
+  it("LOCALAPPDATA na raiz da unidade mantém o separador", () => {
+    assert.equal(geminiStateRoot({ LOCALAPPDATA: "D:\\" }, "win32"), "D:\\duo\\gemini-state");
   });
 });

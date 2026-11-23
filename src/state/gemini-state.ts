@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { withFileLock } from "./store.js";
-import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { childEnv } from "../permissions/auth.js";
 
 export type ChainClass = "active" | "resumable" | "terminal" | "orphan";
@@ -22,16 +22,18 @@ function writeOnce(path: string, data: string): void {
 /** join com o separador do próprio caminho: C:\... usa o do Windows; o resto, o nativo. */
 const joinFor = (base: string, ...parts: string[]): string => (/^[A-Za-z]:[\\/]/.test(base) ? win32.join(base, ...parts) : join(base, ...parts));
 
+/** Base confiável do estado no Windows (o LOCALAPPDATA do dono, validado). Só caminho local totalmente qualificado:
+ * C:\x e C:/x valem; C:x (relativo à unidade), vazio e relativo não. Fora de um Windows real (simulação nos testes)
+ * também vale um caminho POSIX absoluto. */
+function win32StateBase(env: NodeJS.ProcessEnv): string {
+  const ok = (p: string | undefined): p is string => !!p && (/^[A-Za-z]:[\\/]/.test(p) || (process.platform !== "win32" && p.startsWith("/")));
+  const base = ok(env.LOCALAPPDATA) ? env.LOCALAPPDATA : ok(env.USERPROFILE) ? joinFor(env.USERPROFILE, "AppData", "Local") : null;
+  if (!base) throw new Error("LOCALAPPDATA/USERPROFILE ausente ou relativo: estado privado do gemini sem lugar seguro");
+  return base;
+}
+
 export function geminiStateRoot(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") {
-    // Só caminho local totalmente qualificado (C:\...): vazio ou relativo criaria o estado privado na pasta atual.
-    // Fora de um Windows real (simulação nos testes) também vale um caminho POSIX absoluto.
-    // C:\x e C:/x valem; C:x (relativo à unidade), vazio e relativo não.
-    const ok = (p: string | undefined): p is string => !!p && (/^[A-Za-z]:[\\/]/.test(p) || (process.platform !== "win32" && p.startsWith("/")));
-    const base = ok(env.LOCALAPPDATA) ? env.LOCALAPPDATA : ok(env.USERPROFILE) ? joinFor(env.USERPROFILE, "AppData", "Local") : null;
-    if (!base) throw new Error("LOCALAPPDATA/USERPROFILE ausente ou relativo: estado privado do gemini sem lugar seguro");
-    return joinFor(base, "duo", "gemini-state");
-  }
+  if (platform === "win32") return joinFor(win32StateBase(env), "duo", "gemini-state");
   return platform === "darwin"
     ? join(realHome(env), "Library", "Application Support", "duo", "gemini-state")
     : join(env.XDG_STATE_HOME ?? join(realHome(env), ".local", "state"), "duo", "gemini-state");
@@ -116,7 +118,8 @@ export function launcherFor(resolved: { command: string; prefixArgs: string[] },
   // Script configurado no projeto (["node", "tools/agy.mjs"]): relativo à raiz do projeto, como na execução real.
   const [first, ...rest] = resolved.prefixArgs;
   const isNode = /^node(\.exe)?$/i.test(basename(command));
-  if (!isNode || first === undefined || first.startsWith("-") || isAbsolute(first) || !existsSync(resolve(scriptBase, first))) return { command, prefixArgs: [...resolved.prefixArgs] };
+  // Fixado na raiz do projeto mesmo se faltar: um script ausente nunca troca por outro de mesmo nome noutra pasta.
+  if (!isNode || first === undefined || first.startsWith("-") || isAbsolute(first)) return { command, prefixArgs: [...resolved.prefixArgs] };
   return { command, prefixArgs: [resolve(scriptBase, first), ...rest] };
 }
 
@@ -150,7 +153,7 @@ export function probeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = pr
  */
 function safeDirChain(base: string, parts: string[], create: boolean): string {
   // A base (LOCALAPPDATA do dono) é confiável: pode ser criada de uma vez se ainda não existe.
-  if (create) mkdirSync(base, { recursive: true });
+  if (create && !existsSync(base)) mkdirSync(base, { recursive: true }); // raiz de unidade (D:\) já existe: sem mkdir
   let cur = base;
   for (const part of parts) {
     const next = joinFor(cur, part);
@@ -171,8 +174,20 @@ function safeDirChain(base: string, parts: string[], create: boolean): string {
 
 /** Base confiável e componentes da raiz de estado no Windows (LOCALAPPDATA\duo\gemini-state). */
 function win32StateChain(env: NodeJS.ProcessEnv): { base: string; parts: string[] } {
-  const root = geminiStateRoot(env, "win32");
-  return { base: root.replace(/[\\/]duo[\\/]gemini-state$/, ""), parts: ["duo", "gemini-state"] };
+  return { base: win32StateBase(env), parts: ["duo", "gemini-state"] };
+}
+
+/** dir é a mesma pasta que ancestor, ou fica dentro dela? Compara identidades do sistema de arquivos subindo de dir. */
+function sameOrInside(dir: string, ancestor: string): boolean {
+  const id = (p: string) => { const s = statSync(p, { bigint: true }); return `${s.dev}:${s.ino}`; };
+  const target = id(ancestor);
+  let cur = realpathSync(dir);
+  for (;;) {
+    if (id(cur) === target) return true;
+    const up = dirname(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
 }
 
 /** A pasta probes, validada componente a componente desde o LOCALAPPDATA (ver safeDirChain). */
@@ -183,13 +198,17 @@ function checkedProbeRoot(env: NodeJS.ProcessEnv, _platform: NodeJS.Platform, cr
 
 /** Remoção com novas tentativas (no Windows um arquivo ainda aberto dá EBUSY/EPERM por um instante). Falha que
  * persiste não troca o resultado da sonda: a pasta fica para a limpeza dos abandonados. */
-export function removeProbeDir(dir: string): void {
+export function removeProbeDir(dir: string): boolean {
   const opts = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
   try {
+    // Pasta trocada por link/junction desde a criação: não lista nem apaga nada no destino.
+    const st = lstatSync(dir);
+    if (st.isSymbolicLink() || !st.isDirectory() || realpathSync(dir) !== join(realpathSync(dirname(dir)), basename(dir))) return false;
     // O probe.json (dono) sai por último: se algo travar antes, a pasta continua reconhecível para sweepProbeDirs.
     for (const n of readdirSync(dir)) if (n !== "probe.json") rmSync(join(dir, n), opts);
     rmSync(dir, opts);
-  } catch { /* fica para sweepProbeDirs */ }
+    return !existsSync(dir);
+  } catch { return false; /* fica para sweepProbeDirs */ }
 }
 
 /** Perfil descartável de sonda com dono (probe.json com o PID): se a ponte morrer antes do finally, a próxima sonda
@@ -218,8 +237,8 @@ export function sweepProbeDirs(root: string, minAgeMs = 10 * 60_000): string[] {
       const m = JSON.parse(readFileSync(join(dir, "probe.json"), "utf8")) as { pid?: unknown };
       // Só com dono conhecido e comprovadamente morto (ESRCH); dono inválido ou incerto: deixa.
       if (!isDefinitelyDead(m.pid) || Date.now() - statSync(dir).mtimeMs < minAgeMs) continue;
-      rmSync(dir, { recursive: true, force: true });
-      removed.push(dir);
+      // Mesma remoção com o dono por último: se algo travar, a pasta continua reconhecível na próxima varredura.
+      if (removeProbeDir(dir)) removed.push(dir);
     } catch { /* sem dono legível: deixa */ }
   }
   return removed;
@@ -439,7 +458,25 @@ export function pruneGeminiStates(
     try { const { base, parts } = win32StateChain(env); safeDirChain(base, parts, false); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") { currentUnsafe = true; scanError("raiz do estado", e); } }
   }
-  for (const plat of roots) for (const s of (plat === platform && currentUnsafe ? [] : listed(plat))) {
+  // Raiz antiga no Windows: conferida (sem link/junction em duo e gemini-state) e pulada se for a mesma pasta da nova.
+  let legacyUnsafe = false;
+  if (platform === "win32") {
+    const legacyBase = env.XDG_STATE_HOME ?? join(realHome(env), ".local", "state");
+    try {
+      const legacyRoot = safeDirChain(legacyBase, ["duo", "gemini-state"], false);
+      // Mesma árvore da nova (mesma pasta, ou uma dentro da outra, inclusive pelo destino de um link recusado): pula.
+      let currentReal: string | null = null;
+      try { currentReal = realpathSync(geminiStateRoot(env, "win32")); } catch { currentReal = null; }
+      // Por identidade (dispositivo + inode/fileId), não por texto: no NTFS a mesma pasta pode ter grafias diferentes
+      // (caixa, nome curto 8.3).
+      if (currentReal !== null && (sameOrInside(legacyRoot, currentReal) || sameOrInside(currentReal, legacyRoot))) legacyUnsafe = true;
+    } catch (e) {
+      legacyUnsafe = true;
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") scanError("raiz antiga do estado", e);
+    }
+  }
+  const skip = (plat: NodeJS.Platform) => (plat === platform && currentUnsafe) || (plat === "linux" && platform === "win32" && legacyUnsafe);
+  for (const plat of roots) for (const s of (skip(plat) ? [] : listed(plat))) {
     if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) continue;
     // Só apaga o caminho validado (nome, hash do projeto, dono, sem link), conferido de novo com a trava pega.
     if (!validChainDir(s.dir, s.projectRoot, s.chainId, env, plat)) continue;

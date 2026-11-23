@@ -22,7 +22,8 @@ export function globToRegExp(glob: string): RegExp {
     } else if (c === "?") re += "[^/]";
     else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${re}$`, "i");
+  // "s": "**" (.*) também atravessa \n, \r, U+2028 e U+2029 em nomes de pasta.
+  return new RegExp(`^${re}$`, "is");
 }
 
 export function isDenied(input: string, deny: string[]): string | null {

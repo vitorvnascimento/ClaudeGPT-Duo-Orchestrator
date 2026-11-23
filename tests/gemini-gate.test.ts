@@ -34,6 +34,24 @@ describe("decideToolCall", () => {
     const wide: GateAllowlist = { ...allow, write: [{ rel: ".", isDir: true }] };
     for (const p of ["/WT/.AGENTS/hooks.json", "/WT/.Git/config", "/WT/.DUO/x"]) assert.equal(decideToolCall(call("write_file", { Path: p }), wide, canon).decision, "deny", p);
   });
+  it("inside a granted dir only ASCII names are writable; a listed accented file is", () => {
+    const a: GateAllowlist = { worktreeRoot: "/WT", write: [{ rel: "docs", isDir: true }, { rel: "docs/ol\u00e1.txt", isDir: false }], deny: DENY, readOnly: false };
+    const id = (p: string) => p;
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/caf\u00e9.txt" }), a, id).decision, "deny");
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/ol\u00e1.txt" }), a, id).decision, "allow");
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/ok.txt" }), a, id).decision, "allow");
+    const accentedDir: GateAllowlist = { ...a, write: [{ rel: "tradu\u00e7\u00f5es", isDir: true }] };
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/tradu\u00e7\u00f5es/index.md" }), accentedDir, id).decision, "allow");
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/tradu\u00e7\u00f5es/caf\u00e9.md" }), accentedDir, id).decision, "deny");
+  });
+  it("deny globs cross line separators in a granted dir name (U+2028/U+2029, \\n)", () => {
+    for (const sep of ["\u2028", "\u2029", "\n"]) {
+      const dir = `a${sep}b`;
+      const a: GateAllowlist = { worktreeRoot: "/WT", write: [{ rel: dir, isDir: true }], deny: DENY, readOnly: false };
+      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/x.key` }), a, (p) => p).decision, "deny", JSON.stringify(sep));
+      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/ok.ts` }), a, (p) => p).decision, "allow", JSON.stringify(sep));
+    }
+  });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/ok.ts" }), { ...allow, readOnly: true }, canon).decision, "deny");

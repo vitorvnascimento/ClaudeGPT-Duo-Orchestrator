@@ -153,6 +153,15 @@ describe("delegação ao gemini", () => {
     assert.equal(agyRuns(s).length, 0);
   });
 
+  it("a deny glob the OS profile cannot enforce blocks before any worktree is created", async () => {
+    const s = setup({ scope: { deny: [".git/**", ".duo/**", "?.txt"] } });
+    const out = await run(s, req());
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /scope\.deny/);
+    assert.equal(task(s, out.summary.taskId).worktree ?? null, null);
+    assert.equal(agyRuns(s).length, 0);
+  });
+
   it("an API-key login signal blocks before the model call", async () => {
     const s = setup();
     const out = await run(s, req(), { FAKE_AGY_AUTH: "apikey" });

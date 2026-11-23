@@ -5,7 +5,7 @@
 // 4) disponibilidade atual (CLI, login por assinatura, ciência de uso extra, limite observado).
 // Não há ranking fixo de fornecedores: sem evidência suficiente, a recomendação diz isso.
 import { extname, join } from "node:path";
-import { readdirSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
 import { assessComplexity, sensitiveScope, tierRank } from "./complexity.js";
@@ -18,7 +18,7 @@ import { executorEligible } from "./alternates.js";
 import { isVerifiedAgy, agyVersionLabel } from "../adapters/gemini.js";
 import { runQuick } from "../adapters/process.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { probeSandbox } from "../adapters/sandbox-profile.js";
+import { probeSandbox, SANDBOX_EXEC, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
 import type { ScopeEntry } from "../permissions/scope.js";
@@ -200,7 +200,9 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
   // Gemini: elegível (ligado, macOS, versão verificada) e binário com versão verificada; login fica para o preflight da delegação.
   const gReasons: string[] = [];
   const gNotes: string[] = [];
-  if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform: process.platform })) gReasons.push("gemini desligado, fora do macOS ou sem versão verificada do agy");
+  const denyProblem = unsupportedDenyGlob(cfg.scope.deny);
+  if (cfg.executors.gemini.enabled && denyProblem) gReasons.push(denyProblem);
+  else if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform: process.platform })) gReasons.push("gemini desligado, fora do macOS ou sem versão verificada do agy");
   else {
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, env);
     if (!resolved.ok) gReasons.push(resolved.reason);
@@ -212,7 +214,9 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       else if (Boolean(env.CODEX_SANDBOX) || env.CODEX_SANDBOX_NETWORK_DISABLED === "1") {
         // Dentro do sandbox do Codex o sandbox-exec aninhado não é verificável e o Keychain pode não ser legível:
         // inconclusivo é adiado (o delegate repete fora do sandbox); login identificado como não aceito bloqueia.
-        gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
+        // O binário precisa existir; só o teste aninhado é adiado.
+        if (!existsSync(SANDBOX_EXEC)) gReasons.push(`sandbox-exec: ${SANDBOX_EXEC} não encontrado`);
+        else gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
         const login = geminiLoginProbe(resolved, env, cfg);
         if (login.method === "api_key" || login.method === "cloud" || login.conflict) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
         else if (!login.ok) gNotes.push("login do agy não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
@@ -414,6 +418,9 @@ function recommendResult(
     `Saúde de cota: ${(["claude", "codex"] as const).map((p) => `${p}=${quotaStates(store)[p]?.status ?? "unknown"}`).join(" · ")}`,
   ];
   if (filteredOut.length) notes.push(`Excluídos por não terem a capacidade exigida: ${filteredOut.join(", ")}`);
+  // Gemini ligado mas fora do roteamento por scope.deny que a trava do SO não aplica: diz qual padrão.
+  const geminiDeny = cfg.executors.gemini.enabled ? unsupportedDenyGlob(cfg.scope.deny) : null;
+  if (geminiDeny) notes.push(`Gemini fora do roteamento: ${geminiDeny}`);
   const available = evals.filter((e) => e.available && eligible.includes(e));
   const best = available[0];
   // A seleção sempre descreve o candidato efetivamente escolhido (finishDecision recalcula se ele mudar).

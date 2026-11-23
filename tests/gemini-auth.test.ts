@@ -10,7 +10,8 @@ import { authBlockReason } from "../src/permissions/auth.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../src/permissions/gemini-auth.js";
 
 const FAKE = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
-const resolved = { ok: true as const, command: FAKE, prefixArgs: [], source: "config" as const };
+// Pelo node (no Windows o shebang do fixture não roda).
+const resolved = { ok: true as const, command: process.execPath, prefixArgs: [FAKE], source: "config" as const };
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
 function home(): string { const d = realpathSync(mkdtempSync(join(tmpdir(), "duo-gem-auth-"))); dirs.push(d); return d; }
@@ -40,6 +41,27 @@ describe("preflight de login do gemini", () => {
     assert.equal(a.method, "unknown");
     assert.equal(a.ok, false);
     assert.match(a.detail, /conflitantes/);
+  });
+  it("a partial log with only the effective API-key signal is api_key, even when agy models fails", () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_AUTH: "partial-apikey", FAKE_AGY_NO_MODELS: "1" }), ack(true), null);
+    assert.equal(a.method, "api_key");
+  });
+  it("a directory among fresh log entries is skipped and the login is still classified", () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_SUBDIR: "1" }), ack(true), null);
+    assert.equal(a.method, "subscription");
+    assert.equal(a.ok, true);
+  });
+  it("an unreadable regular log blocks: unknown with a consumer log, api_key evidence kept", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1" }), ack(true), null);
+    assert.equal(a.ok, false);
+    assert.equal(a.method, "unknown");
+    const b = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_UNREADABLE: "1", FAKE_AGY_AUTH: "apikey" }), ack(true), null);
+    assert.equal(b.method, "api_key");
+  });
+  it("a log symlink is not silently skipped: the login becomes inconclusive", { skip: process.platform === "win32" }, () => {
+    const a = geminiAuthPreflight(resolved, env(home(), { FAKE_AGY_LOG_LINK: "1" }), ack(true), null);
+    assert.equal(a.ok, false);
+    assert.equal(a.method, "unknown");
   });
   it("a stale consumer line from an earlier run does not count", () => {
     const h = home();

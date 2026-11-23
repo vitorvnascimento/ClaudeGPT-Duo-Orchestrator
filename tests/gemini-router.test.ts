@@ -159,3 +159,19 @@ describe("capacidade do gemini", () => {
     assert.match(String(capacityBlock(store, "gemini", "gemini-4-argon-high")), /sem capacidade/);
   });
 });
+
+describe("diagnóstico de scope.deny não aplicável", () => {
+  it("liveAvailability names the deny glob that blocks gemini", async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, scope: { deny: [".git/**", "?.txt"] } });
+    const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), sb.env, sb.authPaths);
+    assert.ok(avail("gemini").reasons.some((r) => /scope\.deny/.test(r)), JSON.stringify(avail("gemini")));
+  });
+});
+
+describe("recomendação com scope.deny não aplicável", () => {
+  it("recommend notes say which deny glob keeps gemini out", () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true } }, scope: { deny: [".git/**", "?.txt"] } });
+    const r = recommend(new Store(sb.root), loadConfig(sb.root), { kind: "implement", tags: [], risk: "medium", brain: null }, allUp, withGemini);
+    assert.ok(JSON.stringify(r).includes("scope.deny"), JSON.stringify(r).slice(0, 400));
+  });
+});

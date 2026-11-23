@@ -70,11 +70,23 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
     denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g))})`);
     if (g.endsWith("/**")) denies.push(`(regex ${sbplQuote(globToSbplRegex(root, g.slice(0, -3)))})`);
   }
+  // Concessão por pasta: escrita só em nomes ASCII abaixo dela (o hook aplica a mesma regra). Nomes que normalizam
+  // para outra grafia não precisam ser mapeados; alvos de arquivo listados voltam a ser liberados logo depois.
+  const dirAbs = p.targets.filter((t) => t.isDir).map((t) => reEscape(canonicalPath(t.abs)));
+  const dirs = dirAbs.map((d) => `(regex ${sbplQuote(`^${d}/.*[^ -~]`)})`);
+  // Depois da negação: caminho com trecho todo ASCII abaixo de QUALQUER pasta liberada (pastas aninhadas com acento)
+  // e os alvos de arquivo listados voltam a ser graváveis — a mesma regra do hook.
+  const literals = [
+    ...dirAbs.map((d) => `(regex ${sbplQuote(`^${d}/[ -~]*$`)})`),
+    ...p.targets.filter((t) => !t.isDir).map((t) => `(literal ${sbplQuote(canonicalPath(t.abs))})`),
+  ];
   const profile = [
     "(version 1)",
     "(allow default)",
     "(deny file-write*)",
     `(allow file-write* ${allows.join(" ")})`,
+    ...(dirs.length ? [`(deny file-write* ${dirs.join(" ")})`] : []),
+    ...(dirs.length && literals.length ? [`(allow file-write* ${literals.join(" ")})`] : []),
     ...(denies.length ? [`(deny file-write* ${denies.join(" ")})`] : []),
     // Hard link num caminho liberado gravaria no arquivo de fora; Apple Events e LaunchServices abririam
     // processos fora do sandbox. Nada disso é usado pelo agy (verificado com a sonda real).

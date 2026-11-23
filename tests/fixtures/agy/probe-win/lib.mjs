@@ -15,22 +15,23 @@ export function redact(text, profileDir) {
 const GOOGLE_BILLING = /^(GEMINI_|GOOGLE_|AGY_)/i;
 const PROFILE_KEYS = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"];
 
-/** Ambiente do agy com perfil privado completo. Nomes de variável no Windows não diferenciam caixa. */
-export function privateEnv(base, root) {
+/** Ambiente do agy com perfil privado completo. Nomes de variável no Windows não diferenciam caixa.
+ * pathApi: win32 por padrão (testes); a sonda passa o path nativo para o ensaio no Mac funcionar. */
+export function privateEnv(base, root, pathApi = win32) {
   const env = {};
   const replaced = new Set(PROFILE_KEYS.map((k) => k.toUpperCase()));
   for (const [k, v] of Object.entries(base)) {
     if (GOOGLE_BILLING.test(k) || replaced.has(k.toUpperCase())) continue;
     env[k] = v;
   }
-  const home = win32.join(root, "home");
-  const tmp = win32.join(root, "tmp");
+  const home = pathApi.join(root, "home");
+  const tmp = pathApi.join(root, "tmp");
   return {
     ...env,
     HOME: home,
     USERPROFILE: home,
-    APPDATA: win32.join(home, "AppData", "Roaming"),
-    LOCALAPPDATA: win32.join(home, "AppData", "Local"),
+    APPDATA: pathApi.join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: pathApi.join(home, "AppData", "Local"),
     TEMP: tmp,
     TMP: tmp,
   };

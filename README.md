@@ -17,7 +17,7 @@ Claude (Opus 5.5, brain)  ── writes the HTML/CSS
                                   effective model gpt-6-astra (from Codex's own session log)
 ```
 
-> **Status (November 7, 2026):** **v0.4.0 is the latest public release.** Its macOS release gate passed: real quality test **100/100**, real E2E battery **17/17** (including four real Codex executors at once) and offline suite **680/680**, with independent Claude and Codex adversarial reviews leaving no blocker ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). On Windows the offline suite passed (**646 passed, 0 failed, 12 skipped**) on an earlier v0.4.0 build; real E2E has not run there, and Linux remains untested.
+> **Status (November 22, 2026):** **v0.5.0 is the latest public release**: Gemini as a third executor (`agy` 1.5.14, macOS), opt-in computer use through the Codex executor (macOS) and the `codex-ativos` Claude Code mod. Its macOS release gate passed: real quality test **100/100**, real E2E battery **17/17**, real Gemini containment battery **13/14** (the browser probe is inconclusive because headless `agy` does not expose browser tools; documented limitation) and offline suite **1004/1005 with 0 failures** (one pending `todo` placeholder) ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). Real E2E has not run on Windows, and Linux remains untested.
 
 ## What the project is and is not
 
@@ -67,18 +67,18 @@ Recent npm versions may block automatic install scripts, including `prepare` in 
 
 **Option 2 — prebuilt release package (no compilation):**
 
-These downloads install **v0.4.0**, the latest published version.
+These downloads install **v0.5.0**, the latest published version.
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.4.0/duo-orchestrator-0.4.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.5.0/duo-orchestrator-0.5.0.tgz
 duo --version
 ```
 
 Or download with the GitHub CLI and install the local file:
 
 ```bash
-gh release download v0.4.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.4.0.tgz
+gh release download v0.5.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.5.0.tgz
 ```
 
 Without `npm link` or a global installation, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` instead of `duo`. **Removal:** `npm uninstall -g duo-orchestrator` (or `npm unlink -g duo-orchestrator`).
@@ -88,7 +88,7 @@ Without `npm link` or a global installation, use `node /caminho/duo-orchestrator
 `duo` notifies you when a new version is released: at most once a day, in the background, it checks this repository's latest public GitHub release and, if a newer version exists, prints a terminal message (stderr, without interfering with `--json` output):
 
 ```text
-duo: nova versão 0.4.0 disponível (instalada: 0.3.1). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.4.0
+duo: nova versão 0.5.0 disponível (instalada: 0.4.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.5.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -408,8 +408,9 @@ Every persisted file undergoes secret redaction. Reasoning text (`reasoning` in 
 
 | Item | Status |
 | --- | --- |
-| Public release | **v0.4.0**, latest published package; download links above point to it |
-| v0.4.0 | **Published (2026-11-07)**; macOS gate: quality 100/100, real E2E 17/17 |
+| Public release | **v0.5.0**, latest published package; download links above point to it |
+| v0.5.0 | **Published (2026-11-22)**; macOS gate: quality 100/100, real E2E 17/17, Gemini 13/14 (browser not exposed) |
+| v0.4.0 | Published (2026-11-07); macOS gate: quality 100/100, real E2E 17/17 |
 | Integrated macOS offline suite | **672/672 passed, 0 failed** on November 5, 2026; Q9 **3/3** confirms only this offline check |
 | Historical real `duo doctor` | Claude 2.1.114 and Codex 0.157.1 authenticated by subscription, with all required flags present; not a current compatibility check |
 | Historical v0.3.1 real E2E suite ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** in a complete run from scratch with Opus 5.5 (previously 13/13 and 11/11): read-only review in both directions, impossible acceptance, out-of-scope temptation, timeout + resume (Codex and Claude), cancellation, worktree + apply, blocked recursion, evidence-based routing in both directions, **real art with GPT-6-Astra** and **tasks with different models per part** (Opus 5.5 for code + GPT-6-Astra for art), with Claude or Codex as brain; not validation of v0.4.0 |
@@ -494,7 +495,7 @@ Claude (Opus 5.5, cérebro)  ── faz o HTML/CSS
                                   modelo efetivo gpt-6-astra (registro do próprio Codex)
 ```
 
-> **Estado (7 de novembro de 2026):** **v0.4.0 é a última release pública.** O gate da release no macOS passou: teste de qualidade real **100/100**, bateria E2E real **17/17** (incluindo quatro executores Codex reais ao mesmo tempo) e suíte offline **680/680**, com as revisões adversariais independentes do Claude e do Codex sem bloqueio ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). No Windows a suíte offline passou (**646 pass, 0 fail, 12 skip**) num build anterior da v0.4.0; a bateria E2E real não rodou lá, e o Linux segue sem teste.
+> **Estado (22 de novembro de 2026):** **v0.5.0 é a última release pública**: Gemini como terceiro executor (`agy` 1.5.14, macOS), computer use opcional pelo executor Codex (macOS) e o mod `codex-ativos` do Claude Code. O gate da release no macOS passou: teste de qualidade real **100/100**, bateria E2E real **17/17**, bateria real de contenção do Gemini **13/14** (a sonda do navegador fica inconclusiva porque o `agy` sem interface não expõe as ferramentas de navegador; limitação documentada) e suíte offline **1004/1005 com 0 falhas** (um `todo` pendente) ([docs/e2e-real.md](docs/e2e-real.md), [docs/evidencias/](docs/evidencias/)). A bateria E2E real não rodou no Windows, e o Linux segue sem teste.
 
 
 ## O que o projeto é e o que não é
@@ -545,18 +546,18 @@ Versões recentes do npm podem bloquear scripts automáticos de instalação, in
 
 **Opção 2 — pacote pronto da release (sem compilar):**
 
-Estes downloads instalam a **v0.4.0**, a última versão publicada.
+Estes downloads instalam a **v0.5.0**, a última versão publicada.
 
 ```bash
-npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.4.0/duo-orchestrator-0.4.0.tgz
+npm install -g https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/download/v0.5.0/duo-orchestrator-0.5.0.tgz
 duo --version
 ```
 
 Ou baixe com o GitHub CLI e instale o arquivo local:
 
 ```bash
-gh release download v0.4.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
-npm install -g ./duo-orchestrator-0.4.0.tgz
+gh release download v0.5.0 -R vitorvnascimento/ClaudeGPT-Duo-Orchestrator -p "*.tgz"
+npm install -g ./duo-orchestrator-0.5.0.tgz
 ```
 
 Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/src/cli/main.js` no lugar de `duo`. **Remover:** `npm uninstall -g duo-orchestrator` (ou `npm unlink -g duo-orchestrator`).
@@ -566,7 +567,7 @@ Sem `npm link` ou instalação global, use `node /caminho/duo-orchestrator/dist/
 O `duo` avisa quando sai uma versão nova: no máximo uma vez por dia, em segundo plano, ele consulta a última release pública deste repositório no GitHub e, se houver versão mais nova, mostra no terminal (stderr, sem atrapalhar saídas `--json`):
 
 ```text
-duo: nova versão 0.4.0 disponível (instalada: 0.3.1). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.4.0
+duo: nova versão 0.5.0 disponível (instalada: 0.4.0). Novidades: https://github.com/vitorvnascimento/ClaudeGPT-Duo-Orchestrator/releases/tag/v0.5.0
      Atualize com: duo update --apply   (desligar aviso: DUO_NO_UPDATE_CHECK=1)
 ```
 
@@ -888,8 +889,9 @@ Todo arquivo persistido passa por redação de segredos. O texto de raciocínio 
 
 | Item | Situação |
 | --- | --- |
-| Release pública | **v0.4.0**, último pacote publicado; os links de download acima apontam para ele |
-| v0.4.0 | **Publicada (07/11/2026)**; gate no macOS: qualidade 100/100, E2E real 17/17 |
+| Release pública | **v0.5.0**, último pacote publicado; os links de download acima apontam para ele |
+| v0.5.0 | **Publicada (22/11/2026)**; gate no macOS: qualidade 100/100, E2E real 17/17, Gemini 13/14 (navegador não exposto) |
+| v0.4.0 | Publicada (07/11/2026); gate no macOS: qualidade 100/100, E2E real 17/17 |
 | Suíte offline integrada no macOS | **672/672 passaram, 0 falhas**, em 5 de novembro de 2026; Q9 **3/3** confirma apenas essa verificação offline |
 | `duo doctor` real histórico | Claude 2.1.114 e Codex 0.157.1 autenticados por assinatura, com todas as flags obrigatórias presentes; não é uma checagem atual de compatibilidade |
 | Bateria E2E real histórica da v0.3.1 ([docs/e2e-real.md](docs/e2e-real.md)) | **16/16** numa execução completa do zero com Opus 5.5 (antes, 13/13 e 11/11): revisão read-only nos dois sentidos, aceite impossível, tentação fora do escopo, timeout + retomada (Codex e Claude), cancelamento, worktree + apply, recursão bloqueada, roteamento por evidência nos dois sentidos, **arte real com GPT-6-Astra** e **tarefas com modelos diferentes por parte** (Opus 5.5 no código + GPT-6-Astra na arte), com Claude ou Codex como cérebro; não é validação da v0.4.0 |

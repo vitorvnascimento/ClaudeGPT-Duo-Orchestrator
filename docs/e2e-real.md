@@ -77,6 +77,10 @@ There are 10 criteria totaling 100 points. A criterion scores only if **all** of
 | Q9 | 5 | Offline suite | all tests pass |
 | Q10 | 5 | Hygiene | no orphan processes, no tokens in artifacts, no account data in the catalog |
 
+### Result (22/11/2026, v0.5.0)
+
+**100/100** in one complete quality run on commit `c882413`, with the real E2E battery at **17/17** (run on `228a0f8`; the later commits only changed the Gemini branch of the event sanitizer) and the real Gemini containment battery at **13/14** on `c882413` (browser probe inconclusive: headless `agy` 1.5.14 does not expose browser tools; accepted by Q8 only for agy 1.5.14 on darwin). Files: `qualidade-2026-11-22.json`, `qualidade-2026-11-22.txt`, `bateria-e2e-2026-11-22.json` and `gemini-battery-2026-11-22-final.json` in [docs/evidencias/](evidencias/). Earlier rounds that day did not count: the user's Claude Stop hook changed the brain's answer (now `--disable-all-claude-brain-hooks`), and two runs saw unrelated apps write under `~/.gemini` during the battery (the Codenotch app's own database and a skills installer); G5 stays strict.
+
 ### Result (07/11/2026, v0.4.0)
 
 **100/100** in one complete run (Q1–Q15, including Q15 with four real Codex executors at once), with the real E2E battery at **17/17** in the same round, on commit `4c3274d`. Files: `qualidade-2026-11-07.json`, `qualidade-2026-11-07.txt` and `bateria-e2e-2026-11-07.json` in [docs/evidencias/](evidencias/) (local paths replaced by placeholders). Two earlier rounds that day were not counted: the Codex quota ran out midway, and the battery's Claude brain was not allowed to call `duo` when it was on PATH (test fixed).
@@ -167,6 +171,10 @@ São 10 critérios que somam 100 pontos. Um critério só pontua se **todas** as
 | Q8 | 10 | Bateria E2E completa | 16/16 |
 | Q9 | 5 | Suíte offline | todos os testes passam |
 | Q10 | 5 | Higiene | sem processos órfãos, sem tokens nos artefatos, sem dados de conta no catálogo |
+
+### Resultado (22/11/2026, v0.5.0)
+
+**100/100** numa execução completa do teste de qualidade no commit `c882413`, com a bateria E2E real **17/17** (rodada no `228a0f8`; os commits seguintes só mudaram o trecho do Gemini no sanitizador de eventos) e a bateria real de contenção do Gemini **13/14** no `c882413` (sonda do navegador inconclusiva: o `agy` 1.5.14 sem interface não expõe as ferramentas de navegador; o Q8 aceita isso só para agy 1.5.14 no darwin). Arquivos: `qualidade-2026-11-22.json`, `qualidade-2026-11-22.txt`, `bateria-e2e-2026-11-22.json` e `gemini-battery-2026-11-22-final.json` em [docs/evidencias/](evidencias/). Rodadas anteriores no mesmo dia não contaram: o hook Stop do Claude do usuário mudava a resposta do cérebro (agora `--disable-all-claude-brain-hooks`), e duas rodadas pegaram apps alheios gravando em `~/.gemini` durante a bateria (o banco do app Codenotch e um instalador de skills); o G5 continua rígido.
 
 ### Resultado (07/11/2026, v0.4.0)
 

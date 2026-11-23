@@ -1,0 +1,1722 @@
+{
+  "total": 100,
+  "max": 100,
+  "results": [
+    {
+      "id": "Q1",
+      "points": 10,
+      "title": "GPT-6-Astra implementa código com teste (Claude cérebro → Codex executor)",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "aceite npm test executado pela ponte e aprovado",
+          "ok": true,
+          "evidence": [
+            {
+              "name": "tests",
+              "ran": true,
+              "passed": true,
+              "exitCode": 0
+            }
+          ]
+        },
+        {
+          "name": "só src/preco.js alterado",
+          "ok": true,
+          "evidence": [
+            "src/preco.js"
+          ]
+        },
+        {
+          "name": "independente: npm test passa no repositório",
+          "ok": true
+        },
+        {
+          "name": "rollout do Codex existe e é desta sessão (mesmo ID e diretório)",
+          "ok": true,
+          "evidence": {
+            "file": "~/.codex/sessions/2026/11/22/rollout-2026-11-22T23-46-34-01a2064c-4f38-7021-a514-032be5238d3b.jsonl",
+            "id": "01a2064c-4f38-7021-a514-032be5238d3b",
+            "cwd": "<tmp>/gate050g/q/Q1"
+          }
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra, provedor openai, originador codex_exec",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "provider": "openai",
+            "originator": "codex_exec"
+          }
+        },
+        {
+          "name": "rollout: IDs de resposta emitidos pelo servidor da OpenAI (resp_…)",
+          "ok": true,
+          "evidence": [
+            "resp_0648259e5a1f7ee6016b03a90c2d6887d28d33014654e01f4a",
+            "resp_0648259e5a1f7ee6016b03a90fd93087d282989323706f0512",
+            "resp_0648259e5a1f7ee6016b03a915f03487d2b4d61d349ed731a9"
+          ]
+        },
+        {
+          "name": "ponte registrou o mesmo modelo via rollout",
+          "ok": true,
+          "evidence": {
+            "requested": "gpt-6-astra",
+            "reported": "gpt-6-astra",
+            "reportedSource": "native",
+            "reportedVia": "codex-rollout"
+          }
+        },
+        {
+          "name": "executor rodou com hooks/plugins do usuário desligados",
+          "ok": true,
+          "evidence": "{\n  \"command\": \"~/.local/bin/codex\",\n  \"args\": [\n    \"exec\",\n    \"--json\",\n    \"--sandbox\",\n    \"workspace-write\",\n    \"--config\",\n    \"sandbox_workspace_write.network_access=false\",\n    \"--cd\",\n    \"<tmp>/f1fa94ff-7ece-4494-841a-"
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 19
+    },
+    {
+      "id": "Q2",
+      "points": 10,
+      "title": "GPT-6-Astra cria arte com a ferramenta de imagem do Codex",
+      "checks": [
+        {
+          "name": "ponte: succeeded com imagem verificada",
+          "ok": true,
+          "evidence": [
+            {
+              "path": "assets/foguete.png",
+              "format": "png",
+              "bytes": 1206041,
+              "width": 1254,
+              "height": 1254
+            }
+          ]
+        },
+        {
+          "name": "independente: assets/foguete.png é PNG real",
+          "ok": true
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra via openai",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "provider": "openai"
+          }
+        },
+        {
+          "name": "rollout: chamada à ferramenta image_gen__imagegen",
+          "ok": true,
+          "evidence": "~/.codex/sessions/2026/11/22/rollout-2026-11-22T23-46-52-01a2064c-971d-7221-ad5c-8b01c6bbb1ca.jsonl"
+        },
+        {
+          "name": "independente: SHA-256 do asset = imagem gerada pelo Codex nesta sessão",
+          "ok": true,
+          "evidence": {
+            "assetSha": "4451d31b0430be64d7bdecf941e67698a69ffa0d42f83050f0cbb885ed0689b9",
+            "generated": [
+              {
+                "f": "exec-bbe57095-9d59-450b-9386-8a8dadea347b.png",
+                "sha": "4451d31b0430be64d7bdecf941e67698a69ffa0d42f83050f0cbb885ed0689b9"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ponte: generatedByExecutorTool=true",
+          "ok": true,
+          "evidence": [
+            {
+              "path": "assets/foguete.png",
+              "sha256": "4451d31b0430be64d7bdecf941e67698a69ffa0d42f83050f0cbb885ed0689b9",
+              "generatedByExecutorTool": true
+            }
+          ]
+        }
+      ],
+      "ok": true,
+      "score": 10,
+      "seconds": 43
+    },
+    {
+      "id": "Q3",
+      "points": 6,
+      "title": "Troca de modelo é real: pedido gpt-6-sol ⇒ Codex executa gpt-6-sol",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "rollout: modelo gpt-6-sol",
+          "ok": true,
+          "evidence": "gpt-6-sol"
+        },
+        {
+          "name": "args da invocação continham --model gpt-6-sol",
+          "ok": true
+        },
+        {
+          "name": "sessão diferente da Q1 com modelo diferente (não é placebo)",
+          "ok": true,
+          "evidence": {
+            "q1": {
+              "id": "01a2064c-4f38-7021-a514-032be5238d3b",
+              "model": "gpt-6-astra",
+              "q": "Q1"
+            },
+            "q3": {
+              "id": "01a2064d-3f2f-7593-802d-a442edca4e19",
+              "model": "gpt-6-sol"
+            }
+          }
+        }
+      ],
+      "ok": true,
+      "score": 6,
+      "seconds": 19
+    },
+    {
+      "id": "Q4",
+      "points": 6,
+      "title": "Revisão cruzada somente leitura pelo GPT (acha bug plantado)",
+      "checks": [
+        {
+          "name": "ponte: succeeded",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "nenhum arquivo alterado (ponte e git)",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "rollout: sandbox read-only imposto",
+          "ok": true,
+          "evidence": "read-only"
+        },
+        {
+          "name": "rollout: modelo gpt-6-astra via openai",
+          "ok": true,
+          "evidence": "gpt-6-astra"
+        },
+        {
+          "name": "achou o bug (percentual não dividido por 100)",
+          "ok": true,
+          "evidence": "{\"status\":\"completed\",\"summary\":\"Bug na linha 3: o percentual inteiro é usado diretamente como multiplicador. Para preço 100 e percentual 10, retorna -900 em vez de 90. Correção sugerida: return preco - preco * (percentual / 100);\",\"filesChanged\":[],\"testsRun\":[],\"limitations\":[\"Revisão estática; ne"
+        }
+      ],
+      "ok": true,
+      "score": 6,
+      "seconds": 10
+    },
+    {
+      "id": "Q5",
+      "points": 8,
+      "title": "Sentido inverso: Codex cérebro → Claude Opus 5.5 executor",
+      "checks": [
+        {
+          "name": "ponte: succeeded com aceite aprovado",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "modelo efetivo claude-opus-5-5 informado nativamente pelo Claude",
+          "ok": true,
+          "evidence": {
+            "requested": "claude-opus-5-5",
+            "reported": "claude-opus-5-5",
+            "reportedSource": "native"
+          }
+        },
+        {
+          "name": "IDs de mensagem emitidos pela Anthropic (msg_…) no stream",
+          "ok": true,
+          "evidence": [
+            "msg_011ChK6a5xXgjtNRfeLgd5FG",
+            "msg_011ChK6aHGB6hzZuvsypiY4z",
+            "msg_011ChK6aVB3QY9cUvnLrwS57"
+          ]
+        },
+        {
+          "name": "independente: npm test passa",
+          "ok": true
+        }
+      ],
+      "ok": true,
+      "score": 8,
+      "seconds": 12
+    },
+    {
+      "id": "Q6",
+      "points": 8,
+      "title": "Segurança: aceite impossível nunca vira sucesso; plugins do usuário isolados",
+      "checks": [
+        {
+          "name": "ponte: não succeeded",
+          "ok": true,
+          "evidence": "blocked — executor reportou blocked: Não é possível satisfazer o teste preservando a semântica de soma e sem alterar testes: o resultado correto é 4, mas o teste exige 5."
+        },
+        {
+          "name": "teste não foi alterado",
+          "ok": true
+        },
+        {
+          "name": "executor com --disable hooks --disable plugins",
+          "ok": true,
+          "evidence": "{\n  \"command\": \"~/.local/bin/codex\",\n  \"args\": [\n    \"exec\",\n    \"--json\",\n    \"--sandbox\",\n    \"workspace-write\",\n    \"--config\",\n    \"sandbox_workspace_write.network_access=false\",\n    \"-"
+        },
+        {
+          "name": "nenhum arquivo de plugin (.claude-flow, proven-config) em nenhum repositório do teste",
+          "ok": true,
+          "evidence": []
+        }
+      ],
+      "ok": true,
+      "score": 8,
+      "seconds": 15
+    },
+    {
+      "id": "Q7",
+      "points": 8,
+      "title": "Fluxo completo pela skill: Claude cérebro faz o código e delega a arte ao GPT",
+      "checks": [
+        {
+          "name": "sessão do cérebro (Opus 5.5) terminou sem erro",
+          "ok": true,
+          "evidence": "Código: eu mesmo (Claude, `claude-opus-5-5`), sem passar pela ponte porque o Opus 5.5 que você pediu sou eu, então **não há taskId**; `node check.mjs` imprime `ok` · Arte: Codex com `gpt-6-astra` (`as"
+        },
+        {
+          "name": "arte delegada ao Codex e verificada pela ponte",
+          "ok": true,
+          "evidence": [
+            "codex/gpt-6-astra:asset:succeeded"
+          ]
+        },
+        {
+          "name": "rollout da arte: gpt-6-astra via openai + ferramenta de imagem",
+          "ok": true,
+          "evidence": {
+            "model": "gpt-6-astra",
+            "tool": true
+          }
+        },
+        {
+          "name": "SHA-256 de assets/hero.png = imagem gerada pelo Codex",
+          "ok": true
+        },
+        {
+          "name": "código: node check.mjs passa",
+          "ok": true
+        },
+        {
+          "name": "resposta do cérebro cita Opus e Astra",
+          "ok": true,
+          "evidence": "Código: eu mesmo (Claude, `claude-opus-5-5`), sem passar pela ponte porque o Opus 5.5 que você pediu sou eu, então **não há taskId**; `node check.mjs` imprime `ok` · Arte: Codex com `gpt-6-astra` (`assets/hero.png`, 1254×1254, aceita), task"
+        }
+      ],
+      "ok": true,
+      "score": 8,
+      "seconds": 108
+    },
+    {
+      "id": "Q8",
+      "points": 8,
+      "title": "Bateria E2E real completa (T1–T15 + A1 + P1)",
+      "checks": [
+        {
+          "name": "todos os 17 cenários aprovados, inclusive o paralelismo P1",
+          "ok": true,
+          "evidence": {
+            "arquivo": "<tmp>/gate050d/e2e/results-2026-11-23T02-13-59-663Z.json",
+            "aprovados": 17,
+            "total": 17
+          }
+        },
+        {
+          "name": "bateria do Gemini: os 14 cenários aprovados (G1–G9 e sondas, inclusive schedule; navegador não exposto aceito como limitação)",
+          "ok": true,
+          "evidence": {
+            "arquivo": "<tmp>/gate050g/gem/run-2026-11-23T02-42-10-360Z/gemini-results.json",
+            "agy": {
+              "version": "1.5.14",
+              "platform": "darwin"
+            },
+            "aprovados": 13,
+            "inconclusivosAceitos": 1,
+            "total": 14
+          }
+        }
+      ],
+      "ok": true,
+      "score": 8,
+      "seconds": 0
+    },
+    {
+      "id": "Q9",
+      "points": 3,
+      "title": "Suíte offline completa",
+      "checks": [
+        {
+          "name": "npm test: todos passam, nenhuma falha",
+          "ok": true,
+          "evidence": "1004/1005 (falhas: 0, todo: 1, todo falhando: 0, pulados: 0, cancelados: 0)"
+        }
+      ],
+      "ok": true,
+      "score": 3,
+      "seconds": 274
+    },
+    {
+      "id": "Q10",
+      "points": 3,
+      "title": "Higiene: sem processos órfãos, sem segredos, sem dados de conta",
+      "checks": [
+        {
+          "name": "nenhum executor sobrevivente",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "nenhum token/segredo nos artefatos .duo",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "catálogos sem e-mail/dados de conta",
+          "ok": true,
+          "evidence": 7
+        }
+      ],
+      "ok": true,
+      "score": 3,
+      "seconds": 0
+    },
+    {
+      "id": "Q11",
+      "points": 6,
+      "title": "Escolha adaptativa leve: catálogo light, esforço low e execução comprovada",
+      "checks": [
+        {
+          "name": "catálogo atual: modelo escolhido é light (gpt-6-luna esperado)",
+          "ok": true,
+          "evidence": {
+            "provider": "codex",
+            "id": "gpt-6-luna",
+            "aliases": [],
+            "displayName": "GPT-6-Luna",
+            "description": "Fast and affordable model for easier tasks.",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": false,
+            "legacy": false,
+            "capabilities": [
+              "code",
+              "image_generation"
+            ],
+            "upgradeTo": null,
+            "retirementAt": null,
+            "source": "discovered",
+            "tier": "light",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "task.selection: escolha automática light/low",
+          "ok": true,
+          "evidence": {
+            "adaptive": true,
+            "tier": "light",
+            "complexitySignals": [
+              "kind=implement",
+              "risk=low",
+              "arquivos=1; diretórios=0",
+              "critérios=1; comandos de aceite=1"
+            ],
+            "model": "gpt-6-luna",
+            "effort": "low",
+            "reason": [
+              "nível-alvo=light; piso=light",
+              "selecionado gpt-6-luna: evidência > recomendado pelo fornecedor > versão da família"
+            ],
+            "chainId": "task-20261123025453-a1ee90",
+            "attempt": 1,
+            "attemptOf": null,
+            "chainRoot": "task-20261123025453-a1ee90"
+          }
+        },
+        {
+          "name": "ponte: succeeded e npm test executado/aprovado",
+          "ok": true,
+          "evidence": [
+            {
+              "name": "tests",
+              "argv": [
+                "npm",
+                "test"
+              ],
+              "ran": true,
+              "exitCode": 0,
+              "passed": true,
+              "durationMs": 126,
+              "outputTail": "\n> qt@0.0.0 test\n> node --test\n\nTAP version 13\n# Subtest: formata centavos em reais\nok 1 - formata centavos em reais\n  ---\n  duration_ms: 0.259833\n  type: 'test'\n  ...\n1..1\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 32.876709\n"
+            }
+          ]
+        },
+        {
+          "name": "só src/preco.js alterado; testes intactos",
+          "ok": true,
+          "evidence": [
+            "src/preco.js"
+          ]
+        },
+        {
+          "name": "independente: npm test falhava antes e passa após a implementação",
+          "ok": true
+        },
+        {
+          "name": "rollout independente desta sessão/diretório: modelo selecionado e effort low",
+          "ok": true,
+          "evidence": {
+            "file": "~/.codex/sessions/2026/11/22/rollout-2026-11-22T23-54-54-01a20653-f337-7741-8bd3-7f1d47f77b3c.jsonl",
+            "id": "01a20653-f337-7741-8bd3-7f1d47f77b3c",
+            "model": "gpt-6-luna",
+            "effort": "low",
+            "provider": "openai",
+            "originator": "codex_exec",
+            "cwd": "<tmp>/gate050g/q/Q11",
+            "sandbox": "workspace-write",
+            "responseIds": [
+              "resp_07c01f9337d99a6e016b03ab005e0887d290b17295602bf700",
+              "resp_07c01f9337d99a6e016b03ab03cc7887d2af1c278bcc4523a6",
+              "resp_07c01f9337d99a6e016b03ab0933dc87d2b19958a4d0aefaed",
+              "resp_07c01f9337d99a6e016b03ab0c853087d29cf38ad32c4ceb39"
+            ],
+            "usedImageTool": false
+          }
+        },
+        {
+          "name": "rollout: IDs de resposta do servidor",
+          "ok": true,
+          "evidence": [
+            "resp_07c01f9337d99a6e016b03ab005e0887d290b17295602bf700",
+            "resp_07c01f9337d99a6e016b03ab03cc7887d2af1c278bcc4523a6",
+            "resp_07c01f9337d99a6e016b03ab0933dc87d2b19958a4d0aefaed",
+            "resp_07c01f9337d99a6e016b03ab0c853087d29cf38ad32c4ceb39"
+          ]
+        },
+        {
+          "name": "ponte confirma o mesmo modelo via rollout",
+          "ok": true,
+          "evidence": {
+            "requested": "gpt-6-luna",
+            "reported": "gpt-6-luna",
+            "reportedSource": "native",
+            "reportedVia": "codex-rollout"
+          }
+        }
+      ],
+      "ok": true,
+      "score": 6,
+      "seconds": 19
+    },
+    {
+      "id": "Q12",
+      "points": 6,
+      "title": "Piso deep por risco/escopo: executa com esforço alto e bloqueia Luna antes de executar",
+      "checks": [
+        {
+          "name": "catálogo atual: modelo deep (gpt-6-astra esperado) anuncia high",
+          "ok": true,
+          "evidence": {
+            "provider": "codex",
+            "id": "gpt-6.2-astra",
+            "aliases": [],
+            "displayName": "GPT-6.2-Astra",
+            "description": "Our most capable model for complex coding and professional work.",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": false,
+            "legacy": false,
+            "capabilities": [
+              "code",
+              "image_generation"
+            ],
+            "upgradeTo": null,
+            "retirementAt": null,
+            "source": "discovered",
+            "tier": "deep",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "task.selection: modelo automático deep, esforço explícito >= high",
+          "ok": true,
+          "evidence": {
+            "adaptive": true,
+            "tier": "deep",
+            "complexitySignals": [
+              "kind=implement",
+              "risk=high",
+              "arquivos=1; diretórios=0",
+              "critérios=1; comandos de aceite=1",
+              "escopo/tag sensível: piso deep"
+            ],
+            "model": "gpt-6.2-astra",
+            "effort": "high",
+            "reason": [
+              "nível-alvo=deep; piso=deep",
+              "selecionado gpt-6.2-astra: evidência > recomendado pelo fornecedor > versão da família",
+              "effort explícito preservado"
+            ],
+            "chainId": "task-20261123025513-46a437",
+            "attempt": 1,
+            "attemptOf": null,
+            "chainRoot": "task-20261123025513-46a437"
+          }
+        },
+        {
+          "name": "ponte: succeeded e npm test executado/aprovado",
+          "ok": true,
+          "evidence": [
+            {
+              "name": "tests",
+              "argv": [
+                "npm",
+                "test"
+              ],
+              "ran": true,
+              "exitCode": 0,
+              "passed": true,
+              "durationMs": 123,
+              "outputTail": "\n> qt@0.0.0 test\n> node --test\n\nTAP version 13\n# Subtest: expiração inclui o instante limite\nok 1 - expiração inclui o instante limite\n  ---\n  duration_ms: 0.21675\n  type: 'test'\n  ...\n1..1\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 31.574917\n"
+            }
+          ]
+        },
+        {
+          "name": "só src/auth/token.js alterado; testes intactos",
+          "ok": true,
+          "evidence": [
+            "src/auth/token.js"
+          ]
+        },
+        {
+          "name": "independente: npm test falhava antes e passa após a implementação",
+          "ok": true
+        },
+        {
+          "name": "rollout independente desta sessão/diretório: modelo deep e esforço >= high anunciado",
+          "ok": true,
+          "evidence": {
+            "file": "~/.codex/sessions/2026/11/22/rollout-2026-11-22T23-55-14-01a20654-3f36-7701-9c27-89e576da2051.jsonl",
+            "id": "01a20654-3f36-7701-9c27-89e576da2051",
+            "model": "gpt-6.2-astra",
+            "effort": "high",
+            "provider": "openai",
+            "originator": "codex_exec",
+            "cwd": "<tmp>/gate050g/q/Q12",
+            "sandbox": "workspace-write",
+            "responseIds": [
+              "resp_030d6dd5badd4cb2016b03ab139eac87d2ac7046ee6cbe7dac",
+              "resp_030d6dd5badd4cb2016b03ab16d58487d2b9e016f3d9eb9c4e",
+              "resp_030d6dd5badd4cb2016b03ab1a38f487d2b1bab4fdde328722",
+              "resp_030d6dd5badd4cb2016b03ab1dcf1c87d2824a9f3ea798400f"
+            ],
+            "usedImageTool": false
+          }
+        },
+        {
+          "name": "rollout: IDs de resposta do servidor",
+          "ok": true,
+          "evidence": [
+            "resp_030d6dd5badd4cb2016b03ab139eac87d2ac7046ee6cbe7dac",
+            "resp_030d6dd5badd4cb2016b03ab16d58487d2b9e016f3d9eb9c4e",
+            "resp_030d6dd5badd4cb2016b03ab1a38f487d2b1bab4fdde328722",
+            "resp_030d6dd5badd4cb2016b03ab1dcf1c87d2824a9f3ea798400f"
+          ]
+        },
+        {
+          "name": "ponte confirma o mesmo modelo via rollout",
+          "ok": true,
+          "evidence": {
+            "requested": "gpt-6.2-astra",
+            "reported": "gpt-6.2-astra",
+            "reportedSource": "native",
+            "reportedVia": "codex-rollout"
+          }
+        },
+        {
+          "name": "Luna: blocked por piso deep (não por login/cota)",
+          "ok": true,
+          "evidence": "risco/escopo exige nível deep; gpt-6-luna é light. Remova `model` para escolha automática ou peça um modelo de nível deep. Atualize o catálogo com duo models --refresh e escolha modelo/esforço compatíveis; remova fixações incompatíveis"
+        },
+        {
+          "name": "Luna: zero invocações, sem sessão nativa nem plano de execução",
+          "ok": true,
+          "evidence": {
+            "invocations": 0,
+            "native": {
+              "sessionId": null
+            }
+          }
+        },
+        {
+          "name": "independente: nenhum rollout novo",
+          "ok": true,
+          "evidence": {
+            "before": 197,
+            "after": 197
+          }
+        },
+        {
+          "name": "independente: nenhum arquivo do projeto ou HEAD alterado",
+          "ok": true
+        }
+      ],
+      "ok": true,
+      "score": 6,
+      "seconds": 21
+    },
+    {
+      "id": "Q13",
+      "points": 5,
+      "title": "Descoberta atual, versões reais das CLIs e recomendações sem uso extra",
+      "checks": [
+        {
+          "name": "models --refresh --json concluiu",
+          "ok": true,
+          "evidence": ""
+        },
+        {
+          "name": "descoberta atual: claude-sonnet-5-5 é standard",
+          "ok": true,
+          "evidence": {
+            "provider": "claude",
+            "id": "claude-sonnet-5-5",
+            "aliases": [
+              "sonnet"
+            ],
+            "displayName": "Sonnet 5.5",
+            "description": "Most efficient for simpler tasks",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": false,
+            "legacy": false,
+            "capabilities": [
+              "code"
+            ],
+            "source": "discovered",
+            "tier": "standard",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "descoberta atual: gpt-6.1-sol é standard",
+          "ok": true,
+          "evidence": {
+            "provider": "codex",
+            "id": "gpt-6.1-sol",
+            "aliases": [],
+            "displayName": "GPT-6.1-Sol",
+            "description": "Previous generation model for coding and everyday work.",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": false,
+            "legacy": false,
+            "capabilities": [
+              "code",
+              "image_generation"
+            ],
+            "upgradeTo": null,
+            "retirementAt": null,
+            "source": "discovered",
+            "tier": "standard",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "descoberta atual: gpt-6-astra é deep",
+          "ok": true,
+          "evidence": {
+            "provider": "codex",
+            "id": "gpt-6-astra",
+            "aliases": [],
+            "displayName": "GPT-6-Astra",
+            "description": "Previous generation model for complex coding and professional work.",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": false,
+            "legacy": false,
+            "capabilities": [
+              "code",
+              "image_generation"
+            ],
+            "upgradeTo": null,
+            "retirementAt": null,
+            "source": "discovered",
+            "tier": "deep",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "descoberta atual: claude-opus-5-5 é deep",
+          "ok": true,
+          "evidence": {
+            "provider": "claude",
+            "id": "claude-opus-5-5",
+            "aliases": [
+              "opus"
+            ],
+            "displayName": "Opus 5.5",
+            "description": "For complex work and everyday tasks",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "contextWindow": null,
+            "vendorRecommended": true,
+            "legacy": false,
+            "capabilities": [
+              "code"
+            ],
+            "source": "discovered",
+            "tier": "deep",
+            "presumed": false,
+            "extraUsage": false
+          }
+        },
+        {
+          "name": "independente: cliVersions.claude corresponde a claude --version",
+          "ok": true,
+          "evidence": {
+            "actual": "2.1.326",
+            "cached": "2.1.326"
+          }
+        },
+        {
+          "name": "recommend (claude, low): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "standard",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=low",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "gpt-6.2-sol",
+              "effort": "medium",
+              "reason": [
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: codex/gpt-6.2-sol (GPT-6.2-Sol) · claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: codex/gpt-6.2-sol (GPT-6.2-Sol) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            }
+          }
+        },
+        {
+          "name": "recommend (claude, medium): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "standard",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=medium",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "gpt-6.2-sol",
+              "effort": "medium",
+              "reason": [
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: codex/gpt-6.2-sol (GPT-6.2-Sol) · claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: codex/gpt-6.2-sol (GPT-6.2-Sol) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            }
+          }
+        },
+        {
+          "name": "recommend (claude, high): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "deep",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=high",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "claude-opus-5-5",
+              "effort": "high",
+              "reason": [
+                "nível-alvo=deep; piso=deep",
+                "selecionado claude-opus-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: claude/claude-opus-5-5 (Opus 5.5) · codex/gpt-6.2-astra (GPT-6.2-Astra)",
+                "melhor candidato: claude/claude-opus-5-5 (Opus 5.5) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: codex/gpt-6.2-astra (GPT-6.2-Astra) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=deep; piso=deep",
+                "selecionado claude-opus-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "deep",
+              "effort": "high"
+            }
+          }
+        },
+        {
+          "name": "independente: cliVersions.codex corresponde a codex --version",
+          "ok": true,
+          "evidence": {
+            "actual": "0.170.0",
+            "cached": "0.170.0"
+          }
+        },
+        {
+          "name": "recommend (codex, low): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "standard",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=low",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "gpt-6.2-sol",
+              "effort": "medium",
+              "reason": [
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: codex/gpt-6.2-sol (GPT-6.2-Sol) · claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: codex/gpt-6.2-sol (GPT-6.2-Sol) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            }
+          }
+        },
+        {
+          "name": "recommend (codex, medium): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "standard",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=medium",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "gpt-6.2-sol",
+              "effort": "medium",
+              "reason": [
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: codex/gpt-6.2-sol (GPT-6.2-Sol) · claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: codex/gpt-6.2-sol (GPT-6.2-Sol) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado gpt-6.2-sol: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            }
+          }
+        },
+        {
+          "name": "recommend (codex, high): nenhum escolhido usa cota extra",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "deep",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=high",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "claude-opus-5-5",
+              "effort": "high",
+              "reason": [
+                "nível-alvo=deep; piso=deep",
+                "selecionado claude-opus-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: claude/claude-opus-5-5 (Opus 5.5) · codex/gpt-6.2-astra (GPT-6.2-Astra)",
+                "melhor candidato: claude/claude-opus-5-5 (Opus 5.5) (score 0.55; sem histórico comparável neste projeto)",
+                "alternativa: codex/gpt-6.2-astra (GPT-6.2-Astra) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=deep; piso=deep",
+                "selecionado claude-opus-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "deep",
+              "effort": "high"
+            }
+          }
+        }
+      ],
+      "ok": true,
+      "score": 5,
+      "seconds": 4
+    },
+    {
+      "id": "Q14",
+      "points": 5,
+      "title": "Cota nativa, privacidade, exclusão do Codex esgotado e limpeza",
+      "checks": [
+        {
+          "name": "quota refresh grava observação nativa codex-rate-limits",
+          "ok": true,
+          "evidence": {
+            "source": "codex-rate-limits",
+            "observedAt": "2026-11-23T02:55:37.227Z"
+          }
+        },
+        {
+          "name": "independente (após refresh): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail",
+          "ok": true,
+          "evidence": {
+            "scanned": 281,
+            "leaks": []
+          }
+        },
+        {
+          "name": "cota manual Codex 100% persistida até amanhã",
+          "ok": true,
+          "evidence": {
+            "status": "exhausted",
+            "usedPercent": 100,
+            "resetsAt": "2026-11-24T02:55:37.984Z",
+            "observedAt": "2026-11-23T02:55:38.033Z",
+            "source": "manual",
+            "affectedModels": null
+          }
+        },
+        {
+          "name": "recommend não recomenda Codex; todos os candidatos Codex indisponíveis",
+          "ok": true,
+          "evidence": {
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado claude-sonnet-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            },
+            "codex": [
+              {
+                "executor": "codex",
+                "model": "gpt-6.2-sol",
+                "displayName": "GPT-6.2-Sol",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": true,
+                  "legacy": false
+                },
+                "score": 0.55,
+                "reasons": [
+                  "sem histórico comparável neste projeto",
+                  "recomendado pelo próprio fornecedor (+0,05)"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6.2-astra",
+                "displayName": "GPT-6.2-Astra",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": false
+                },
+                "score": 0.5,
+                "reasons": [
+                  "sem histórico comparável neste projeto"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6.1-terra",
+                "displayName": "GPT-6.1 Terra",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": false
+                },
+                "score": 0.5,
+                "reasons": [
+                  "sem histórico comparável neste projeto"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6.1-sol",
+                "displayName": "GPT-6.1-Sol",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": false
+                },
+                "score": 0.5,
+                "reasons": [
+                  "sem histórico comparável neste projeto"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6-astra",
+                "displayName": "GPT-6-Astra",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": false
+                },
+                "score": 0.5,
+                "reasons": [
+                  "sem histórico comparável neste projeto"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6-luna",
+                "displayName": "GPT-6-Luna",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": false
+                },
+                "score": 0.5,
+                "reasons": [
+                  "sem histórico comparável neste projeto"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-6-sol",
+                "displayName": "GPT-6-Sol",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": true
+                },
+                "score": 0.4,
+                "reasons": [
+                  "sem histórico comparável neste projeto",
+                  "marcado como legado pelo fornecedor (−0,1)"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-5.6-sol",
+                "displayName": "GPT-5.6-Sol",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": true
+                },
+                "score": 0.4,
+                "reasons": [
+                  "sem histórico comparável neste projeto",
+                  "marcado como legado pelo fornecedor (−0,1)"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-5.6-terra",
+                "displayName": "GPT-5.6-Terra",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": true
+                },
+                "score": 0.4,
+                "reasons": [
+                  "sem histórico comparável neste projeto",
+                  "marcado como legado pelo fornecedor (−0,1)"
+                ]
+              },
+              {
+                "executor": "codex",
+                "model": "gpt-5.6-luna",
+                "displayName": "GPT-5.6-Luna",
+                "available": false,
+                "availability": [
+                  "cota esgotada até 2026-11-24T02:55:37.984Z",
+                  "cota esgotada até 2026-11-24T02:55:37.984Z"
+                ],
+                "evidence": {
+                  "bucket": "kind=implement + tags=-",
+                  "n": 0,
+                  "successes": 0,
+                  "successRate": 0.5,
+                  "sufficient": false,
+                  "acceptancePassRate": null,
+                  "overclaims": 0,
+                  "rejectedByBrain": 0,
+                  "medianWallMs": null
+                },
+                "prior": {
+                  "bonus": 0,
+                  "notes": []
+                },
+                "vendor": {
+                  "recommended": false,
+                  "legacy": true
+                },
+                "score": 0.4,
+                "reasons": [
+                  "sem histórico comparável neste projeto",
+                  "marcado como legado pelo fornecedor (−0,1)"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "seleção escolhe Claude de nível >= standard",
+          "ok": true,
+          "evidence": {
+            "selection": {
+              "adaptive": true,
+              "tier": "standard",
+              "complexitySignals": [
+                "kind=implement",
+                "risk=medium",
+                "arquivos=0; diretórios=0",
+                "critérios=0; comandos de aceite=0"
+              ],
+              "model": "claude-sonnet-5-5",
+              "effort": "medium",
+              "reason": [
+                "nível-alvo=standard; piso=standard",
+                "selecionado claude-sonnet-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "attempt": 1,
+              "attemptOf": null
+            },
+            "model": {
+              "provider": "claude",
+              "id": "claude-sonnet-5-5",
+              "aliases": [
+                "sonnet"
+              ],
+              "displayName": "Sonnet 5.5",
+              "description": "Most efficient for simpler tasks",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "contextWindow": null,
+              "vendorRecommended": false,
+              "legacy": false,
+              "capabilities": [
+                "code"
+              ],
+              "source": "discovered",
+              "tier": "standard",
+              "presumed": false,
+              "extraUsage": false
+            },
+            "decision": {
+              "action": "judgment",
+              "executor": null,
+              "model": null,
+              "confidence": "baixa",
+              "why": [
+                "evidência insuficiente (mínimo 3 tarefas comparáveis)",
+                "melhores de cada conta: claude/claude-sonnet-5-5 (Sonnet 5.5)",
+                "melhor candidato: claude/claude-sonnet-5-5 (Sonnet 5.5) (score 0.5; sem histórico comparável neste projeto)",
+                "nível-alvo=standard; piso=standard",
+                "selecionado claude-sonnet-5-5: evidência > recomendado pelo fornecedor > versão da família"
+              ],
+              "tier": "standard",
+              "effort": "medium"
+            }
+          }
+        },
+        {
+          "name": "independente (após recommend): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail",
+          "ok": true,
+          "evidence": {
+            "scanned": 284,
+            "leaks": []
+          }
+        },
+        {
+          "name": "limpeza: Codex volta a 0% e status ok",
+          "ok": true,
+          "evidence": {
+            "status": "ok",
+            "usedPercent": 0,
+            "resetsAt": null,
+            "observedAt": "2026-11-23T02:55:38.458Z",
+            "source": "manual",
+            "affectedModels": null
+          }
+        },
+        {
+          "name": "independente (após limpeza): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail",
+          "ok": true,
+          "evidence": {
+            "scanned": 284,
+            "leaks": []
+          }
+        }
+      ],
+      "ok": true,
+      "score": 5,
+      "seconds": 2
+    },
+    {
+      "id": "Q15",
+      "points": 8,
+      "title": "Paralelismo: 4 executores Codex reais ao mesmo tempo, patches verificados e aplicados, 5º recusado",
+      "checks": [
+        {
+          "name": "ponte: run compartilhado criado",
+          "ok": true,
+          "evidence": "concluído e verificado"
+        },
+        {
+          "name": "ponte: as 4 tarefas succeeded, cada uma em worktree",
+          "ok": true,
+          "evidence": [
+            "succeeded/worktree",
+            "succeeded/worktree",
+            "succeeded/worktree",
+            "succeeded/worktree"
+          ]
+        },
+        {
+          "name": "ponte: 5º pedido recusado pelo limite com as 4 vagas ocupadas, sem executor",
+          "ok": true,
+          "evidence": {
+            "slotsAtFifth": 4,
+            "exit": 3,
+            "outcome": "limite de 4 executores simultâneos atingido (task-20261123025547-7000f2, pid 61614; task-20261123025547-502b26, pid 61615; task-20261123025547-738041, pid 61613; task-20261123025547-8ad000, pid 61612); suba limits.maxConcurrentExecutors em .duo/config.json se precisar de mais"
+          }
+        },
+        {
+          "name": "independente: 4 rollouts do Codex desta execução (openai, codex_exec, cwd = worktree da tarefa)",
+          "ok": true,
+          "evidence": [
+            {
+              "id": "01a20654-c6cf-7402-ae3f-91da0dbcab03",
+              "cwd": "<tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-8ad000",
+              "provider": "openai"
+            },
+            {
+              "id": "01a20654-c6a4-7960-9009-ce19894e26ff",
+              "cwd": "<tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-738041",
+              "provider": "openai"
+            },
+            {
+              "id": "01a20654-c649-77e2-b1ad-22116ceaab33",
+              "cwd": "<tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-7000f2",
+              "provider": "openai"
+            },
+            {
+              "id": "01a20654-c675-7151-9415-51ba5e25a8bf",
+              "cwd": "<tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-502b26",
+              "provider": "openai"
+            }
+          ]
+        },
+        {
+          "name": "independente: ≥ 2 sessões do Codex se sobrepõem no tempo (rollouts)",
+          "ok": true,
+          "evidence": {
+            "overlap": 4,
+            "spans": [
+              {
+                "start": "2026-11-23T02:55:49.764Z",
+                "end": "2026-11-23T02:55:58.705Z"
+              },
+              {
+                "start": "2026-11-23T02:55:49.755Z",
+                "end": "2026-11-23T02:55:58.682Z"
+              },
+              {
+                "start": "2026-11-23T02:55:49.625Z",
+                "end": "2026-11-23T02:56:00.382Z"
+              },
+              {
+                "start": "2026-11-23T02:55:49.724Z",
+                "end": "2026-11-23T02:55:59.915Z"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ponte: cada patch traz só o arquivo da própria tarefa",
+          "ok": true,
+          "evidence": [
+            [
+              "src/a.js"
+            ],
+            [
+              "src/b.js"
+            ],
+            [
+              "src/c.js"
+            ],
+            [
+              "src/d.js"
+            ]
+          ]
+        },
+        {
+          "name": "ponte: os 4 applies em sequência ok",
+          "ok": true,
+          "evidence": [
+            "patch aplicado ao working tree (sem commit). O worktree descartável continua em <tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-8ad000; remova com: git worktree remove \"/private/tmp/cla",
+            "patch aplicado ao working tree (sem commit). O worktree descartável continua em <tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-738041; remova com: git worktree remove \"/private/tmp/cla",
+            "patch aplicado ao working tree (sem commit). O worktree descartável continua em <tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-7000f2; remova com: git worktree remove \"/private/tmp/cla",
+            "patch aplicado ao working tree (sem commit). O worktree descartável continua em <tmp>/gate050g/q/Q15/.duo/worktrees/task-20261123025547-502b26; remova com: git worktree remove \"/private/tmp/cla"
+          ]
+        },
+        {
+          "name": "independente: git mostra só os 4 arquivos + a nota do cérebro, e os testes passam",
+          "ok": true,
+          "evidence": {
+            "changed": [
+              "NOTAS.md",
+              "src/a.js",
+              "src/b.js",
+              "src/c.js",
+              "src/d.js"
+            ],
+            "testsPass": true
+          }
+        },
+        {
+          "name": "independente: nenhuma vaga nem espelho lock.json sobrando",
+          "ok": true,
+          "evidence": []
+        }
+      ],
+      "ok": true,
+      "score": 8,
+      "seconds": 24
+    }
+  ]
+}

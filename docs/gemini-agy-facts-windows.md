@@ -1,19 +1,19 @@
 # agy on Windows — Phase 0 facts
 
-Date: 2026-11-23. Machine: the owner's Windows PC, Windows PowerShell 5.1, Node 22. Probe: `tests/fixtures/agy/probe-win/` on `feature/gemini-windows`. Spec: `docs/superpowers/specs/2026-11-23-gemini-windows-design.md` (Phase 0 and Amendment B).
+Date: 2026-11-23. Machine: the owner's Windows PC, Windows PowerShell 5.1, Node v24.22.1 (recorded in both `results.json`; the duo's Node 22 baseline was not the one exercised). Probe: `tests/fixtures/agy/probe-win/` on `feature/gemini-windows`. Spec: `docs/superpowers/specs/2026-11-23-gemini-windows-design.md` (Phase 0 and Amendment B).
 
 Evidence:
 - dry run `docs/evidencias/gemini-windows-phase0/2026-11-23T18-00-35-080Z/results.json`;
 - full run `docs/evidencias/gemini-windows-phase0/2026-11-23T18-43-09-657Z/results.json`;
 - full run with Process Monitor `2026-11-23T19-32-41-914Z` (6,757,738 events, 8 agy launches), analyzed on the PC with `analyze-trace.mjs` at `41cac76`. The CSV stays on the PC (not committed).
 
-**Decision: GO.** No stop rule fired. Phase 1 (implementation) can be planned.
+**Decision: GO, conditional.** No stop rule fired. Two items are not yet proven: F5 for three of the eight launches, and the timeout attribution in F3. GO holds if the owner waives both for Phase 0 (they are re-proven in the Phase 1 battery before any version is verified), or after a new complete capture with the current probe. Until one of the two is recorded here, Phase 1 may be planned but not released.
 
 | # | Question | Answer | Evidence |
 |---|----------|--------|----------|
 | F1 | Does `agy` exist for Windows? | Yes. Native `agy.exe` 1.5.15 in `%LOCALAPPDATA%\agy\bin`, installed with `irm https://antigravity.google/cli/install.ps1 \| iex`. | both `results.json` (`f1`) |
 | F2 | Headless stream-json as on macOS? | Yes: `-p= --input-format stream-json --output-format stream-json` runs; the same `init` / `step_update` / `result` events. | full run (`quota.runs[].events`) |
-| F3 | Does the workspace `PreToolUse` hook fire and fail closed? | Yes. It runs through `cmd.exe`. Explicit deny, a crashing hook and invalid output all block the write. **Timeout:** agy kills only `cmd.exe`, not the tree, and reports `command failed: exit status 1` with no timeout cause; the hook process survives as an orphan (parent gone at 4,967–5,219 ms for a 5 s limit). | full run (`quota.runs`, hook lifecycle log) |
+| F3 | Does the workspace `PreToolUse` hook fire and fail closed? | Yes for deny, crash and invalid output: the hook runs through `cmd.exe` and each blocks the write. **Timeout: write blocked (observed); timeout attribution inconclusive.** agy reported `command failed: exit status 1` with no timeout cause, and the hook saw its `cmd.exe` parent disappear at 5,159 ms and 5,219 ms for a 5 s limit, staying alive itself (orphan). These samples predate the `lastParentAliveMs` field, so the current classifier (`41cac76`) cannot confirm the cut happened at the deadline; a rerun with the current probe settles it. | full run (`quota.runs`, hook lifecycle log) |
 | F4 | Does the login survive a fully private profile? | Yes. With `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `HOMEDRIVE`, `HOMEPATH` private, `agy models` logs `authMethod=consumer` and `effective: keyring` (Windows Credential Manager). No copy or link of the real profile. | both `results.json` (`f4`) |
 | F5 | Does agy read the owner's real config? | **No access observed.** Zero successful accesses to `%USERPROFILE%\.gemini`, Antigravity/Codeium/Windsurf dirs or other forbidden paths in the captured launches. Complete lifecycles (creation, file I/O, exit) for 5 of 8 launches, covering both Phase 0 launch paths: `agy --version`, `agy --help`, `agy models`, headless `allow-log`, headless `deny`. The capture ended during the `crash` run, so `crash`, `garbage` and `timeout` are not covered; they use the same headless launch path. | analyze-trace output (below) |
 | F6 | Tool names and path format | `write_file` with an absolute Windows path argument (`Path`). | full run (`hookLines`) |
@@ -43,13 +43,13 @@ INCOMPLETO: 3 lançamento(s) do agy sem criação, eventos de arquivo ou saída 
 
 # agy no Windows — fatos da Fase 0
 
-**Decisão: SEGUE.** Nenhuma regra de parada disparou.
+**Decisão: SEGUE, com condição.** Nenhuma regra de parada disparou. Falta prova em dois pontos: o F5 de 3 das 8 execuções e a causa do corte no timeout (F3). A decisão vale se você liberar os dois para a Fase 0 (eles são provados de novo na bateria da Fase 1, antes de liberar qualquer versão) ou depois de uma nova captura completa com a sonda atual. Até isso ficar registrado aqui, a Fase 1 pode ser planejada, mas não publicada.
 
 - **F1:** existe `agy.exe` 1.5.15 nativo em `%LOCALAPPDATA%\agy\bin`.
 - **F2:** o modo headless com stream-json funciona como no Mac.
-- **F3:** o hook do workspace dispara pelo `cmd.exe` e falha fechado ao negar, travar ou responder lixo. No timeout, o agy mata só o `cmd.exe`, e o hook fica órfão.
+- **F3:** o hook do workspace dispara pelo `cmd.exe` e falha fechado ao negar, travar ou responder lixo. No timeout, a escrita foi bloqueada e o agy matou só o `cmd.exe` (o hook ficou órfão), mas a regra atual não confirma que o corte foi no prazo: os registros são de antes do campo novo. Inconclusivo até rodar de novo.
 - **F4:** o login da assinatura funciona com o perfil privado completo, pelo Gerenciador de Credenciais do Windows.
-- **F5:** nenhum acesso à sua config real nas 5 execuções capturadas por inteiro, que cobrem os dois caminhos de lançamento da Fase 0. A captura terminou durante a execução `crash`.
+- **F5:** nenhum acesso à sua config real nas 5 execuções capturadas por inteiro, que cobrem os dois caminhos de lançamento da Fase 0. A captura terminou durante a execução `crash`: `crash`, `garbage` e `timeout` ficaram sem prova.
 - **F6:** a ferramenta de escrita é `write_file`, com caminho absoluto do Windows.
 - **F7:** o `modelName` vem na entrada do hook.
 

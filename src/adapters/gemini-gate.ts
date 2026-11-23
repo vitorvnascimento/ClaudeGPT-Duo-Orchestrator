@@ -122,9 +122,13 @@ export function decideToolCall(input: unknown, allow: GateAllowlist, canon: (p: 
       const denied = isDenied(rel, allow.deny);
       if (denied) return deny(`caminho negado (${denied}): ${rel}`);
       const exact = allow.write.some((t) => rel === t.rel);
-      if (!exact && !allow.write.some((t) => t.isDir && rel.startsWith(`${t.rel}/`))) return deny(`fora dos alvos autorizados: ${rel}`);
-      // Dentro de uma pasta liberada só nomes ASCII (mesma regra do perfil do SO); alvos de arquivo listados podem ter acento.
-      if (!exact && /[^\x20-\x7e]/.test(rel)) return deny(`nome fora do ASCII numa pasta liberada (liste o arquivo como alvo): ${rel}`);
+      const grants = allow.write.filter((t) => t.isDir && rel.startsWith(`${t.rel}/`));
+      if (!exact && !grants.length) return deny(`fora dos alvos autorizados: ${rel}`);
+      // Abaixo de uma pasta liberada só nomes ASCII (mesma regra do perfil do SO, que olha só o trecho abaixo da pasta);
+      // a própria pasta pode ter acento, e alvos de arquivo listados também.
+      if (!exact && !grants.some((t) => !/[^\x20-\x7e]/.test(rel.slice(t.rel.length + 1)))) {
+        return deny(`nome fora do ASCII numa pasta liberada (liste o arquivo como alvo): ${rel}`);
+      }
     }
     return { decision: "allow", reason: "duo-gate: alvo autorizado" };
   } catch (e) {

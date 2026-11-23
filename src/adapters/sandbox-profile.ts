@@ -72,8 +72,14 @@ export function buildProfile(p: ProfileInput): { ok: true; profile: string } | {
   }
   // Concessão por pasta: escrita só em nomes ASCII abaixo dela (o hook aplica a mesma regra). Nomes que normalizam
   // para outra grafia não precisam ser mapeados; alvos de arquivo listados voltam a ser liberados logo depois.
-  const dirs = p.targets.filter((t) => t.isDir).map((t) => `(regex ${sbplQuote(`^${reEscape(canonicalPath(t.abs))}/.*[^ -~]`)})`);
-  const literals = p.targets.filter((t) => !t.isDir).map((t) => `(literal ${sbplQuote(canonicalPath(t.abs))})`);
+  const dirAbs = p.targets.filter((t) => t.isDir).map((t) => reEscape(canonicalPath(t.abs)));
+  const dirs = dirAbs.map((d) => `(regex ${sbplQuote(`^${d}/.*[^ -~]`)})`);
+  // Depois da negação: caminho com trecho todo ASCII abaixo de QUALQUER pasta liberada (pastas aninhadas com acento)
+  // e os alvos de arquivo listados voltam a ser graváveis — a mesma regra do hook.
+  const literals = [
+    ...dirAbs.map((d) => `(regex ${sbplQuote(`^${d}/[ -~]*$`)})`),
+    ...p.targets.filter((t) => !t.isDir).map((t) => `(literal ${sbplQuote(canonicalPath(t.abs))})`),
+  ];
   const profile = [
     "(version 1)",
     "(allow default)",

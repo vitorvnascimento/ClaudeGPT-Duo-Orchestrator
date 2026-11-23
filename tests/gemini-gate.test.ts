@@ -40,6 +40,9 @@ describe("decideToolCall", () => {
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/caf\u00e9.txt" }), a, id).decision, "deny");
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/ol\u00e1.txt" }), a, id).decision, "allow");
     assert.equal(decideToolCall(call("write_file", { Path: "/WT/docs/ok.txt" }), a, id).decision, "allow");
+    const accentedDir: GateAllowlist = { ...a, write: [{ rel: "tradu\u00e7\u00f5es", isDir: true }] };
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/tradu\u00e7\u00f5es/index.md" }), accentedDir, id).decision, "allow");
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/tradu\u00e7\u00f5es/caf\u00e9.md" }), accentedDir, id).decision, "deny");
   });
   it("denies writes without a path and every write in read-only mode", () => {
     assert.equal(decideToolCall(call("write_file", { Content: "x" }), allow, canon).decision, "deny");

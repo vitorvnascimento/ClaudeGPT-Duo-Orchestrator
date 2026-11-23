@@ -146,6 +146,31 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     assert.equal(existsSync(join(wt, "docs", "caf\u00e9.txt")), false);
     assert.ok(existsSync(join(wt, "docs", "ol\u00e1.txt")));
   });
+  it("OS layer: an accented granted dir accepts ASCII names below it and denies accented ones", () => {
+    const wt = tmp("duo-sbx-wt-");
+    const dir = join(wt, "tradu\u00e7\u00f5es");
+    mkdirSync(dir);
+    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: "tradu\u00e7\u00f5es", abs: dir, isDir: true, missingAncestors: [] }], denyGlobs: [], privateHome: join(wt, "..", "h5"), tmpDir: join(wt, "..", "h5", "tmp") });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", `echo 1 > '${join(dir, "index.md")}'; echo 2 > '${join(dir, "caf\u00e9.md")}'`, wt);
+    assert.ok(existsSync(join(dir, "index.md")));
+    assert.equal(existsSync(join(dir, "caf\u00e9.md")), false);
+  });
+  it("OS layer: overlapping grants (docs and docs/tradu\u00e7\u00f5es) agree with the gate", () => {
+    const wt = tmp("duo-sbx-wt-");
+    const docs = join(wt, "docs"), nested = join(docs, "tradu\u00e7\u00f5es");
+    mkdirSync(nested, { recursive: true });
+    const r = buildProfile({ worktreeRoot: wt, targets: [
+      { rel: "docs", abs: docs, isDir: true, missingAncestors: [] },
+      { rel: "docs/tradu\u00e7\u00f5es", abs: nested, isDir: true, missingAncestors: [] },
+    ], denyGlobs: ["**/*.key"], privateHome: join(wt, "..", "h6"), tmpDir: join(wt, "..", "h6", "tmp") });
+    assert.ok(r.ok);
+    sh(r.ok ? r.profile : "", `echo 1 > '${join(nested, "index.md")}'; echo 2 > '${join(nested, "caf\u00e9.md")}'; echo 3 > '${join(docs, "caf\u00e9.md")}'; echo 4 > '${join(nested, "a.key")}'`, wt);
+    assert.ok(existsSync(join(nested, "index.md")));
+    assert.equal(existsSync(join(nested, "caf\u00e9.md")), false);
+    assert.equal(existsSync(join(docs, "caf\u00e9.md")), false);
+    assert.equal(existsSync(join(nested, "a.key")), false);
+  });
   it("canonicalizes /tmp to /private/tmp", () => {
     const r = buildProfile({ worktreeRoot: "/tmp", targets: [], denyGlobs: [], privateHome: "/tmp", tmpDir: "/tmp" });
     assert.ok(r.ok && r.profile.includes('(subpath "/private/tmp")'));

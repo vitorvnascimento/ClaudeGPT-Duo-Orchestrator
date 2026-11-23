@@ -26,10 +26,17 @@ export function sanitizeEventLine(provider: Provider, line: string, redactor = r
   if (provider === "gemini") {
     // O agy fatia a resposta em text_delta: uma credencial partida entre eventos não casa com nenhum padrão do
     // redator, e os pedaços gravados recomporiam o texto. No log fica só o tamanho de cada fatia.
+    // Monta o evento só com campos conhecidos do ORIGINAL (nunca espalha o redigido, que pode ter nomes de campo
+    // trocados pelo redator e carregar a fatia de texto sob outro nome).
     const step = raw.step_update as Record<string, unknown> | undefined;
     if (step && typeof step.text_delta === "string") {
-      const redactedStep = (ev?.step_update as Record<string, unknown> | undefined) ?? {};
-      return JSON.stringify({ ...(ev ?? {}), step_update: { ...redactedStep, text_delta: { omitted: true, chars: step.text_delta.length } } });
+      const pick = (k: string, ok: (v: unknown) => boolean) => (ok(step[k]) ? { [k]: step[k] } : {});
+      const word = (v: unknown) => typeof v === "string" && /^[A-Za-z_]{1,40}$/.test(v);
+      return JSON.stringify({ event: "step_update", step_update: {
+        ...pick("step_index", (v) => Number.isInteger(v)), ...pick("state", word), ...pick("step_type", word),
+        ...pick("duration_seconds", (v) => typeof v === "number" && Number.isFinite(v)),
+        text_delta: { omitted: true, chars: step.text_delta.length },
+      } });
     }
   }
   if (provider === "codex") {

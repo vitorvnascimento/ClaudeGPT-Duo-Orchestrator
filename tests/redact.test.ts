@@ -206,4 +206,12 @@ describe("eventos do gemini", () => {
     }
     assert.doesNotMatch(logged.join("\n"), /sk-ant|AAAABBBB|DDDDEEEE/);
   });
+  it("campo renomeado pelo redator não carrega a fatia de texto", () => {
+    const line = JSON.stringify({ event: "step_update", step_update: { conversation_id: "c", step_index: 2, state: "ACTIVE", step_type: "agent_response", text_delta: "PEDACO-SECRETO" } });
+    // Redator hostil: troca o nome do campo (como faria um segredo de ambiente igual a "text_delta").
+    const renamer = (l: string) => l.replaceAll("text_delta", "<redacted>").replaceAll("step_update", "<redacted2>");
+    const out = sanitizeEventLine("gemini", line, renamer);
+    assert.doesNotMatch(out, /PEDACO-SECRETO/);
+    assert.deepEqual(JSON.parse(out), { event: "step_update", step_update: { step_index: 2, state: "ACTIVE", step_type: "agent_response", text_delta: { omitted: true, chars: 14 } } });
+  });
 });

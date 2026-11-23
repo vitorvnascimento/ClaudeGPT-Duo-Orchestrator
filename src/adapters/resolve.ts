@@ -1,5 +1,5 @@
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
-import { delimiter, extname, isAbsolute, join, sep } from "node:path";
+import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
 
 export type Resolved =
   | { ok: true; command: string; prefixArgs: string[]; source: "path" | "config" }
@@ -30,8 +30,9 @@ function npmShimTarget(shim: string, dir: string): Resolved | null {
   if (rels.length !== 1) return null;
   const parts = (rels[0] as string).split("\\");
   if (parts.some((p) => p === "" || p === "." || p === "..")) return null;
-  const target = join(dir, ...parts);
-  if (!target.startsWith(join(dir, "node_modules") + sep) || !isExecutableFile(target)) return null;
+  // Absoluto já aqui: uma entrada relativa do PATH vale para a pasta atual de agora, não para a de quem rodar depois.
+  const target = resolve(join(dir, ...parts));
+  if (!target.startsWith(resolve(join(dir, "node_modules")) + sep) || !isExecutableFile(target)) return null;
   const ext = extname(target).toLowerCase();
   if (ext === ".exe") return { ok: true, command: target, prefixArgs: [], source: "path" };
   if ([".js", ".cjs", ".mjs"].includes(ext)) return { ok: true, command: process.execPath, prefixArgs: [target], source: "path" };
@@ -61,7 +62,7 @@ export function resolveExecutable(name: string, configured?: string[] | null, en
     for (const dir of dirs) {
       for (const ext of exts) {
         const p = join(dir, name + ext);
-        if (isExecutableFile(p)) return { ok: true, command: p, prefixArgs: [], source: "path" };
+        if (isExecutableFile(p)) return { ok: true, command: resolve(p), prefixArgs: [], source: "path" };
       }
       for (const ext of [".cmd", ".bat"]) {
         const p = join(dir, name + ext);
@@ -83,7 +84,7 @@ export function resolveExecutable(name: string, configured?: string[] | null, en
   }
   for (const dir of dirs) {
     const p = join(dir, name);
-    if (isExecutableFile(p)) return { ok: true, command: p, prefixArgs: [], source: "path" };
+    if (isExecutableFile(p)) return { ok: true, command: resolve(p), prefixArgs: [], source: "path" };
   }
   return { ok: false, reason: `${name} não encontrado no PATH` };
 }

@@ -112,9 +112,10 @@ export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], spe
  * config pelo perfil e nas pastas acima da pasta de trabalho); nunca lança: falha vira `error`. */
 /** profileError: recusa local do perfil de sondagem (mensagem do próprio duo, segura para mostrar); `error` pode
  * trazer stderr do agy e nunca vai cru para relatório. */
-export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Capabilities & { error?: string; profileError?: string } {
-  if (platform !== "win32") return probe(resolved, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
-  const launch = { ...resolved, ...launcherFor(resolved) }; // idempotente: já absoluto quando vem da delegação
+export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform, projectRoot: string = process.cwd()): Capabilities & { error?: string; profileError?: string } {
+  // Mesmo lançador da delegação (script do projeto absoluto) nos dois sistemas.
+  const launch = { ...resolved, ...launcherFor(resolved, projectRoot) };
+  if (platform !== "win32") return probe(launch, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
   try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd), "win32"); }
   catch (e) { const msg = (e as Error).message; return { ...capabilitiesFromHelp("", null, AGY_FLAGS, null), error: msg, profileError: msg }; }
 }

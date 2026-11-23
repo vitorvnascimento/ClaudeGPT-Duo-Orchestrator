@@ -42,7 +42,7 @@ function classifyAgyLog(text: string): { method: AuthMethod; detail: string; con
 }
 
 /** opts.cwd: pasta privada onde o `agy models` roda (nunca a pasta do projeto: o agy procura config nas pastas acima). */
-export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, profilePath: string | null, opts: { cwd?: string; platform?: NodeJS.Platform } = {}): AuthCheck {
+export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, profilePath: string | null, opts: { cwd?: string; platform?: NodeJS.Platform; projectRoot?: string } = {}): AuthCheck {
   const { env: clean, removed } = childEnv(env);
   const base = {
     provider: "gemini" as const,
@@ -63,7 +63,7 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const logDir = join(home, ".gemini", "antigravity-cli", "log");
   rmSync(logDir, { recursive: true, force: true });
   // Fora da pasta do projeto, um script relativo do lançador configurado vira absoluto antes de trocar de pasta.
-  const launch = opts.cwd ? launcherFor(resolved) : resolved;
+  const launch = opts.cwd ? launcherFor(resolved, opts.projectRoot) : resolved;
   const agy = [launch.command, ...launch.prefixArgs, "models"];
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, cwd: opts.cwd, timeoutMs: 30_000 });
@@ -102,7 +102,7 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
 
 /** Login sem inferência (agy models) num HOME temporário só desta checagem (não disputa logs nem a limpeza das cadeias). */
 /** conflict: o log trouxe sinais de login diferentes (evidência contra, não falta de evidência). */
-export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, platform: NodeJS.Platform = process.platform): { ok: boolean; method: string; detail: string; conflict: boolean } {
+export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, platform: NodeJS.Platform = process.platform, projectRoot?: string): { ok: boolean; method: string; detail: string; conflict: boolean } {
   let tmpHome: string | null = null;
   try {
     tmpHome = newProbeDir(env, "duo-agy-login-", platform);
@@ -114,7 +114,7 @@ export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg
       const tmp = join(tmpHome, "tmp");
       mkdirSync(work, { recursive: true });
       mkdirSync(tmp, { recursive: true });
-      a = geminiAuthPreflight(resolved, privateProfileEnv(env, { home, tmpDir: tmp }, platform).env, cfg, null, { cwd: work, platform });
+      a = geminiAuthPreflight(resolved, privateProfileEnv(env, { home, tmpDir: tmp }, platform).env, cfg, null, { cwd: work, platform, ...(projectRoot ? { projectRoot } : {}) });
     } else a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null);
     return { ok: a.method === "subscription", method: a.method, detail: a.detail, conflict: (a as { conflict?: boolean }).conflict === true };
   } catch (e) {

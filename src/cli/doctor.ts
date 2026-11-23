@@ -183,7 +183,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     const resolved = resolveExecutable("agy", effectiveCfg.executors.gemini.command, env);
     if (!resolved.ok) providers.gemini = { installed: false, reason: resolved.reason, blockers: [resolved.reason] };
     else {
-      const caps = probeAgy(resolved, env);
+      const caps = probeAgy(resolved, env, process.platform, projectRoot);
       const sandbox = probeSandbox();
       const verified = isVerifiedAgy(caps.rawVersion ?? null, process.platform);
       const blockers: string[] = [];
@@ -202,7 +202,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
       // Login sem inferência (agy models) num HOME temporário só deste diagnóstico (não disputa logs nem a limpeza).
       let auth: { method: string; detail: string } | null = null;
       if (process.platform === "darwin") {
-        const a = geminiLoginProbe(resolved, { ...probeEnv, HOME: env.HOME ?? probeEnv.HOME }, effectiveCfg);
+        const a = geminiLoginProbe(resolved, { ...probeEnv, HOME: env.HOME ?? probeEnv.HOME }, effectiveCfg, process.platform, projectRoot);
         auth = { method: a.method, detail: a.detail };
         if (!a.ok) blockers.push(`login do agy: ${a.method} (${a.detail})`);
       }

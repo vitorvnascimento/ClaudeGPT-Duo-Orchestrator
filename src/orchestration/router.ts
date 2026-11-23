@@ -212,8 +212,8 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       let r: ReturnType<typeof runQuick>;
       try {
         r = process.platform === "win32"
-          ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
-          : runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env: childEnv(env).env });
+          ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
+          : (() => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: childEnv(env).env }); })();
       } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; }
       const v = r.ok ? r.stdout.trim() || null : null;
       if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
@@ -223,14 +223,14 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
         // O binário precisa existir; só o teste aninhado é adiado.
         if (!existsSync(SANDBOX_EXEC)) gReasons.push(`sandbox-exec: ${SANDBOX_EXEC} não encontrado`);
         else gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
-        const login = geminiLoginProbe(resolved, env, cfg);
+        const login = geminiLoginProbe(resolved, env, cfg, process.platform, store.projectRoot);
         if (login.method === "api_key" || login.method === "cloud" || login.conflict) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
         else if (!login.ok) gNotes.push("login do agy não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
       } else {
         // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).
         const sbx = probeSandbox();
         if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
-        const login = geminiLoginProbe(resolved, env, cfg);
+        const login = geminiLoginProbe(resolved, env, cfg, process.platform, store.projectRoot);
         if (!login.ok) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
       }
     }

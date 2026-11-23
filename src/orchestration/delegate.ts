@@ -250,10 +250,10 @@ function runGates(
   if (!found.ok) return { ok: false, reason: `executor indisponível: ${found.reason}` };
   // Gemini: lançador fixado uma vez (executável e script do node absolutos): as sondas, a checagem de login e a
   // execução na worktree usam exatamente o mesmo.
-  const resolved = req.executor === "gemini" ? { ...found, ...launcherFor(found) } : found;
+  const resolved = req.executor === "gemini" ? { ...found, ...launcherFor(found, projectRoot) } : found;
   const { env: probeEnv } = childEnv(env);
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
-    : req.executor === "gemini" ? probeAgy(resolved, env, gem.platform ?? process.platform)
+    : req.executor === "gemini" ? probeAgy(resolved, env, gem.platform ?? process.platform, projectRoot)
     : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
   if (req.executor === "gemini" && !isVerifiedAgy(caps.rawVersion ?? null, gem.platform ?? process.platform, gem.verified)) {
     return { ok: false, reason: `versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar` };

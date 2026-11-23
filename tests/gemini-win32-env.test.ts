@@ -39,7 +39,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { agyConfigAbove, chainStateDir, createPrivateHome, geminiStateRoot, launcherFor, privateProfileEnv, probeRoot, pruneGeminiStates, sweepProbeDirs, withMetadataProfile } from "../src/state/gemini-state.js";
-import { symlinkSync } from "node:fs";
+import { chmodSync, readdirSync, symlinkSync } from "node:fs";
 import { utimesSync } from "node:fs";
 
 const temps: string[] = [];
@@ -170,7 +170,7 @@ describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
     const c = calls().find((x) => x.argv[0] === "models");
     assert.ok(c);
     assertPrivate(c, project, REAL);
-    assert.match(slash(c.cwd), /gemini-state\/.*\/catalog\/home\/work-[^/]+$/);
+    assert.match(slash(c.cwd), /gemini-state\/probes\/duo-agy-work-[^/]+$/);
     assert.ok(slash(c.cwd).startsWith(`${slash(REAL.LOCALAPPDATA)}/duo/gemini-state/`), "catálogo na raiz do Windows (LOCALAPPDATA)");
     assert.equal(existsSync(String(c.cwd)), false); // pasta nova a cada consulta, apagada depois
   });
@@ -206,8 +206,11 @@ describe("lançador e raiz antiga no Windows", () => {
     mkdirSync(join(base, "dev"));
     assert.deepEqual(launcherFor({ command: "/usr/bin/node", prefixArgs: ["tools/agy.mjs", "--profile", "dev"] }, base).prefixArgs, [join(base, "tools", "agy.mjs"), "--profile", "dev"]);
     assert.deepEqual(launcherFor({ command: "/opt/wrapper", prefixArgs: ["dev"] }, base).prefixArgs, ["dev"]);
-    writeFileSync(join(base, "tools", "agy.exe"), "");
-    assert.equal(launcherFor({ command: join("tools", "agy.exe"), prefixArgs: [] }, base).command, join(base, "tools", "agy.exe"));
+    // Bases separadas: o executável do PATH relativo resolve na pasta atual; o script configurado, na raiz do projeto.
+    const cwdBase = tempDir("duo-w32-cmdbase-");
+    mkdirSync(join(cwdBase, "tools")); writeFileSync(join(cwdBase, "tools", "agy.exe"), "");
+    const l = launcherFor({ command: join("tools", "agy.exe"), prefixArgs: [] }, base, cwdBase);
+    assert.equal(l.command, join(cwdBase, "tools", "agy.exe"));
   });
 
   it("prune no Windows também limpa o estado da raiz antiga (XDG/.local/state)", () => {
@@ -261,13 +264,48 @@ describe("limpeza: dono incerto e raiz nova indisponível", () => {
   });
 });
 
-describe("pasta de sondas redirecionada", () => {
-  it("probes como link/junction é recusada antes de criar ou limpar", { skip: process.platform === "win32" }, () => {
-    const base = tempDir("duo-w32-junction-");
+describe("pasta de estado redirecionada", () => {
+  // Link em cada nível abaixo do LOCALAPPDATA: duo, gemini-state e probes.
+  for (const level of ["duo", "gemini-state", "probes"] as const) {
+    it(`link em ${level} é recusado antes de criar qualquer coisa no destino`, { skip: process.platform === "win32" }, () => {
+      const base = tempDir("duo-w32-junction-");
+      const local = join(base, "local");
+      const chain = ["duo", "gemini-state", "probes"];
+      const upTo = chain.slice(0, chain.indexOf(level));
+      mkdirSync(join(local, ...upTo), { recursive: true });
+      const outside = join(base, "fora"); mkdirSync(outside);
+      symlinkSync(outside, join(local, ...upTo, level));
+      assert.throws(() => probeRoot({ LOCALAPPDATA: local }, "win32"), /redirecionada/);
+      assert.deepEqual(readdirSync(outside), [], "nada criado no destino do link");
+    });
+  }
+
+  it("prune não lista nem apaga cadeias através de uma raiz redirecionada", { skip: process.platform === "win32" }, () => {
+    const base = tempDir("duo-w32-prune-junction-");
     const local = join(base, "local");
-    mkdirSync(join(local, "duo", "gemini-state"), { recursive: true });
-    const outside = join(base, "fora"); mkdirSync(outside);
-    symlinkSync(outside, join(local, "duo", "gemini-state", "probes"));
-    assert.throws(() => probeRoot({ LOCALAPPDATA: local }, "win32"), /redirecionada/);
+    mkdirSync(join(local, "duo"), { recursive: true });
+    const target = join(base, "alvo"); mkdirSync(target);
+    symlinkSync(target, join(local, "duo", "gemini-state"));
+    const project = join(base, "proj"); mkdirSync(project);
+    // Cadeia já existente no destino do link (criada à mão: o chainStateDir do Windows recusaria o caminho).
+    const chain = join(target, "abc", "c1");
+    mkdirSync(chain, { recursive: true });
+    writeFileSync(join(chain, "owner.json"), JSON.stringify({ projectRoot: project, chainId: "c1" }));
+    assert.throws(() => chainStateDir(project, "c2", { LOCALAPPDATA: local }, "win32"), /redirecionada/);
+    const errors: string[] = [];
+    pruneGeminiStates({ classify: () => "orphan", onScanError: (w, r) => errors.push(`${w}: ${r}`) }, { LOCALAPPDATA: local, HOME: base, XDG_STATE_HOME: join(base, "xdg") }, "win32");
+    assert.ok(existsSync(chain), "cadeia no destino do link continua");
+    assert.ok(errors.some((e) => /raiz do estado/.test(e)));
+  });
+
+  it("raiz antiga inacessível é reportada, não tratada como ausente", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+    const base = tempDir("duo-w32-legacy-eacces-");
+    const xdg = join(base, "xdg"); mkdirSync(join(xdg, "duo", "gemini-state"), { recursive: true });
+    chmodSync(xdg, 0o000);
+    try {
+      const errors: string[] = [];
+      pruneGeminiStates({ classify: () => "orphan", onScanError: (w, r) => errors.push(`${w}: ${r}`) }, { HOME: base, XDG_STATE_HOME: xdg, LOCALAPPDATA: join(base, "local") }, "win32");
+      assert.ok(errors.some((e) => /raiz antiga/.test(e)), JSON.stringify(errors));
+    } finally { chmodSync(xdg, 0o700); }
   });
 });

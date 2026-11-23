@@ -22,7 +22,7 @@ import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { classifyErrorText } from "./types.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
-import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, privateProfileEnv, removeProbeDir, withMetadataProfile } from "../state/gemini-state.js";
+import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir, withMetadataProfile } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation" | "computer_use";
@@ -459,12 +459,13 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
       // agy acima dela (o agy procura nas pastas acima). O script de um lançador relativo vira absoluto antes.
       const tmp = join(home, "tmp");
       mkdirSync(tmp, { recursive: true });
-      const work = mkdtempSync(join(home, "work-"));
+      // Pasta de trabalho na raiz de sondas (com dono): se a limpeza falhar, sweepProbeDirs a recolhe depois.
+      const work = newProbeDir(baseEnv, "duo-agy-work-", platform);
       try {
         const found = agyConfigAbove(work);
         if (found) throw Object.assign(new Error("config do agy acima"), { code: `config do agy acima: ${basename(found)}` });
         // Mesma base do resolveExecutable (a pasta atual do duo) e do cliVersions: os dois usam o mesmo executável.
-        const launch = launcherFor(resolved);
+        const launch = launcherFor(resolved, cwd);
         r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000 });
       } finally { removeProbeDir(work); }
     } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
@@ -494,14 +495,14 @@ export async function discover(
   const [claude, codex, gemini] = await Promise.all([discoverClaude(cfg, cwd, baseEnv, env), discoverCodex(cfg, cwd, baseEnv, env, opts.appServerTimeoutMs), discoverGemini(cfg, cwd, baseEnv, env, platform)]);
   return {
     discoveredAt: new Date().toISOString(),
-    cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv, platform),
+    cliVersions: opts.cliVersions ?? cliVersions(cfg, baseEnv, platform, cwd),
     ...(inCodexSandbox(baseEnv) ? { discoveredInSandbox: true } : {}),
     providers: { claude: withLastKnownGood("claude", claude, previous), codex: withLastKnownGood("codex", codex, previous), gemini: withLastKnownGood("gemini", gemini, previous) },
   };
 }
 
 /** Versão instalada: usa a mesma execução curta e ambiente filtrado da detecção de caps. */
-export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Catalog["cliVersions"] {
+export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform, projectRoot: string = process.cwd()): Catalog["cliVersions"] {
   const { env } = childEnv(baseEnv);
   const versions: Catalog["cliVersions"] = { claude: null, codex: null, gemini: null };
   for (const p of ["claude", "codex"] as const) {
@@ -517,8 +518,8 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform
       let r: ReturnType<typeof runQuick>;
       try {
         r = platform === "win32"
-          ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
-          : runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env });
+          ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
+          : (() => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env }); })();
       } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; } // perfil de sondagem indisponível: versão desconhecida
       // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.
       const out = r.ok ? r.stdout.trim() : "";
@@ -583,7 +584,7 @@ export async function loadCatalog(store: Store, cfg: DuoConfig, opts: { refresh?
     if (isObj(valid.cliVersions)) valid.cliVersions = Object.assign({ claude: null, codex: null, gemini: null }, valid.cliVersions);
   }
   const env = opts.env ?? process.env;
-  const versions = cliVersions(cfg, env);
+  const versions = cliVersions(cfg, env, process.platform, store.projectRoot);
   // Sem mapa de versões válido (ausente, lista, texto) o cache nunca é reaproveitado.
   const versionsMatch = !!valid && isObj(valid.cliVersions) && (["claude", "codex", "gemini"] as const).every((p) => (valid.cliVersions[p] ?? null) === versions[p]);
   const upgradeFromSandbox = Boolean(valid?.discoveredInSandbox) && !inCodexSandbox(env);

@@ -39,8 +39,16 @@ export function geminiStateRoot(env: NodeJS.ProcessEnv = process.env, platform: 
 
 export function chainStateDir(projectRoot: string, chainId: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   if (!/^[A-Za-z0-9._-]{1,120}$/.test(chainId)) throw new Error(`chainId inválido: ${chainId}`);
-  const dir = join(geminiStateRoot(env, platform), createHash("sha256").update(projectRoot).digest("hex").slice(0, 12), chainId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const hash = createHash("sha256").update(projectRoot).digest("hex").slice(0, 12);
+  let dir: string;
+  if (platform === "win32") {
+    // Windows: cada nível desde o LOCALAPPDATA conferido antes de escrever (nada de owner.json num destino redirecionado).
+    const { base, parts } = win32StateChain(env);
+    dir = safeDirChain(base, [...parts, hash, chainId], true);
+  } else {
+    dir = join(geminiStateRoot(env, platform), hash, chainId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
   const owner = join(dir, "owner.json");
   // "wx": dois processos criando a mesma cadeia ao mesmo tempo; o segundo encontra o arquivo e segue.
   if (!existsSync(owner)) writeOnce(owner, `${JSON.stringify({ projectRoot, chainId, createdAt: new Date().toISOString() })}\n`);
@@ -102,13 +110,14 @@ export function privateProfileEnv(base: NodeJS.ProcessEnv, profile: { home: stri
 /** Lançador do agy para rodar fora da pasta do projeto: só quando o comando é o node, o script (primeiro argumento,
  * relativo e existente) vira absoluto contra a pasta onde o duo resolveu a config. Os demais argumentos ficam
  * literais, iguais aos da execução real. */
-export function launcherFor(resolved: { command: string; prefixArgs: string[] }, base: string = process.cwd()): { command: string; prefixArgs: string[] } {
-  // O executável achado por uma entrada relativa do PATH (tools\agy.exe) também vira absoluto.
-  const command = !isAbsolute(resolved.command) && existsSync(resolve(base, resolved.command)) ? resolve(base, resolved.command) : resolved.command;
+export function launcherFor(resolved: { command: string; prefixArgs: string[] }, scriptBase: string = process.cwd(), commandBase: string = process.cwd()): { command: string; prefixArgs: string[] } {
+  // Executável achado por uma entrada relativa do PATH (tools\agy.exe): relativo à pasta atual, onde foi achado.
+  const command = !isAbsolute(resolved.command) && existsSync(resolve(commandBase, resolved.command)) ? resolve(commandBase, resolved.command) : resolved.command;
+  // Script configurado no projeto (["node", "tools/agy.mjs"]): relativo à raiz do projeto, como na execução real.
   const [first, ...rest] = resolved.prefixArgs;
   const isNode = /^node(\.exe)?$/i.test(basename(command));
-  if (!isNode || first === undefined || first.startsWith("-") || isAbsolute(first) || !existsSync(resolve(base, first))) return { command, prefixArgs: [...resolved.prefixArgs] };
-  return { command, prefixArgs: [resolve(base, first), ...rest] };
+  if (!isNode || first === undefined || first.startsWith("-") || isAbsolute(first) || !existsSync(resolve(scriptBase, first))) return { command, prefixArgs: [...resolved.prefixArgs] };
+  return { command, prefixArgs: [resolve(scriptBase, first), ...rest] };
 }
 
 /** Nomes de config que o agy procura em todas as pastas acima da pasta de trabalho (fatos do Windows, Fase 0). */
@@ -134,22 +143,53 @@ export function probeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = pr
   return root;
 }
 
-/** A pasta probes precisa ser filha real da raiz de estado: nem ela nem a raiz podem ser link/junction (senão a sonda
- * gravaria o perfil, ou a limpeza apagaria, fora da árvore privada). */
-function checkedProbeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, create: boolean): string {
-  const state = geminiStateRoot(env, platform);
-  const root = joinFor(state, "probes");
-  if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
-  if (lstatSync(state).isSymbolicLink() || lstatSync(root).isSymbolicLink() || realpathSync(root) !== join(realpathSync(state), "probes")) {
-    throw new Error("pasta de sondas do gemini redirecionada (link ou junction): recusada");
+/**
+ * Anda de uma base confiável (o LOCALAPPDATA do dono) pelos componentes `duo`, `gemini-state`, ... um a um: cada um,
+ * se existe, tem de ser pasta real (nem link nem junction) filha real da anterior; só então o próximo é criado. Assim
+ * nada é criado nem apagado através de um redirecionamento em qualquer nível.
+ */
+function safeDirChain(base: string, parts: string[], create: boolean): string {
+  // A base (LOCALAPPDATA do dono) é confiável: pode ser criada de uma vez se ainda não existe.
+  if (create) mkdirSync(base, { recursive: true });
+  let cur = base;
+  for (const part of parts) {
+    const next = joinFor(cur, part);
+    let st;
+    try { st = lstatSync(next); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw e;
+      // Outro processo pode criar no mesmo instante: EEXIST segue para a mesma conferência abaixo.
+      try { mkdirSync(next, { mode: 0o700 }); } catch (e2) { if ((e2 as NodeJS.ErrnoException).code !== "EEXIST") throw e2; }
+      st = lstatSync(next);
+    }
+    if (st.isSymbolicLink() || !st.isDirectory() || realpathSync(next) !== join(realpathSync(cur), part)) {
+      throw new Error(`pasta de estado do gemini redirecionada (link ou junction): ${part}`);
+    }
+    cur = next;
   }
-  return root;
+  return cur;
+}
+
+/** Base confiável e componentes da raiz de estado no Windows (LOCALAPPDATA\duo\gemini-state). */
+function win32StateChain(env: NodeJS.ProcessEnv): { base: string; parts: string[] } {
+  const root = geminiStateRoot(env, "win32");
+  return { base: root.replace(/[\\/]duo[\\/]gemini-state$/, ""), parts: ["duo", "gemini-state"] };
+}
+
+/** A pasta probes, validada componente a componente desde o LOCALAPPDATA (ver safeDirChain). */
+function checkedProbeRoot(env: NodeJS.ProcessEnv, _platform: NodeJS.Platform, create: boolean): string {
+  const { base, parts } = win32StateChain(env);
+  return safeDirChain(base, [...parts, "probes"], create);
 }
 
 /** Remoção com novas tentativas (no Windows um arquivo ainda aberto dá EBUSY/EPERM por um instante). Falha que
  * persiste não troca o resultado da sonda: a pasta fica para a limpeza dos abandonados. */
 export function removeProbeDir(dir: string): void {
-  try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* fica para sweepProbeDirs */ }
+  const opts = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+  try {
+    // O probe.json (dono) sai por último: se algo travar antes, a pasta continua reconhecível para sweepProbeDirs.
+    for (const n of readdirSync(dir)) if (n !== "probe.json") rmSync(join(dir, n), opts);
+    rmSync(dir, opts);
+  } catch { /* fica para sweepProbeDirs */ }
 }
 
 /** Perfil descartável de sonda com dono (probe.json com o PID): se a ponte morrer antes do finally, a próxima sonda
@@ -171,7 +211,7 @@ export function sweepProbeDirs(root: string, minAgeMs = 10 * 60_000): string[] {
   let names: string[] = [];
   try { names = readdirSync(root); } catch { return removed; }
   for (const n of names) {
-    if (!/^duo-agy-(meta|login)-/.test(n)) continue;
+    if (!/^duo-agy-(meta|login|work)-/.test(n)) continue;
     const dir = join(root, n);
     try {
       if (!lstatSync(dir).isDirectory()) continue;
@@ -264,7 +304,8 @@ function anyAttemptAlive(chainDir: string): boolean {
 
 export function listGeminiStates(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): { dir: string; projectRoot: string; chainId: string; mtimeMs: number }[] {
   const root = geminiStateRoot(env, platform);
-  if (!existsSync(root)) return [];
+  // Só "não existe" (ENOENT) é raiz ausente; acesso negado ou erro de E/S propaga (o prune reporta).
+  try { readdirSync(root); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
   const out: { dir: string; projectRoot: string; chainId: string; mtimeMs: number }[] = [];
   for (const h of readdirSync(root)) {
     const hd = join(root, h);
@@ -392,7 +433,13 @@ export function pruneGeminiStates(
   // Cada raiz por si: a nova indisponível (LOCALAPPDATA/USERPROFILE inválidos) não impede limpar a antiga.
   // Raiz antiga ausente não é erro (listGeminiStates devolve vazio); falha de leitura de qualquer raiz é reportada.
   const listed = (plat: NodeJS.Platform) => { try { return listGeminiStates(env, plat); } catch (e) { scanError(plat === "linux" && platform === "win32" ? "raiz antiga do estado" : "raiz do estado", e); return []; } };
-  for (const plat of roots) for (const s of listed(plat)) {
+  // Raiz nova redirecionada (link/junction em duo ou gemini-state): nada dela é listado nem apagado.
+  let currentUnsafe = false;
+  if (platform === "win32") {
+    try { const { base, parts } = win32StateChain(env); safeDirChain(base, parts, false); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") { currentUnsafe = true; scanError("raiz do estado", e); } }
+  }
+  for (const plat of roots) for (const s of (plat === platform && currentUnsafe ? [] : listed(plat))) {
     if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) continue;
     // Só apaga o caminho validado (nome, hash do projeto, dono, sem link), conferido de novo com a trava pega.
     if (!validChainDir(s.dir, s.projectRoot, s.chainId, env, plat)) continue;

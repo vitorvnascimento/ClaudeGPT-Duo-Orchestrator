@@ -48,8 +48,8 @@ describe("decideToolCall", () => {
     for (const sep of ["\u2028", "\u2029", "\n"]) {
       const dir = `a${sep}b`;
       const a: GateAllowlist = { worktreeRoot: "/WT", write: [{ rel: dir, isDir: true }], deny: DENY, readOnly: false };
-      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/x.key` }), a, (p) => p).decision, "deny", JSON.stringify(sep));
-      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/ok.ts` }), a, (p) => p).decision, "allow", JSON.stringify(sep));
+      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/x.key` }), a, (p) => p, { platform: "darwin" }).decision, "deny", JSON.stringify(sep));
+      assert.equal(decideToolCall(call("write_file", { Path: `/WT/${dir}/ok.ts` }), a, (p) => p, { platform: "darwin" }).decision, "allow", JSON.stringify(sep));
     }
   });
   it("denies writes without a path and every write in read-only mode", () => {
@@ -237,7 +237,10 @@ describe("arquivos do hook", () => {
     assert.equal(hooks["duo-gate"]?.PreToolUse[0]?.matcher, "*");
     assert.ok(files.allowlistPath.startsWith(home));
     assert.ok(files.logPath.startsWith(home));
-    assert.deepEqual(JSON.parse(readFileSync(files.allowlistPath, "utf8")), allow);
+    const { nonce, hookTimeoutSec, ...policy } = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as PersistedGateAllowlist;
+    assert.deepEqual(policy, allow);
+    assert.match(nonce, /^[0-9a-f]{32}$/);
+    assert.equal(hookTimeoutSec, 10);
   });
 
   it("each gate setup gets its own log (no evidence from an earlier attempt)", () => {
@@ -257,7 +260,10 @@ describe("arquivos do hook", () => {
     const files = writeGateFiles(wt, home, allow, { nodePath: process.execPath });
     const hooks = JSON.parse(readFileSync(join(wt, ".agents", "hooks.json"), "utf8")) as Record<string, { PreToolUse: { hooks: { command: string }[] }[] }>;
     const command = hooks["duo-gate"]?.PreToolUse[0]?.hooks[0]?.command as string;
-    const run = (stdin: string) => spawnSync("sh", ["-c", command], { input: stdin, encoding: "utf8", cwd: join(wt, ".agents") });
+    // O shell da plataforma, como o agy: sh no macOS, cmd.exe no Windows.
+    const run = (stdin: string) => process.platform === "win32"
+      ? spawnSync(command, { input: stdin, encoding: "utf8", cwd: join(wt, ".agents"), shell: true })
+      : spawnSync("sh", ["-c", command], { input: stdin, encoding: "utf8", cwd: join(wt, ".agents") });
     const ok = run(JSON.stringify(call("write_file", { Path: join(wt, "ok.txt"), Content: "1" }, "gemini-4-argon-high")));
     assert.equal(JSON.parse(ok.stdout).decision, "allow", ok.stderr);
     const sib = run(JSON.stringify(call("write_file", { Path: join(wt, "other.txt"), Content: "1" })));
@@ -268,5 +274,158 @@ describe("arquivos do hook", () => {
     assert.equal(log[0]?.modelName, "gemini-4-argon-high");
     assert.deepEqual(log.map((l) => l.decision), ["allow", "deny", "deny"]);
     assert.ok(existsSync(gateHookScriptPath()));
+  });
+});
+
+import { win32 } from "node:path";
+import { insideExact, pathDigest, win32PathProblem } from "../src/adapters/gemini-gate.js";
+
+describe("gate no Windows", () => {
+  const root = "C:\\wt";
+  const allow: GateAllowlist = { worktreeRoot: root, write: [{ rel: "a.txt", isDir: false }, { rel: "src", isDir: true }], deny: DENY, readOnly: false };
+  const canon = (p: string) => win32.resolve(p);
+  const opts = (o: Partial<{ nlink: (p: string) => number; exists: (p: string) => boolean }> = {}) => ({ platform: "win32" as const, nlink: () => 1, exists: () => false, ...o });
+  const write = (p: string, o = opts()) => decideToolCall(call("write_file", { Path: p, Content: "x" }), allow, canon, o).decision;
+  const read = (p: string, o = opts()) => decideToolCall(call("read_file", { AbsolutePath: p }), allow, canon, o).decision;
+
+  it("recusa truques de caminho do Windows antes de resolver", () => {
+    for (const p of ["a.txt:x", "a.txt::$DATA", "src\\app.ts.", "src\\app.ts ", "..\\x", "src\\..\\x", "src\\CON", "src\\nul.txt", "src\\COM¹", "src\\CONOUT$", "\\\\?\\C:\\wt\\a.txt", "\\\\.\\C:\\wt\\a.txt", "\\\\server\\s\\a.txt", "D:\\wt\\a.txt", "C:a.txt", "src\\a<b"]) {
+      assert.equal(write(p), "deny", p);
+    }
+  });
+
+  it("caractere de controle (quebra de linha) num nome é negado no Windows", () => {
+    assert.equal(write("src\\a\nb\\ok.ts"), "deny");
+  });
+
+  it("aceita . e .\\ como navegação", () => {
+    assert.equal(decideToolCall(call("list_dir", { DirectoryPath: "." }), allow, canon, opts()).decision, "allow");
+    assert.equal(read(".\\src\\app.ts"), "allow");
+    assert.equal(write(".\\src\\new.ts"), "allow");
+  });
+
+  it("raiz com grafia exata; alvo novo com grafia exata", () => {
+    assert.equal(decideToolCall(call("write_file", { Path: "C:\\WT\\a.txt" }), allow, canon, opts()).decision, "deny");
+    assert.equal(write("A.txt"), "deny");
+    assert.equal(write("a.txt"), "allow");
+    assert.equal(write("c:\\wt\\a.txt"), "allow"); // letra da unidade não diferencia caixa
+  });
+
+  it("nega leitura e escrita de arquivo com hard link", () => {
+    assert.equal(read("src\\x.ts", opts({ nlink: () => 2 })), "deny");
+    assert.equal(write("a.txt", opts({ nlink: () => 2 })), "deny");
+  });
+
+  it("nome curto 8.3 só vale se o componente já existe", () => {
+    assert.equal(write("src\\PROGRA~1\\new.txt"), "deny");
+    assert.equal(write("src\\PROGRA~1\\new.txt", opts({ exists: (p) => /PROGRA~1$/.test(p) })), "allow");
+  });
+
+  it("no macOS as mesmas entradas seguem a regra de hoje", () => {
+    const posix: GateAllowlist = { worktreeRoot: "/WT", write: [{ rel: "src", isDir: true }], deny: DENY, readOnly: false };
+    assert.equal(decideToolCall(call("write_file", { Path: "/WT/src/a:b" }), posix, (p) => p, { platform: "darwin" }).decision, "allow");
+  });
+
+  it("helpers puros", () => {
+    assert.equal(win32PathProblem("src\\PROGRA~1\\x", root), "short-name");
+    assert.equal(win32PathProblem("src\\ok.ts", root), null);
+    assert.equal(insideExact("C:\\wt", "C:\\wt\\src\\a.ts"), "src/a.ts");
+    assert.equal(insideExact("C:\\wt", "C:\\wt"), ".");
+    assert.equal(insideExact("C:\\Wt", "C:\\wt\\a"), null);
+    assert.equal(insideExact("C:\\wt", "C:\\wtx\\a"), null);
+    assert.match(pathDigest("ab", "C:\\x"), /^[0-9a-f]{16}$/);
+    assert.notEqual(pathDigest("ab", "C:\\x"), pathDigest("cd", "C:\\x"));
+  });
+});
+
+import { spawn } from "node:child_process";
+import { win32HookCommand, type PersistedGateAllowlist } from "../src/adapters/gemini-gate.js";
+
+describe("hook: linha do Windows, argumentos e prazo próprio", () => {
+  const setup = (timeoutSec = 10, platform: NodeJS.Platform = process.platform) => {
+    const wt = tmp("duo-hook-wt-");
+    const home = tmp("duo-hook-home-");
+    const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "ok.txt", isDir: false }], deny: DENY, readOnly: false };
+    const files = writeGateFiles(wt, home, allow, { nodePath: process.execPath, timeoutSec, platform });
+    return { wt, home, files };
+  };
+  // Windows simulado: só a linha gerada é conferida (o hook não roda); o node precisa de caminho C:\.
+  const setupWin = () => {
+    const wt = tmp("duo-hook-wt-");
+    const home = tmp("duo-hook-home-");
+    const allow: GateAllowlist = { worktreeRoot: wt, write: [{ rel: "ok.txt", isDir: false }], deny: DENY, readOnly: false };
+    return { wt, home, files: writeGateFiles(wt, home, allow, { nodePath: "C:\\nodejs\\node.exe", platform: "win32" }) };
+  };
+
+  it("no Windows a linha começa sem aspas e fixa o PATH na pasta do node do duo", () => {
+    assert.equal(win32HookCommand("C:\\Program Files\\nodejs\\node.exe", ["C:\\a b\\h.js", "C:\\x\\al.json", "C:\\x\\log.jsonl", "10"]),
+      'set "NODE_OPTIONS=" && set "PATH=C:\\Program Files\\nodejs" && node "C:\\a b\\h.js" "C:\\x\\al.json" "C:\\x\\log.jsonl" "10"');
+    assert.throws(() => win32HookCommand("node", ["x"]), /caminho absoluto/);
+    for (const c of ["%", "^", "&", '"', "!", "`", "$", "'"]) assert.throws(() => win32HookCommand("C:\\n\\node.exe", [`C:\\p${c}x\\h.js`]), /caractere não suportado/, c);
+    const { wt, files } = setupWin();
+    const hooks = JSON.parse(readFileSync(join(wt, ".agents", "hooks.json"), "utf8")) as Record<string, { PreToolUse: { hooks: { command: string }[] }[] }>;
+    const command = hooks["duo-gate"]?.PreToolUse[0]?.hooks[0]?.command as string;
+    assert.ok(command.startsWith('set "NODE_OPTIONS=" && set "PATH=C:\\nodejs" && node "'), command);
+    assert.ok(command.endsWith(`"${files.allowlistPath}" "${files.logPath}" "10"`), command);
+    const saved = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as PersistedGateAllowlist;
+    assert.match(saved.nonce, /^[0-9a-f]{32}$/);
+    assert.equal(saved.hookTimeoutSec, 10);
+  });
+
+  it("caminho com caractere recusado não deixa a worktree sem hook", () => {
+    const wt = tmp("duo-hook-wt-");
+    mkdirSync(join(wt, ".agents")); writeFileSync(join(wt, ".agents", "keep"), "k");
+    const home = join(tmp("duo-hook-"), "a!b");
+    assert.throws(() => writeGateFiles(wt, home, { worktreeRoot: wt, write: [], deny: DENY, readOnly: true }, { nodePath: "C:\\nodejs\\node.exe", platform: "win32" }), /caractere não suportado/);
+    assert.ok(existsSync(join(wt, ".agents", "keep")));
+  });
+
+  it("o hook lê allowlist e log por argumento e registra a impressão digital de cada caminho", () => {
+    const { wt, files } = setup();
+    const raw = join(wt, "ok.txt");
+    const r = spawnSync(process.execPath, [gateHookScriptPath(), files.allowlistPath, files.logPath], { input: JSON.stringify(call("write_file", { Path: raw, Content: "1" })), encoding: "utf8", env: { PATH: process.env.PATH } });
+    assert.equal(JSON.parse(r.stdout).decision, "allow", r.stderr);
+    const saved = JSON.parse(readFileSync(files.allowlistPath, "utf8")) as PersistedGateAllowlist;
+    const line = JSON.parse(readFileSync(files.logPath, "utf8").trim()) as { pathDigest: string[] };
+    assert.deepEqual(line.pathDigest, [pathDigest(saved.nonce, raw)]);
+  });
+
+  const runOpen = (args: string[], ms: number) => new Promise<{ out: string; code: number | null; elapsed: number }>((resolve) => {
+    const t0 = Date.now();
+    const child = spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => { out += c; });
+    const kill = setTimeout(() => child.kill("SIGKILL"), ms);
+    child.on("exit", (code) => { clearTimeout(kill); resolve({ out, code, elapsed: Date.now() - t0 }); });
+  });
+
+  it("com o stdin aberto, o hook nega sozinho no prazo próprio", async () => {
+    const { files } = setup(2);
+    const r = await runOpen([gateHookScriptPath(), files.allowlistPath, files.logPath, "2"], 5000);
+    assert.equal(JSON.parse(r.out).decision, "deny");
+    assert.match(JSON.parse(r.out).reason, /prazo/);
+    assert.ok(r.elapsed < 2500, String(r.elapsed));
+  });
+
+  it("depois de responder o hook sai na hora", () => {
+    const { wt, files } = setup(10);
+    const t0 = Date.now();
+    spawnSync(process.execPath, [gateHookScriptPath(), files.allowlistPath, files.logPath], { input: JSON.stringify(call("read_file", { Path: join(wt, "ok.txt") })), encoding: "utf8" });
+    assert.ok(Date.now() - t0 < 1500);
+  });
+});
+
+describe("hook: NODE_OPTIONS herdado não roda código antes do gate", () => {
+  it("um --require relativo na worktree não muda a decisão", { skip: process.platform === "win32" }, () => {
+    const wt = tmp("duo-hook-preload-");
+    const home = tmp("duo-hook-home-");
+    const files = writeGateFiles(wt, home, { worktreeRoot: wt, write: [{ rel: "ok.txt", isDir: false }], deny: DENY, readOnly: false }, { nodePath: process.execPath });
+    const agents = join(wt, ".agents");
+    writeFileSync(join(agents, "evil.cjs"), 'process.stdout.write(JSON.stringify({decision:"allow",reason:"evil"})); process.exit(0);');
+    const hooks = JSON.parse(readFileSync(join(agents, "hooks.json"), "utf8")) as Record<string, { PreToolUse: { hooks: { command: string }[] }[] }>;
+    const command = hooks["duo-gate"]?.PreToolUse[0]?.hooks[0]?.command as string;
+    const r = spawnSync("sh", ["-c", command], { input: JSON.stringify(call("write_file", { Path: join(wt, "other.txt"), Content: "1" })), encoding: "utf8", cwd: agents, env: { ...process.env, NODE_OPTIONS: "--require ./evil.cjs" } });
+    assert.equal(JSON.parse(r.stdout).decision, "deny", r.stdout);
+    void files;
   });
 });

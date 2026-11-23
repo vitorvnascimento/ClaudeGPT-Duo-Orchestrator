@@ -93,11 +93,6 @@ export function parseCsvLine(line) {
   return out;
 }
 
-const under = (path, prefixes) => {
-  const low = path.toLowerCase();
-  return prefixes.some((p) => { const q = p.toLowerCase().replace(/\\+$/, ""); return low === q || low.startsWith(`${q}\\`); });
-};
-
 /** Analisa o rastreio do Process Monitor linha a linha. Só conta eventos dos processos lançados pela sonda e dos
  * descendentes deles, cada um da criação até a saída (um PID reaproveitado antes ou depois não entra). Um lançamento
  * só entra na árvore quando a própria sonda (probePid) o cria.
@@ -105,11 +100,41 @@ const under = (path, prefixes) => {
  * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
 /** Resultado do Process Monitor que diz que o caminho não existe: é só uma procura, não uma leitura. */
 const NOT_FOUND = /NOT FOUND|NO SUCH|NAME INVALID|NOT A DIRECTORY|BAD NETWORK/i;
+/** Resultados que provam que a operação aconteceu (listar até o fim ou ler até o fim também são sucesso). */
+const SUCCESS = /^(SUCCESS|BUFFER OVERFLOW|NO MORE (FILES|ENTRIES)|END OF FILE|REPARSE)$/i;
 
-/** forbidden: pastas de config/estado do dono. configNames: nomes de arquivo de config do agy que contam em qualquer
- * pasta fora da permitida (por exemplo codeium.yaml achado numa pasta-mãe). Só acesso com sucesso vira acesso
- * proibido; caminho inexistente vira "lookup" (o agy procurou e não achou). */
-export function createTraceAnalyzer({ probePid, launches, forbidden, allowed, configNames = null }) {
+const CONFIG_DIR = /antigravity|gemini|codeium|windsurf/i;
+const HOME_CONFIG = /^\.(gemini|codeium|antigravity|windsurf)/i;
+const CONFIG_FILE = /^(\.?codeium\.ya?ml|GEMINI\.md|AGENTS\.md)$/i;
+
+/** Política do F5 (design, emenda B), decidida só pelo caminho registrado — nunca pelo disco de agora, para que o
+ * mesmo CSV dê sempre o mesmo veredito. Ordem: raiz desta execução permitida; arquivo de config do agy proibido em
+ * qualquer outro lugar; pastas de instalação do agy e do Node permitidas; config/estado do dono e pastas privadas de
+ * outras execuções proibidos; o resto não importa. */
+export function tracePolicy({ home, appData, localAppData, runRoot, agyPath, nodeDir, probeBase = localAppData && win32.join(localAppData, "duo-probe-win") }) {
+  const low = (p) => String(p).toLowerCase().replace(/\\+$/, "");
+  const inside = (path, base) => { if (!base) return false; const b = low(base); const q = low(path); return q === b || q.startsWith(`${b}\\`); };
+  const firstUnder = (path, base) => (inside(path, base) && low(path) !== low(base) ? String(path).slice(String(base).replace(/\\+$/, "").length + 1).split("\\")[0] : null);
+  const agyDir = agyPath ? win32.dirname(agyPath) : null;
+  // Só o layout oficial (%LOCALAPPDATA%\agy\bin) libera a pasta acima de bin; outra pasta bin libera só ela mesma.
+  const agyRoot = agyDir && localAppData && low(agyDir) === low(win32.join(localAppData, "agy", "bin")) ? win32.join(localAppData, "agy") : agyDir;
+  return (path) => {
+    if (!path) return "other";
+    if (inside(path, runRoot)) return "allowed";
+    if (CONFIG_FILE.test(win32.basename(path))) return "forbidden";
+    if (inside(path, agyRoot) || inside(path, nodeDir)) return "allowed";
+    if (inside(path, probeBase)) return "forbidden";
+    const h = firstUnder(path, home);
+    if (h && HOME_CONFIG.test(h)) return "forbidden";
+    for (const base of [appData, localAppData]) { const c = firstUnder(path, base); if (c && CONFIG_DIR.test(c)) return "forbidden"; }
+    return "other";
+  };
+}
+
+/** policy(path) → "allowed" | "forbidden" | "other". Acesso proibido só com resultado de sucesso; caminho inexistente
+ * vira "lookup" (o agy procurou e não achou); outra falha (acesso negado, compartilhamento) vira "failed". Sem a
+ * coluna Result não há como saber se o acesso aconteceu: o rastreio fica incompleto. */
+export function createTraceAnalyzer({ probePid, launches, policy }) {
   const probe = String(probePid);
   // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync, e a sonda
   // também cria outros filhos (cmdkey, cmd, git). O lançamento só casa com o mesmo PID E o mesmo executável.
@@ -118,6 +143,7 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed, co
   const live = new Map(); // pid vivo → índice do lançamento de origem
   const hits = [];
   const lookups = [];
+  const failed = [];
   let idx = null;
   let rows = 0;
   let resultCol = -1;
@@ -143,10 +169,10 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed, co
       const detail = cells[idx.detail] ?? "";
       const path = cells[idx.path] ?? "";
       const forbiddenHit = () => {
-        if (!path || under(path, allowed)) return;
-        if (!under(path, forbidden) && !(configNames && configNames.test(win32.basename(path)))) return;
-        const ev = { time: cells[idx.time], process: cells[idx.process], pid, op, path };
-        (NOT_FOUND.test(resultCol >= 0 ? cells[resultCol] ?? "" : "") ? lookups : hits).push(ev);
+        if (policy(path) !== "forbidden") return;
+        const result = resultCol >= 0 ? cells[resultCol] ?? "" : "";
+        const ev = { time: cells[idx.time], process: cells[idx.process], pid, op, path, result };
+        (SUCCESS.test(result) ? hits : NOT_FOUND.test(result) ? lookups : failed).push(ev);
       };
       if (op === "Process Create") {
         const child = /\bPID: (\d+)/.exec(detail)?.[1];
@@ -178,8 +204,8 @@ export function createTraceAnalyzer({ probePid, launches, forbidden, allowed, co
       const pendingCount = (i) => [...live.values()].filter((v) => v === i).length;
       const missing = cover.map((c, i) => ({ pid: c.pid, image: c.image, created: c.created, fs: c.fs, exited: c.exited, liveDescendants: pendingCount(i) - (c.created && !c.exited ? 1 : 0) }))
         .filter((m, i) => !(m.created && m.fs > 0 && m.exited && pendingCount(i) === 0));
-      const verdict = hits.length ? "forbidden" : !idx || missing.length ? "incomplete" : "ok";
-      return { rows, hits, lookups, missing, missingPids: missing.map((m) => m.pid), verdict };
+      const verdict = hits.length ? "forbidden" : !idx || resultCol < 0 || missing.length ? "incomplete" : "ok";
+      return { rows, hits, lookups, failed, missing, missingPids: missing.map((m) => m.pid), noResultColumn: !!idx && resultCol < 0, verdict };
     },
   };
 }
@@ -279,8 +305,9 @@ export function classifyRun(hook, { target, workspace, fileExists, hookLines, st
   // a escrita do alvo anotou que ficou vivo e sem responder até o limite configurado e foi cortado perto dele.
   if (hook === "timeout" && hookTimeoutMs > 0) {
     const cutNearLimit = (l) => alive.some((a) => {
-      const cutAt = a.parentGoneAtMs ?? a.aliveMs;
-      return a.pid === l.pid && !a.answered && cutAt >= hookTimeoutMs - CUT_EARLY_MS && cutAt <= hookTimeoutMs + CUT_LATE_MS;
+      // Só o marcador de pai sumido prova o corte; o último batimento sozinho só prova que o hook estava vivo.
+      const cutAt = a.parentGoneAtMs;
+      return a.pid === l.pid && !a.answered && cutAt !== null && cutAt >= hookTimeoutMs - CUT_EARLY_MS && cutAt <= hookTimeoutMs + CUT_LATE_MS;
     });
     const sawCut = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && isTarget(l.args) && cutNearLimit(l));
     if (sawCut && writes.some((s) => s.state === "ERROR" && HOOK_FAILED.test(cause(s.message)))) return "pass";

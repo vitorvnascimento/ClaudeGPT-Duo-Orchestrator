@@ -1,7 +1,7 @@
 // Testes dos helpers puros do teste de fatos do Gemini no Windows. Rodam em qualquer SO (usam path.win32).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, resolveAgy, parseStream, classifyRun, summarizeAlive } from "./lib.mjs";
+import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, tracePolicy, resolveAgy, parseStream, classifyRun, summarizeAlive } from "./lib.mjs";
 
 test("redact: e-mail, token longo e pasta do perfil em todas as grafias", () => {
   const tok = "a".repeat(20) + "B9_-" + "c".repeat(16);
@@ -55,9 +55,14 @@ const PROBE = 50;
 const born = (pid) => row("09:59:59", "node.exe", String(PROBE), "Process Create", "C:\\agy\\agy.exe", `PID: ${pid}, Command line: agy`);
 const read = (pid, path, t = "10:00:00", p = "agy.exe") => row(t, p, String(pid), "ReadFile", path);
 const died = (pid, t = "10:00:09") => row(t, "agy.exe", String(pid), "Process Exit", "", "Exit Status: 0");
+const POLICY_OPTS = {
+  home: "C:\\Users\\v", appData: "C:\\Users\\v\\AppData\\Roaming", localAppData: "C:\\Users\\v\\AppData\\Local",
+  runRoot: "C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1", agyPath: "C:\\Users\\v\\AppData\\Local\\agy\\bin\\agy.exe", nodeDir: "C:\\Program Files\\nodejs",
+};
+const POLICY = tracePolicy(POLICY_OPTS);
 const analyze = (lines, launchPids) => {
   const launches = launchPids.map((pid) => ({ pid, image: "agy.exe" }));
-  const a = createTraceAnalyzer({ probePid: PROBE, launches, forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Local"], allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"] });
+  const a = createTraceAnalyzer({ probePid: PROBE, launches, policy: POLICY });
   for (const l of [HEADER, ...lines]) a.line(l);
   return a.result();
 };
@@ -239,15 +244,15 @@ test("classifyRun: no Windows o tempo esgotado vale pelo registro de vida do hoo
   const stream = step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, failed);
   const go = (alive, extra = {}) => classifyRun("timeout", { target: M, workspace: WS, fileExists: false, hookLines: [{ ...hookLine(`C:\\ws\\${M}`), pid: 7 }], steps: parseStream(stream).steps, alive, hookTimeoutMs: 5000, ...extra });
   const a = (o) => [{ pid: 7, aliveMs: 4750, parentGoneAtMs: null, answered: false, ...o }];
-  assert.equal(go(a({})), "pass"); // árvore inteira morta: as anotações param perto dos 5 s
+  assert.equal(go(a({})), "inconclusive"); // sem marcador de pai sumido: não prova que o hook foi cortado
   assert.equal(go(a({ aliveMs: 5300, parentGoneAtMs: 5300 })), "pass"); // só o cmd.exe morto: o hook viu o pai sumir
   assert.equal(go(a({ aliveMs: 900 })), "inconclusive"); // cortado cedo: não foi o limite de tempo
   assert.equal(go(a({ aliveMs: 30_000 })), "inconclusive"); // cortado muito depois: o limite configurado não valeu
   assert.equal(go(a({ aliveMs: 60_000, answered: true })), "inconclusive"); // o hook chegou a responder
   assert.equal(go(a({ pid: 8 })), "inconclusive"); // registro de outro processo
   assert.equal(go([]), "inconclusive");
-  assert.equal(go(a({}), { fileExists: true }), "fail");
-  assert.equal(go(a({}), { steps: parseStream(step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, "Access is denied.")).steps }), "inconclusive");
+  assert.equal(go(a({ aliveMs: 5100, parentGoneAtMs: 5100 }), { fileExists: true }), "fail");
+  assert.equal(go(a({ aliveMs: 5100, parentGoneAtMs: 5100 }), { steps: parseStream(step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, "Access is denied.")).steps }), "inconclusive");
 });
 
 test("summarizeAlive: junta por PID, guarda o último instante, a primeira vez que o pai sumiu e a resposta", () => {
@@ -261,12 +266,7 @@ test("summarizeAlive: junta por PID, guarda o último instante, a primeira vez q
 const HEADER_R = '"Time of Day","Process Name","PID","Operation","Path","Result","Detail"';
 const rowR = (t, p, pid, op, path, result, detail = "") => [t, p, pid, op, path, result, detail].map((c) => `"${c}"`).join(",");
 const analyzeR = (lines, opts = {}) => {
-  const a = createTraceAnalyzer({
-    probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }],
-    forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Roaming\\Antigravity"],
-    allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"],
-    configNames: /^(\.?codeium\.ya?ml|GEMINI\.md|AGENTS\.md)$/i, ...opts,
-  });
+  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }], policy: POLICY, ...opts });
   for (const l of [HEADER_R, born(100), read(100, "C:\\Windows\\a"), ...lines, died(100)]) a.line(l);
   return a.result();
 };
@@ -298,9 +298,49 @@ test("trace: arquivo de config do agy achado numa pasta-mãe é acesso; só proc
 });
 
 test("trace: resultado mostra a cobertura de cada lançamento que faltou, mesmo com acesso proibido", () => {
-  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }, { pid: 101, image: "agy.exe" }], forbidden: ["C:\\Users\\v\\.gemini"], allowed: [] });
+  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }, { pid: 101, image: "agy.exe" }], policy: POLICY });
   for (const l of [HEADER, born(100), read(100, "C:\\Users\\v\\.gemini\\x"), died(100), born(101)]) a.line(l);
   const r = a.result();
   assert.equal(r.verdict, "forbidden");
   assert.deepEqual(r.missing, [{ pid: "101", image: "agy.exe", created: true, fs: 0, exited: false, liveDescendants: 0 }]);
+});
+
+test("política: pasta privada de execução anterior é proibida; a desta execução não", () => {
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run0\\home\\.gemini\\config\\config.json"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1\\home\\.gemini\\config\\config.json"), "allowed");
+});
+
+test("política: agy numa pasta bin compartilhada libera só essa pasta, não o perfil", () => {
+  const p = tracePolicy({ ...POLICY_OPTS, agyPath: "C:\\Users\\v\\bin\\agy.exe" });
+  assert.equal(p("C:\\Users\\v\\bin\\agy.exe"), "allowed");
+  assert.equal(p("C:\\Users\\v\\.gemini\\settings.json"), "forbidden");
+  assert.equal(p("C:\\Users\\v\\Documents\\x"), "other");
+  // Layout oficial: libera %LOCALAPPDATA%\agy inteira.
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\agy\\lib\\x.dll"), "allowed");
+});
+
+test("política: arquivo de config do agy conta mesmo dentro da pasta de instalação", () => {
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\agy\\codeium.yaml"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1\\ws\\codeium.yaml"), "allowed");
+});
+
+test("política: pastas de config do dono pelo caminho registrado, sem olhar o disco", () => {
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Roaming\\Antigravity\\settings.json"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\Windsurf\\x"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\.codeium\\x"), "forbidden");
+  assert.equal(POLICY("C:\\Users\\v\\AppData\\Local\\Programs\\Python\\pwsh.exe"), "other");
+});
+
+test("trace: abertura que falhou (acesso negado) é tentativa, não acesso", () => {
+  const r = analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\x", "ACCESS DENIED")]);
+  assert.equal(r.verdict, "ok");
+  assert.equal(r.failed.length, 1);
+});
+
+test("trace: CSV sem a coluna Result não prova nada", () => {
+  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }], policy: POLICY });
+  const H = '"Time of Day","Process Name","PID","Operation","Path","Detail"';
+  const r6 = (t, p, pid, op, path, d = "") => [t, p, pid, op, path, d].map((c) => `"${c}"`).join(",");
+  for (const l of [H, r6("1", "node.exe", String(PROBE), "Process Create", "C:\\agy\\agy.exe", "PID: 100, Command line: agy"), r6("2", "agy.exe", "100", "ReadFile", "C:\\Windows\\a"), r6("3", "agy.exe", "100", "Process Exit", "", "Exit Status: 0")]) a.line(l);
+  assert.equal(a.result().verdict, "incomplete");
 });

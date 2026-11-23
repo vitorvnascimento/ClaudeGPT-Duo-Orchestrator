@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CLI = join(ROOT, "dist", "src", "cli", "main.js");
+// Os hooks do usuário (ex.: revisão cruzada no Stop) mudam a resposta do cérebro; o teste é do duo, não deles.
+const NO_USER_HOOKS = JSON.stringify({ disableAllHooks: true });
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
 const DRY_RUN = argv.includes("--dry-run");
@@ -227,7 +229,8 @@ function privacyCheck(stage) {
   // Campos privados e endereços, não a palavra credits em uma descrição pública de modelo.
   const privateData = /\b(?:accountId|planType)\b|["']?\b(?:credits|e-?mail)\b["']?\s*[:=]|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)*\.[A-Z]{2,}\b/i;
   const files = allRepos().flatMap((r) => filesUnder(join(r, ".duo")));
-  const leaks = files.filter((f) => privateData.test(readFileSync(f, "utf8")));
+  // Id de plugin do Codex (`nome@openai-bundled.enabled=false` no invocation.json) não é endereço de e-mail.
+  const leaks = files.filter((f) => privateData.test(readFileSync(f, "utf8").replace(/[A-Za-z0-9_-]+@openai-bundled\.enabled/g, "")));
   return check(`independente (${stage}): todos os arquivos .duo sem dados de conta/plano/créditos/e-mail`, files.length > 0 && leaks.length === 0, { scanned: files.length, leaks });
 }
 
@@ -424,7 +427,7 @@ const CRITERIA = {
       "Use Opus 5.5 (claude-opus-5-5) para o desenvolvimento e GPT-6-Astra (gpt-6-astra) para a arte. Siga a skill. " +
       "As duas partes são de baixo risco; informe risk=low nos pedidos à ponte e preserve os modelos explícitos. " +
       "Ao final responda em uma linha: quem fez cada parte, com qual modelo, e os taskIds.";
-    const r = spawnSync("claude", ["-p", prompt, "--output-format", "json", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], { cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 14 * 60_000 });
+    const r = spawnSync("claude", ["--settings", NO_USER_HOOKS, "-p", prompt, "--output-format", "json", "--model", "claude-opus-5-5", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(node *),Bash(duo *)"], { cwd: repo, env: cleanEnv(), encoding: "utf8", timeout: 14 * 60_000 });
     let brain = null;
     try {
       brain = JSON.parse(r.stdout);
@@ -494,10 +497,12 @@ const CRITERIA = {
   async Q9() {
     const r = spawnSync("npm", ["test"], { cwd: ROOT, encoding: "utf8", timeout: 10 * 60_000 });
     const m = /# tests (\d+)[\s\S]*# pass (\d+)[\s\S]*# fail (\d+)/.exec(r.stdout);
+    // `todo` é um teste marcado como pendente (sem asserções), não falha: conta à parte e aparece na evidência.
+    const todo = Number(/# todo (\d+)/.exec(r.stdout)?.[1] ?? 0);
     return {
       points: POINTS.Q9,
       title: "Suíte offline completa",
-      checks: [check("npm test: todos passam, nenhuma falha", r.status === 0 && m && m[1] === m[2] && m[3] === "0", m ? `${m[2]}/${m[1]} (falhas: ${m[3]})` : r.stdout.slice(-300))],
+      checks: [check("npm test: todos passam, nenhuma falha", r.status === 0 && m && Number(m[1]) === Number(m[2]) + todo && m[3] === "0", m ? `${m[2]}/${m[1]} (falhas: ${m[3]}, todo: ${todo})` : r.stdout.slice(-300))],
     };
   },
 

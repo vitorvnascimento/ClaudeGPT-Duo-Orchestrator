@@ -83,17 +83,17 @@ function seedConfig(home: string): void {
 export function privateProfileEnv(base: NodeJS.ProcessEnv, profile: { home: string; tmpDir: string }, platform: NodeJS.Platform = process.platform): { env: NodeJS.ProcessEnv; removed: string[] } {
   const { home, tmpDir } = profile;
   if (platform !== "win32") return childEnv(base, { HOME: home, TMPDIR: tmpDir }, platform);
-  const drive = win32.parse(home).root.replace(/\\$/, "");
+  // Caminhos no estilo do próprio home (C:\... no Windows; POSIX na simulação dos testes): sempre absolutos e reais.
+  const drive = /^[A-Za-z]:/.test(home) ? win32.parse(home).root.replace(/\\$/, "") : "";
   return childEnv(base, {
     HOME: home,
     USERPROFILE: home,
-    APPDATA: win32.join(home, "AppData", "Roaming"),
-    LOCALAPPDATA: win32.join(home, "AppData", "Local"),
+    APPDATA: joinFor(home, "AppData", "Roaming"),
+    LOCALAPPDATA: joinFor(home, "AppData", "Local"),
     TEMP: tmpDir,
     TMP: tmpDir,
     TMPDIR: tmpDir,
-    HOMEDRIVE: drive,
-    HOMEPATH: home.slice(drive.length),
+    ...(drive ? { HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length) } : {}),
     // O cmd.exe que roda o hook não procura executável na pasta atual (a worktree): o `node` vem só do PATH.
     NoDefaultCurrentDirectoryInExePath: "1",
   }, "win32");
@@ -129,10 +129,27 @@ export function agyConfigAbove(startDir: string, exists: (p: string) => boolean 
  * no TEMP, que pode ser compartilhado e cujas permissões herdadas não são privadas. Outros: o temporário do sistema. */
 export function probeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
   if (platform !== "win32") return tmpdir();
-  const root = joinFor(geminiStateRoot(env, platform), "probes");
-  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const root = checkedProbeRoot(env, platform, true);
   sweepProbeDirs(root);
   return root;
+}
+
+/** A pasta probes precisa ser filha real da raiz de estado: nem ela nem a raiz podem ser link/junction (senão a sonda
+ * gravaria o perfil, ou a limpeza apagaria, fora da árvore privada). */
+function checkedProbeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, create: boolean): string {
+  const state = geminiStateRoot(env, platform);
+  const root = joinFor(state, "probes");
+  if (create) mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (lstatSync(state).isSymbolicLink() || lstatSync(root).isSymbolicLink() || realpathSync(root) !== join(realpathSync(state), "probes")) {
+    throw new Error("pasta de sondas do gemini redirecionada (link ou junction): recusada");
+  }
+  return root;
+}
+
+/** Remoção com novas tentativas (no Windows um arquivo ainda aberto dá EBUSY/EPERM por um instante). Falha que
+ * persiste não troca o resultado da sonda: a pasta fica para a limpeza dos abandonados. */
+export function removeProbeDir(dir: string): void {
+  try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* fica para sweepProbeDirs */ }
 }
 
 /** Perfil descartável de sonda com dono (probe.json com o PID): se a ponte morrer antes do finally, a próxima sonda
@@ -144,6 +161,11 @@ export function newProbeDir(env: NodeJS.ProcessEnv, prefix: string, platform: No
 }
 
 /** Remove perfis de sonda abandonados: dono morto e mais de 10 min. Sem probe.json legível não toca (pode estar nascendo). */
+function isDefinitelyDead(pid: unknown): boolean {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
 export function sweepProbeDirs(root: string, minAgeMs = 10 * 60_000): string[] {
   const removed: string[] = [];
   let names: string[] = [];
@@ -154,7 +176,8 @@ export function sweepProbeDirs(root: string, minAgeMs = 10 * 60_000): string[] {
     try {
       if (!lstatSync(dir).isDirectory()) continue;
       const m = JSON.parse(readFileSync(join(dir, "probe.json"), "utf8")) as { pid?: unknown };
-      if (isAlive(m.pid) || Date.now() - statSync(dir).mtimeMs < minAgeMs) continue;
+      // Só com dono conhecido e comprovadamente morto (ESRCH); dono inválido ou incerto: deixa.
+      if (!isDefinitelyDead(m.pid) || Date.now() - statSync(dir).mtimeMs < minAgeMs) continue;
       rmSync(dir, { recursive: true, force: true });
       removed.push(dir);
     } catch { /* sem dono legível: deixa */ }
@@ -178,7 +201,7 @@ export function withMetadataProfile<T>(base: NodeJS.ProcessEnv, fn: (env: NodeJS
     }
     return fn(privateProfileEnv(base, { home, tmpDir: tmp }, platform).env, work);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeProbeDir(dir);
   }
 }
 
@@ -343,7 +366,7 @@ function anyClaimAlive(chainDir: string): boolean {
  * com a trava da cadeia pega, logo antes de apagar, e um executor vivo registrado conta como ativo.
  */
 export function pruneGeminiStates(
-  opts: { olderThanDays?: number; classify(projectRoot: string, chainId: string): ChainClass },
+  opts: { olderThanDays?: number; classify(projectRoot: string, chainId: string): ChainClass; onScanError?(what: string, reason: string): void },
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
@@ -358,8 +381,18 @@ export function pruneGeminiStates(
   // No Windows, também a raiz antiga (XDG/.local/state, usada antes do suporte ao Windows): só para limpar, nunca para
   // lançar o agy de novo com aquele perfil.
   const roots: NodeJS.Platform[] = platform === "win32" ? ["win32", "linux"] : [platform];
-  if (platform === "win32") try { removed.push(...sweepProbeDirs(joinFor(geminiStateRoot(env, platform), "probes"))); } catch { /* raiz inválida: só as cadeias */ }
-  for (const plat of roots) for (const s of listGeminiStates(env, plat)) {
+  const scanError = (what: string, e: unknown) => {
+    const reason = (e as NodeJS.ErrnoException).code ?? (e as Error).message;
+    if (opts.onScanError) opts.onScanError(what, reason); else throw e;
+  };
+  if (platform === "win32") {
+    try { const root = checkedProbeRoot(env, platform, false); removed.push(...sweepProbeDirs(root)); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") scanError("pastas de sonda", e); }
+  }
+  // Cada raiz por si: a nova indisponível (LOCALAPPDATA/USERPROFILE inválidos) não impede limpar a antiga.
+  // Raiz antiga ausente não é erro (listGeminiStates devolve vazio); falha de leitura de qualquer raiz é reportada.
+  const listed = (plat: NodeJS.Platform) => { try { return listGeminiStates(env, plat); } catch (e) { scanError(plat === "linux" && platform === "win32" ? "raiz antiga do estado" : "raiz do estado", e); return []; } };
+  for (const plat of roots) for (const s of listed(plat)) {
     if (!eligible(effective(s.projectRoot, s.chainId, s.dir), s.mtimeMs)) continue;
     // Só apaga o caminho validado (nome, hash do projeto, dono, sem link), conferido de novo com a trava pega.
     if (!validChainDir(s.dir, s.projectRoot, s.chainId, env, plat)) continue;

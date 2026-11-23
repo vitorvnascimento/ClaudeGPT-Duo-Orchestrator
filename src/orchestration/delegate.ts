@@ -18,7 +18,7 @@ import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, sweepStaleAttempts } from "../state/gemini-state.js";
+import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, launcherFor, sweepStaleAttempts } from "../state/gemini-state.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
@@ -246,8 +246,11 @@ function runGates(
     }
   }
 
-  const resolved = resolveExecutable(req.executor === "gemini" ? "agy" : req.executor, cfg.executors[req.executor].command, env);
-  if (!resolved.ok) return { ok: false, reason: `executor indisponível: ${resolved.reason}` };
+  const found = resolveExecutable(req.executor === "gemini" ? "agy" : req.executor, cfg.executors[req.executor].command, env);
+  if (!found.ok) return { ok: false, reason: `executor indisponível: ${found.reason}` };
+  // Gemini: lançador fixado uma vez (executável e script do node absolutos): as sondas, a checagem de login e a
+  // execução na worktree usam exatamente o mesmo.
+  const resolved = req.executor === "gemini" ? { ...found, ...launcherFor(found) } : found;
   const { env: probeEnv } = childEnv(env);
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
     : req.executor === "gemini" ? probeAgy(resolved, env, gem.platform ?? process.platform)

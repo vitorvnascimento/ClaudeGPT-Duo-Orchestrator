@@ -37,8 +37,9 @@ describe("geminiParentEnvProblem no Windows", () => {
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { agyConfigAbove, chainStateDir, createPrivateHome, geminiStateRoot, launcherFor, privateProfileEnv, pruneGeminiStates, sweepProbeDirs, withMetadataProfile } from "../src/state/gemini-state.js";
+import { isAbsolute, join } from "node:path";
+import { agyConfigAbove, chainStateDir, createPrivateHome, geminiStateRoot, launcherFor, privateProfileEnv, probeRoot, pruneGeminiStates, sweepProbeDirs, withMetadataProfile } from "../src/state/gemini-state.js";
+import { symlinkSync } from "node:fs";
 import { utimesSync } from "node:fs";
 
 const temps: string[] = [];
@@ -144,6 +145,9 @@ describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
       assert.ok(c[k], k);
       if (REAL[k]) assert.notEqual(slash(c[k]), slash(REAL[k]), k);
       assert.match(slash(c[k]), PRIVATE, k);
+      // O filho recebeu um caminho absoluto de uma pasta que existe (não um nome relativo).
+      assert.ok(isAbsolute(String(c[k])), `${k}: ${c[k]}`);
+      if (k === "APPDATA" || k === "LOCALAPPDATA" || k === "TEMP") assert.equal((c as Record<string, unknown>)[`${k}_exists`], true, `${k} existe no filho`);
     }
     assert.notEqual(c.cwd, project);
     assert.ok(!String(c.cwd).startsWith(project));
@@ -233,5 +237,37 @@ describe("perfis de sonda abandonados", () => {
     const other = join(root, "outra-coisa"); mkdirSync(other);
     assert.deepEqual(sweepProbeDirs(root), [dead]);
     for (const d of [live, fresh, other]) assert.ok(existsSync(d), d);
+  });
+});
+
+describe("limpeza: dono incerto e raiz nova indisponível", () => {
+  it("perfil de sonda com probe.json sem PID válido fica", () => {
+    const root = tempDir("duo-w32-probes2-");
+    const d = join(root, "duo-agy-meta-x"); mkdirSync(d);
+    writeFileSync(join(d, "probe.json"), "{}");
+    const t = new Date(Date.now() - 3600_000); utimesSync(d, t, t);
+    assert.deepEqual(sweepProbeDirs(root), []);
+    assert.ok(existsSync(d));
+  });
+
+  it("sem LOCALAPPDATA/USERPROFILE válidos o prune ainda limpa a raiz antiga", () => {
+    const base = tempDir("duo-w32-legacy2-");
+    const project = join(base, "proj"); mkdirSync(project);
+    const env = { HOME: base, XDG_STATE_HOME: join(base, "xdg") };
+    const legacy = chainStateDir(project, "old", env, "linux");
+    const errors: string[] = [];
+    assert.ok(pruneGeminiStates({ classify: () => "orphan", onScanError: (w, r) => errors.push(`${w}: ${r}`) }, env, "win32").includes(legacy));
+    assert.ok(errors.some((e) => /raiz do estado/.test(e)), "a raiz nova indisponível é reportada, não escondida");
+  });
+});
+
+describe("pasta de sondas redirecionada", () => {
+  it("probes como link/junction é recusada antes de criar ou limpar", { skip: process.platform === "win32" }, () => {
+    const base = tempDir("duo-w32-junction-");
+    const local = join(base, "local");
+    mkdirSync(join(local, "duo", "gemini-state"), { recursive: true });
+    const outside = join(base, "fora"); mkdirSync(outside);
+    symlinkSync(outside, join(local, "duo", "gemini-state", "probes"));
+    assert.throws(() => probeRoot({ LOCALAPPDATA: local }, "win32"), /redirecionada/);
   });
 });

@@ -114,7 +114,7 @@ export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], spe
  * trazer stderr do agy e nunca vai cru para relatório. */
 export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Capabilities & { error?: string; profileError?: string } {
   if (platform !== "win32") return probe(resolved, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
-  const launch = { ...resolved, ...launcherFor(resolved) };
+  const launch = { ...resolved, ...launcherFor(resolved) }; // idempotente: já absoluto quando vem da delegação
   try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd), "win32"); }
   catch (e) { const msg = (e as Error).message; return { ...capabilitiesFromHelp("", null, AGY_FLAGS, null), error: msg, profileError: msg }; }
 }

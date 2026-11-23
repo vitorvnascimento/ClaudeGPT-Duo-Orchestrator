@@ -4,7 +4,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { agyConfigAbove, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv } from "../state/gemini-state.js";
+import { agyConfigAbove, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir } from "../state/gemini-state.js";
 import type { DuoConfig } from "../config.js";
 import { runQuick } from "../adapters/process.js";
 import type { Resolved } from "../adapters/resolve.js";
@@ -119,5 +119,5 @@ export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg
     return { ok: a.method === "subscription", method: a.method, detail: a.detail, conflict: (a as { conflict?: boolean }).conflict === true };
   } catch (e) {
     return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})`, conflict: false };
-  } finally { if (tmpHome) try { rmSync(tmpHome, { recursive: true, force: true }); } catch { /* limpeza best-effort */ } }
+  } finally { if (tmpHome) removeProbeDir(tmpHome); }
 }

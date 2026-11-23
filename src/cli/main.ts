@@ -375,9 +375,11 @@ async function main(argv: string[]): Promise<number> {
       if (days !== undefined && days.trim() === "") throw new Error("--older-than precisa de um número de dias (0 apaga já)");
       const olderThanDays = days === undefined ? undefined : Number(days);
       if (olderThanDays !== undefined && (!Number.isFinite(olderThanDays) || olderThanDays < 0)) throw new Error("--older-than deve ser um número de dias >= 0");
-      const removed = pruneGeminiStates({ ...(olderThanDays !== undefined ? { olderThanDays } : {}), classify: classifyGeminiChain });
+      const scanErrors: string[] = [];
+      const removed = pruneGeminiStates({ ...(olderThanDays !== undefined ? { olderThanDays } : {}), classify: classifyGeminiChain, onScanError: (what, reason) => scanErrors.push(`${what}: ${reason}`) });
       print(removed.length ? `estados do gemini removidos (${removed.length}):\n${removed.join("\n")}` : "nenhum estado do gemini removido");
-      return 0;
+      if (scanErrors.length) print(`não foi possível conferir (${scanErrors.length}):\n${scanErrors.join("\n")}`);
+      return scanErrors.length ? 1 : 0;
     }
     case "handoff": {
       const to = brainProvider(str(args, "to"), "--to");

@@ -22,7 +22,7 @@ import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { classifyErrorText } from "./types.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
-import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, privateProfileEnv, withMetadataProfile } from "../state/gemini-state.js";
+import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, privateProfileEnv, removeProbeDir, withMetadataProfile } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation" | "computer_use";
@@ -463,9 +463,10 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
       try {
         const found = agyConfigAbove(work);
         if (found) throw Object.assign(new Error("config do agy acima"), { code: `config do agy acima: ${basename(found)}` });
-        const launch = launcherFor(resolved, cwd);
+        // Mesma base do resolveExecutable (a pasta atual do duo) e do cliVersions: os dois usam o mesmo executável.
+        const launch = launcherFor(resolved);
         r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000 });
-      } finally { rmSync(work, { recursive: true, force: true }); }
+      } finally { removeProbeDir(work); }
     } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
   } catch (e) {
     const error = `HOME privado do catálogo indisponível (${(e as NodeJS.ErrnoException).code ?? "erro"})`;

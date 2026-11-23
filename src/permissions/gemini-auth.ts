@@ -56,8 +56,9 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  // Arquivos regulares são lidos e pastas ignoradas. Qualquer outra entrada (link, arquivo ilegível) pode esconder o
-  // sinal conflitante: sem evidência negativa nos logs lidos, o resultado vira inconclusivo e bloqueia.
+  // Arquivos regulares são lidos; pasta vazia é ignorada (o agy grava o log em arquivos soltos). Qualquer outra entrada
+  // (pasta com conteúdo, link, arquivo ou pasta ilegível) pode esconder o sinal conflitante: sem evidência negativa
+  // nos logs lidos, o resultado vira inconclusivo e bloqueia.
   let text = "";
   let unaccounted = false;
   try {
@@ -66,7 +67,7 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
         const p = join(logDir, f);
         try {
           const st = lstatSync(p);
-          if (st.isDirectory()) return [];
+          if (st.isDirectory()) { if (readdirSync(p).length > 0) unaccounted = true; return []; }
           if (!st.isFile()) { unaccounted = true; return []; }
           return [readFileSync(p, "utf8")];
         } catch { unaccounted = true; return []; }

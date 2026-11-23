@@ -19,6 +19,7 @@ if (args[0] === "models") {
     const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
     mkdirSync(d, { recursive: true });
     if (process.env.FAKE_AGY_LOG_SUBDIR) mkdirSync(join(d, "subdir"), { recursive: true });
+    if (process.env.FAKE_AGY_LOG_NESTED) { mkdirSync(join(d, "sub"), { recursive: true }); writeFileSync(join(d, "sub", "nested.log"), "authenticated via apikey (effective: apikey)\nauthMethod=api_key\n"); }
     if (process.env.FAKE_AGY_LOG_LINK) { writeFileSync(join(d, "..", "outside.log"), "authenticated via apikey (effective: apikey)\n"); symlinkSync(join(d, "..", "outside.log"), join(d, "link.log")); }
     if (process.env.FAKE_AGY_LOG_UNREADABLE) { writeFileSync(join(d, "locked.log"), "authenticated via apikey (effective: apikey)\n"); chmodSync(join(d, "locked.log"), 0); }
     writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "partial-apikey"

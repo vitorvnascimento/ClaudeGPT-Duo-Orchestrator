@@ -213,13 +213,13 @@ describe("eventos do gemini", () => {
     const out = sanitizeEventLine("gemini", line, renamer);
     assert.doesNotMatch(out, /PEDACO-SECRETO/);
     // step_update renomeado no evento redigido: nenhum metadado sobrevive, só a medida da fatia.
-    assert.deepEqual(JSON.parse(out), { event: "step_update", step_update: { text_delta: { omitted: true, chars: 14 } } });
+    assert.deepEqual(JSON.parse(out), { event: "step_update", step_update: { step_type: "<redacted>", text_delta: { omitted: true, chars: 14 } } });
   });
   it("metadado mascarado pelo redator não volta para o log", () => {
     const line = JSON.stringify({ event: "step_update", step_update: { step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "x" } });
     const out = sanitizeEventLine("gemini", line, (l) => l.replaceAll("agent_response", "<redacted>"));
     assert.doesNotMatch(out, /agent_response/);
-    assert.equal(JSON.parse(out).step_update.step_type, undefined);
+    assert.equal(JSON.parse(out).step_update.step_type, "<redacted>", "classificação perdida vira lacuna explícita");
   });
   it("bloco de chave privada aberto entre eventos do gemini mantém o marcador de evento redigido", () => {
     const stream = createStreamRedactor();
@@ -229,5 +229,10 @@ describe("eventos do gemini", () => {
     const out = sanitizeEventLine("gemini", second, stream);
     assert.ok(/"redacted"/.test(out), out);
     assert.doesNotMatch(out, /abcdefgh/);
+  });
+  it("campo 'redacted' vindo do próprio evento não faz copiar a linha redigida", () => {
+    const line = JSON.stringify({ event: "step_update", redacted: "x", step_update: { step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "FATIA-PRIVADA" } });
+    const out = sanitizeEventLine("gemini", line, (l) => l.replaceAll("step_update", "renomeado"));
+    assert.doesNotMatch(out, /FATIA-PRIVADA/);
   });
 });

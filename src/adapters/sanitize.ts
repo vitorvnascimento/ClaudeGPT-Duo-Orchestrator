@@ -32,14 +32,18 @@ export function sanitizeEventLine(provider: Provider, line: string, redactor = r
     if (step && typeof step.text_delta === "string") {
       // Evento inteiro redigido (ex.: bloco de chave privada aberto numa linha anterior): o marcador fica, porque a
       // bateria conta essa lacuna como evidência faltando.
-      if (ev && typeof ev.redacted === "string" && !("step_update" in ev)) return out.slice(0, 2000);
+      if (ev && Object.keys(ev).length === 1 && typeof ev.redacted === "string") {
+        return JSON.stringify({ redacted: /^[a-z-]{1,40}$/.test(ev.redacted) ? ev.redacted : "event" }); // marcador fixo, nunca a linha
+      }
       // O original só reconhece a fatia e mede o tamanho; os metadados vêm do evento REDIGIDO, nunca do original
       // (um valor mascarado pelo redator não volta para o disco).
       const red = (ev?.step_update as Record<string, unknown> | undefined) ?? {};
       const pick = (k: string, ok: (v: unknown) => boolean) => (ok(red[k]) ? { [k]: red[k] } : {});
       const word = (v: unknown) => typeof v === "string" && /^[A-Za-z_]{1,40}$/.test(v);
       return JSON.stringify({ event: "step_update", step_update: {
-        ...pick("step_index", (v) => Number.isInteger(v)), ...pick("state", word), ...pick("step_type", word),
+        ...pick("step_index", (v) => Number.isInteger(v)), ...pick("state", word),
+        // Classificação perdida na redação vira marcador explícito: a bateria conta "<redacted…>" como lacuna.
+        step_type: word(red.step_type) ? red.step_type : "<redacted>",
         ...pick("duration_seconds", (v) => typeof v === "number" && Number.isFinite(v)),
         text_delta: { omitted: true, chars: step.text_delta.length },
       } });

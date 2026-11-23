@@ -56,26 +56,28 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
   const r = runQuick(cmd as string, args, { env: clean, timeoutMs: 30_000 });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
-  // Arquivos regulares são lidos e pastas ignoradas. Qualquer outra entrada (link, arquivo ilegível) pode esconder o
-  // sinal conflitante: sem evidência negativa nos logs lidos, o resultado vira inconclusivo e bloqueia.
+  // Arquivos regulares são lidos; pasta vazia é ignorada (o agy grava o log em arquivos soltos). Qualquer outra entrada
+  // (pasta com conteúdo, link, arquivo ou pasta ilegível) pode esconder o sinal conflitante: sem evidência negativa
+  // nos logs lidos, o resultado vira inconclusivo e bloqueia.
   let text = "";
   let unaccounted = false;
+  const why = new Set<string>();
   try {
     if (existsSync(logDir)) {
       text = readdirSync(logDir).flatMap((f) => {
         const p = join(logDir, f);
         try {
           const st = lstatSync(p);
-          if (st.isDirectory()) return [];
-          if (!st.isFile()) { unaccounted = true; return []; }
+          if (st.isDirectory()) { if (readdirSync(p).length > 0) { unaccounted = true; why.add("pasta com conteúdo"); } return []; }
+          if (!st.isFile()) { unaccounted = true; why.add(st.isSymbolicLink() ? "link" : "entrada não regular"); return []; }
           return [readFileSync(p, "utf8")];
-        } catch { unaccounted = true; return []; }
+        } catch { unaccounted = true; why.add("ilegível"); return []; }
       }).join("\n");
     }
-  } catch { unaccounted = true; }
+  } catch { unaccounted = true; why.add("ilegível"); }
   const c = classifyAgyLog(text);
   const negative = c.method === "api_key" || c.method === "cloud" || c.conflict === true;
-  if (unaccounted && !negative) return { ...base, ok: false, method: "unknown", detail: "log do agy com entrada não lida (ilegível ou link): login não verificável" };
+  if (unaccounted && !negative) return { ...base, ok: false, method: "unknown", detail: `log do agy com entrada não lida (${[...why].sort().join(", ")}): login não verificável` };
   if (!r.ok) {
     const kind = classifyErrorText(`${r.stderr}\n${r.error ?? ""}`);
     const failed = `agy models falhou (${kind === "unknown" ? `código ${r.code ?? "?"}` : kind})`;

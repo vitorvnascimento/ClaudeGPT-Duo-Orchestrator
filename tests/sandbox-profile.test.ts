@@ -124,14 +124,25 @@ describe("sandbox real", { skip: !DARWIN }, () => {
     }
     assert.ok(buildProfile({ worktreeRoot: "/W", targets: [], denyGlobs: ["**/*.key", ".env"], privateHome: "/H", tmpDir: "/H/tmp" }).ok);
   });
-  it("macOS normalizes canonical singletons before the sandbox matches (Kelvin sign K is caught by **/*.key)", () => {
-    const wt = tmp("duo-sbx-wt-");
-    mkdirSync(join(wt, "docs"));
-    const r = buildProfile({ worktreeRoot: wt, targets: [{ rel: "docs", abs: join(wt, "docs"), isDir: true, missingAncestors: [] }], denyGlobs: ["**/*.key"], privateHome: join(wt, "..", "h3"), tmpDir: join(wt, "..", "h3", "tmp") });
-    assert.ok(r.ok);
-    sh(r.ok ? r.profile : "", "echo x > 'docs/b.\u212aey'; echo y > docs/ok.txt", wt);
-    assert.equal(readdirSync(join(wt, "docs")).some((n) => /\.key$/i.test(n.normalize("NFC"))), false);
-    assert.ok(existsSync(join(wt, "docs", "ok.txt")));
+  it("Kelvin sign K: a LISTED file is written without **/*.key and denied by it (the deny rule, not the ASCII rule)", () => {
+    const name = "b.\u212aey";
+    // Um vizinho inofensivo também listado prova que o perfil carregou e grava; só o nome Kelvin é negado.
+    const writeWith = (deny: string[]) => {
+      const wt = tmp("duo-sbx-wt-");
+      mkdirSync(join(wt, "docs"));
+      const r = buildProfile({ worktreeRoot: wt, targets: [
+        { rel: `docs/${name}`, abs: join(wt, "docs", name), isDir: false, missingAncestors: [] },
+        { rel: "docs/ok.txt", abs: join(wt, "docs", "ok.txt"), isDir: false, missingAncestors: [] },
+      ], denyGlobs: deny, privateHome: join(wt, "..", "hk"), tmpDir: join(wt, "..", "hk", "tmp") });
+      assert.ok(r.ok);
+      const out = sh(r.ok ? r.profile : "", `echo y > docs/ok.txt; echo x > 'docs/${name}'; exit 0`, wt);
+      assert.equal(out.status, 0, out.stderr);
+      return readdirSync(join(wt, "docs")).map((n) => n.normalize("NFC")).sort();
+    };
+    // O APFS preserva a grafia gravada, mas o sandbox avalia a forma normalizada (K): sem a regra a escrita passa...
+    assert.deepEqual(writeWith([]), ["b.Key", "ok.txt"]);
+    // ...e com **/*.key só ela é negada; o vizinho grava.
+    assert.deepEqual(writeWith(["**/*.key"]), ["ok.txt"]);
   });
   it("OS layer alone: inside a granted dir only ASCII names are writable; a listed accented file still is", () => {
     const wt = tmp("duo-sbx-wt-");

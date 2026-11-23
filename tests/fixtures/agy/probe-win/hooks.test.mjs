@@ -44,3 +44,11 @@ test("garbage: registra e responde texto que não é JSON", () => {
   assert.equal(r.stdout, "not json");
   assert.equal(lines[0].hook, "garbage");
 });
+
+test("stdin inválido fica registrado com o motivo", () => {
+  const log = join(mkdtempSync(join(tmpdir(), "probe-hook-")), "log.jsonl");
+  spawnSync(process.execPath, [fileURLToPath(new URL("deny.mjs", dir)), log], { input: "isto não é json", encoding: "utf8", timeout: 10_000 });
+  const line = JSON.parse(readFileSync(log, "utf8").trim());
+  assert.equal(line.stdinError, "SyntaxError");
+  assert.equal(line.toolName, null);
+});

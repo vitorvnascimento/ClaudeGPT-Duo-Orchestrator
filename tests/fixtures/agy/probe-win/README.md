@@ -24,13 +24,13 @@ node tests\fixtures\agy\probe-win\probe.mjs --dry-run
 If the last line is `OK: dry-run concluído, nenhuma cota gasta`, run the full probe with a file-access trace:
 
 1. Process Monitor (Microsoft Sysinternals) is needed for F5. Download it from Microsoft only if you agree; it runs as administrator.
-2. In Process Monitor: Filter → `Process Name` `is` `agy.exe` → Include, and `Process Name` `is` `node.exe` → Include. Clear the list, then start the capture.
+2. In Process Monitor: **no process filter** (agy may start helpers with other names, and the analyzer follows the agy process tree by itself). Clear the list, then start the capture right before the next step.
 3. Run:
    ```powershell
    node tests\fixtures\agy\probe-win\probe.mjs --pause
    ```
    It stops before every `agy` launch; press Enter each time.
-4. Stop the capture. File → Save → "Events displayed using current filter", format CSV.
+4. Stop the capture right after the probe ends. File → Save → "All events", format CSV (it can be large; the analyzer reads it line by line).
 5. Check the trace:
    ```powershell
    node tests\fixtures\agy\probe-win\analyze-trace.mjs <path-to.csv> docs\evidencias\gemini-windows-phase0\<runId>\results.json
@@ -45,8 +45,11 @@ If the last line is `OK: dry-run concluído, nenhuma cota gasta`, run the full p
 | `STOP F4: login da assinatura não provado com perfil privado` | The login did not survive the private profile, or it is not a subscription login. No quota was spent. Goes back to the owner. |
 | `STOP F3: <hook> não falhou fechado` | A hook that should block let the file be written. No lock left: the work stops. |
 | `STOP F3: hook não disparou` | `agy` on Windows ignored the workspace hook: the work stops. |
-| `INCONCLUSIVO: …` | A run gave no proof either way (for example, the model never tried to write). Rerun once. |
-| `PROIBIDO: …` (analyze-trace) | `agy` touched your real profile: F5 fails. |
+| `STOP F4: agy models falhou…` / `STOP F4: fonte de login desconhecida…` | The login check itself failed, or Windows reports a credential source not seen before. No quota was spent; send `results.json` for review. |
+| `STOP sonda: …` | A problem in the probe itself (for example, a character in your profile path it refuses). Not a fact about agy; send the line. |
+| `INCONCLUSIVO: …` | A run gave no proof either way (the model never tried to write, or `hook-cmd-failed`: the hook command line did not run in agy's shell). Send `results.json`. |
+| `PROIBIDO: …` (analyze-trace) | The agy process tree touched your real profile: F5 fails. |
+| `INCOMPLETO: …` (analyze-trace) | The capture missed some agy launches. Capture again from start to end. |
 
 ## Returning the evidence
 
@@ -80,13 +83,13 @@ node tests\fixtures\agy\probe-win\probe.mjs --dry-run
 Se a última linha for `OK: dry-run concluído, nenhuma cota gasta`, rode a sonda completa com rastreio de acesso a arquivos:
 
 1. O Process Monitor (Microsoft Sysinternals) é necessário para o F5. Baixe do site da Microsoft só se concordar; ele roda como administrador.
-2. No Process Monitor: Filter → `Process Name` `is` `agy.exe` → Include, e `Process Name` `is` `node.exe` → Include. Limpe a lista e comece a captura.
+2. No Process Monitor: **sem filtro de processo** (o agy pode abrir ajudantes com outros nomes, e a análise segue sozinha a árvore de processos do agy). Limpe a lista e comece a captura logo antes do próximo passo.
 3. Rode:
    ```powershell
    node tests\fixtures\agy\probe-win\probe.mjs --pause
    ```
    Ele para antes de cada `agy`; aperte Enter a cada vez.
-4. Pare a captura. File → Save → "Events displayed using current filter", formato CSV.
+4. Pare a captura logo que a sonda terminar. File → Save → "All events", formato CSV (pode ficar grande; a análise lê linha a linha).
 5. Confira o rastreio:
    ```powershell
    node tests\fixtures\agy\probe-win\analyze-trace.mjs <caminho-do.csv> docs\evidencias\gemini-windows-phase0\<runId>\results.json
@@ -101,8 +104,11 @@ Se a última linha for `OK: dry-run concluído, nenhuma cota gasta`, rode a sond
 | `STOP F4: login da assinatura não provado com perfil privado` | O login não sobreviveu ao perfil privado, ou não é de assinatura. Nenhuma cota gasta. Volta para você decidir. |
 | `STOP F3: <hook> não falhou fechado` | Um hook que devia bloquear deixou gravar. Sem trava: o trabalho para. |
 | `STOP F3: hook não disparou` | O `agy` no Windows ignorou o hook: o trabalho para. |
-| `INCONCLUSIVO: …` | Uma execução não provou nada (por exemplo, o modelo nem tentou gravar). Rode de novo uma vez. |
-| `PROIBIDO: …` (analyze-trace) | O `agy` mexeu no seu perfil real: o F5 falha. |
+| `STOP F4: agy models falhou…` / `STOP F4: fonte de login desconhecida…` | A própria checagem de login falhou, ou o Windows mostrou uma fonte de credencial nunca vista. Nenhuma cota gasta; mande o `results.json` para revisão. |
+| `STOP sonda: …` | Problema da própria sonda (por exemplo, um caractere no caminho do seu perfil que ela recusa). Não é fato sobre o agy; mande a linha. |
+| `INCONCLUSIVO: …` | Uma execução não provou nada (o modelo nem tentou gravar, ou `hook-cmd-failed`: a linha de comando do hook não rodou no shell do agy). Mande o `results.json`. |
+| `PROIBIDO: …` (analyze-trace) | A árvore de processos do `agy` mexeu no seu perfil real: o F5 falha. |
+| `INCOMPLETO: …` (analyze-trace) | A captura perdeu algum lançamento do agy. Capture de novo do início ao fim. |
 
 ## Devolvendo a evidência
 

@@ -9,16 +9,19 @@ import { fileURLToPath } from "node:url";
 
 const probe = fileURLToPath(new URL("./probe.mjs", import.meta.url));
 
-function fakeAgy(dir, { login }) {
+function fakeAgy(dir, { login, versionLogin = "", modelsExit = 0 }) {
   const agy = join(dir, "agy");
   writeFileSync(agy, `#!/bin/sh
 case "$1" in
-  --version) echo "1.5.99" ;;
+  --version)
+    if [ -n "${versionLogin}" ]; then mkdir -p "$HOME/.gemini/antigravity-cli/log"; printf '%s\\n' "${versionLogin}" > "$HOME/.gemini/antigravity-cli/log/v.log"; fi
+    echo "1.5.99" ;;
   --help) echo "usage: agy --model --output-format" ;;
   models)
     mkdir -p "$HOME/.gemini/antigravity-cli/log"
     printf '%s\\n' "${login}" > "$HOME/.gemini/antigravity-cli/log/a.log"
-    echo "gemini-3.8-flash-low" ;;
+    echo "gemini-3.8-flash-low"
+    exit ${modelsExit} ;;
   *) echo "inferência não deveria rodar no dry-run" >&2; exit 9 ;;
 esac
 `);
@@ -26,9 +29,9 @@ esac
   return agy;
 }
 
-function runDry(login) {
+function runDry(login, opts = {}) {
   const dir = mkdtempSync(join(tmpdir(), "probe-dry-"));
-  const agy = fakeAgy(dir, { login });
+  const agy = fakeAgy(dir, { login, ...opts });
   const out = join(dir, "out");
   const r = spawnSync(process.execPath, [probe, "--dry-run", "--out", out], {
     encoding: "utf8",
@@ -55,4 +58,23 @@ test("dry-run com login por API: para antes de qualquer inferência", () => {
   assert.equal(r.status, 3);
   assert.equal(res.f4.verdict, "stop");
   assert.match(res.stop, /^STOP F4/);
+});
+
+test("dry-run: models que falha não prova login, mesmo com consumer no log", () => {
+  const { r, res } = runDry("authMethod=consumer (effective: keyring)", { modelsExit: 1 });
+  assert.equal(r.status, 3);
+  assert.match(res.stop, /^STOP F4: agy models falhou/);
+});
+
+test("dry-run: log antigo do --version não conta como login do models", () => {
+  const { r, res } = runDry("nada de login aqui", { versionLogin: "authMethod=consumer (effective: keyring)" });
+  assert.equal(r.status, 3);
+  assert.equal(res.f4.verdict, "stop");
+});
+
+test("dry-run: registra o PID de cada lançamento do agy para o rastreio", () => {
+  const { res } = runDry("authMethod=consumer (effective: keyring)");
+  assert.deepEqual(res.launches.map((l) => l.label), ["agy --version", "agy --help", "agy models"]);
+  assert.ok(res.launches.every((l) => Number.isInteger(l.pid)));
+  assert.ok(Number.isInteger(res.probePid));
 });

@@ -38,7 +38,7 @@ function finish(code, stop) {
   writeFileSync(file, `${JSON.stringify(deep(res), null, 2)}\n`);
   console.log(`resultado: ${file}`);
   if (res.quota) for (const r of res.quota.runs) console.log(`  ${r.hook.padEnd(10)} ${r.outcome.padEnd(15)} arquivo=${r.fileExists} hookRodou=${r.hookLines.length > 0}`);
-  console.log(stop ?? (dryRun ? "OK: dry-run concluído, nenhuma cota gasta" : "OK: Fase 0 concluída"));
+  console.log(stop ? redact(stop, homedir()) : dryRun ? "OK: dry-run concluído, nenhuma cota gasta" : "OK: Fase 0 concluída");
   process.exit(code);
 }
 
@@ -110,7 +110,7 @@ mkdirSync(hookDir, { recursive: true });
 for (const f of ["_record.mjs", ...HOOKS.map((h) => `${h}.mjs`)]) copyFileSync(join(here, "hooks", f), join(hookDir, f));
 const hookCommands = {};
 try { for (const h of HOOKS) hookCommands[h] = hookCommand(["node", join(hookDir, `${h}.mjs`), join(root, `hooklog-${h}.jsonl`)]); }
-catch (e) { finish(5, `STOP sonda: ${e.message} (pasta da sonda: ${root})`); }
+catch (e) { finish(5, `STOP sonda: ${e.message}`); }
 
 const ver = runAgy("agy --version", ["--version"], { env, cwd: env.TEMP });
 const help = runAgy("agy --help", ["--help"], { env, cwd: env.TEMP });
@@ -155,7 +155,7 @@ for (const hook of HOOKS) {
   const stream = parseStream(r.stdout ?? "");
   const hookLines = readFileSync(log, "utf8").split(/\r?\n/).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return { unparsable: l.slice(0, 200) }; } });
   const fileExists = existsSync(join(ws, target));
-  const outcome = classifyRun(hook, { target, fileExists, hookLines, steps: stream.steps });
+  const outcome = classifyRun(hook, { target, workspace: ws, fileExists, hookLines, steps: stream.steps }, path);
   runs.push({ hook, outcome, exit: r.status, timedOut: r.error?.code === "ETIMEDOUT", status: stream.status, events: stream.events, steps: stream.steps, fileExists, hookLines, stderrTail: (r.stderr ?? "").slice(-2000) });
   if (outcome === "fail") finish(4, `STOP F3: ${hook} não falhou fechado (a escrita aconteceu)`);
   if (outcome === "hook-not-run") finish(4, "STOP F3: hook não disparou para a escrita");

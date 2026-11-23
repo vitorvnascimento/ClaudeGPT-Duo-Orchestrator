@@ -40,9 +40,10 @@ test("authVerdict: só consumer com fonte reconhecida prossegue; fonte nova vai 
   assert.equal(authVerdict(ok).lines.length, 2);
 });
 
-test("hookCommand: sem aspas quando não há espaço; aspas com espaço; recusa caracteres do cmd e do PowerShell", () => {
-  assert.equal(hookCommand(["node", "C:\\p\\h.mjs", "C:\\l\\log.jsonl"]), "node C:\\p\\h.mjs C:\\l\\log.jsonl");
-  assert.equal(hookCommand(["node", "C:\\a b\\h.mjs"]), 'node "C:\\a b\\h.mjs"');
+test("hookCommand: executável sem aspas, argumentos sempre entre aspas; recusa caracteres do cmd e do PowerShell", () => {
+  assert.equal(hookCommand(["node", "C:\\p\\h.mjs", "C:\\l\\log.jsonl"]), 'node "C:\\p\\h.mjs" "C:\\l\\log.jsonl"');
+  assert.equal(hookCommand(["node", "C:\\a b;c\\h.mjs"]), 'node "C:\\a b;c\\h.mjs"');
+  assert.throws(() => hookCommand(["no de", "C:\\h.mjs"]), /executável/);
   for (const c of ["%", "^", "&", '"', "!", "$", "`", "'", "\n"]) {
     assert.throws(() => hookCommand(["node", `C:\\p${c}x\\h.mjs`]), /caractere não suportado/, JSON.stringify(c));
   }
@@ -50,19 +51,25 @@ test("hookCommand: sem aspas quando não há espaço; aspas com espaço; recusa 
 
 const HEADER = '"Time of Day","Process Name","PID","Operation","Path","Result","Detail"';
 const row = (t, p, pid, op, path, detail = "") => [t, p, pid, op, path, "SUCCESS", detail].map((c) => `"${c}"`).join(",");
+const PROBE = 50;
+const born = (pid) => row("09:59:59", "node.exe", String(PROBE), "Process Create", "C:\\agy\\agy.exe", `PID: ${pid}, Command line: agy`);
+const read = (pid, path, t = "10:00:00", p = "agy.exe") => row(t, p, String(pid), "ReadFile", path);
+const died = (pid, t = "10:00:09") => row(t, "agy.exe", String(pid), "Process Exit", "", "Exit Status: 0");
 const analyze = (lines, launchPids) => {
-  const a = createTraceAnalyzer({ launchPids, forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Local"], allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win"] });
+  const a = createTraceAnalyzer({ probePid: PROBE, launchPids, forbidden: ["C:\\Users\\v\\.gemini", "C:\\Users\\v\\AppData\\Local"], allowed: ["C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1"] });
   for (const l of [HEADER, ...lines]) a.line(l);
   return a.result();
 };
 
 test("trace: só conta a árvore dos processos lançados; a sonda e outros processos ficam de fora", () => {
   const r = analyze([
-    row("10:00:00", "node.exe", "50", "ReadFile", "C:\\Users\\v\\.gemini\\x"), // a própria sonda
-    row("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\AppData\\Local\\duo-probe-win\\r\\home\\a"),
+    read(PROBE, "C:\\Users\\v\\.gemini\\x", "09:59:58", "node.exe"), // a própria sonda
+    born(100),
+    read(100, "C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run1\\home\\a"),
     row("10:00:02", "agy.exe", "100", "Process Create", "C:\\Windows\\cmd.exe", "PID: 200, Command line: cmd /c node h.mjs"),
-    row("10:00:03", "cmd.exe", "200", "ReadFile", "C:\\Users\\v\\.gemini\\settings, old.json", "Offset: 0, Length: 4"),
-    row("10:00:04", "svchost.exe", "300", "ReadFile", "C:\\Users\\v\\.gemini\\y"),
+    read(200, "C:\\Users\\v\\.gemini\\settings, old.json", "10:00:03", "cmd.exe"),
+    read(300, "C:\\Users\\v\\.gemini\\y", "10:00:04", "svchost.exe"),
+    died(100),
   ], [100]);
   assert.equal(r.verdict, "forbidden");
   assert.deepEqual(r.hits.map((h) => [h.pid, h.path]), [["200", "C:\\Users\\v\\.gemini\\settings, old.json"]]);
@@ -70,20 +77,46 @@ test("trace: só conta a árvore dos processos lançados; a sonda e outros proce
 
 test("trace: Process Start do filho também liga à árvore", () => {
   const r = analyze([
-    row("10:00:00", "agy.exe", "100", "CreateFile", "C:\\Windows\\a"),
+    born(100), read(100, "C:\\Windows\\a"),
     row("10:00:01", "helper.exe", "201", "Process Start", "", "Parent PID: 100, Command line: helper"),
-    row("10:00:02", "helper.exe", "201", "ReadFile", "C:\\Users\\v\\AppData\\Local\\Antigravity\\c"),
+    read(201, "C:\\Users\\v\\AppData\\Local\\Antigravity\\c", "10:00:02", "helper.exe"),
+    died(100),
   ], [100]);
   assert.equal(r.verdict, "forbidden");
   assert.equal(r.hits[0].pid, "201");
 });
 
-test("trace: limpo só com todos os lançamentos cobertos; vazio ou cortado é incompleto", () => {
-  assert.equal(analyze([row("10:00:00", "agy.exe", "100", "CreateFile", "C:\\Windows\\a")], [100]).verdict, "ok");
+test("trace: só a pasta desta execução é permitida, não as de execuções anteriores", () => {
+  const r = analyze([born(100), read(100, "C:\\Users\\v\\AppData\\Local\\duo-probe-win\\run0\\home\\.gemini\\c"), died(100)], [100]);
+  assert.equal(r.verdict, "forbidden");
+});
+
+test("trace: limpo só com cada lançamento criado, com acesso a arquivo e encerrado", () => {
+  assert.equal(analyze([born(100), read(100, "C:\\Windows\\a"), died(100)], [100]).verdict, "ok");
   assert.equal(analyze([], [100]).verdict, "incomplete");
-  const cut = analyze([row("10:00:00", "agy.exe", "100", "CreateFile", "C:\\Windows\\a")], [100, 101]);
+  // Só o início do processo, sem eventos de arquivo nem saída: captura parada cedo demais.
+  const startOnly = analyze([born(100)], [100]);
+  assert.equal(startOnly.verdict, "incomplete");
+  assert.deepEqual(startOnly.missingPids, ["100"]);
+  assert.equal(analyze([born(100), read(100, "C:\\Windows\\a")], [100]).verdict, "incomplete");
+  const cut = analyze([born(100), read(100, "C:\\Windows\\a"), died(100)], [100, 101]);
   assert.equal(cut.verdict, "incomplete");
   assert.deepEqual(cut.missingPids, ["101"]);
+});
+
+test("trace: acesso proibido comprovado vence a cobertura incompleta", () => {
+  const r = analyze([born(100), read(100, "C:\\Users\\v\\.gemini\\x"), died(100)], [100, 101]);
+  assert.equal(r.verdict, "forbidden");
+  assert.deepEqual(r.missingPids, ["101"]);
+});
+
+test("trace: PID reaproveitado antes da criação ou depois da saída não conta", () => {
+  const r = analyze([
+    read(100, "C:\\Users\\v\\.gemini\\antes", "09:00:00", "outro.exe"),
+    born(100), read(100, "C:\\Windows\\a"), died(100),
+    read(100, "C:\\Users\\v\\.gemini\\depois", "11:00:00", "outro.exe"),
+  ], [100]);
+  assert.equal(r.verdict, "ok");
 });
 
 test("resolveAgy: exe, shim .cmd com js, launcher sem extensão antes do .cmd, ausente", () => {
@@ -95,33 +128,45 @@ test("resolveAgy: exe, shim .cmd com js, launcher sem extensão antes do .cmd, a
   assert.deepEqual(resolveAgy("", () => ""), { kind: "missing", path: null, script: null });
 });
 
-const step = (tool, state, path, message = "") => JSON.stringify({ event: "step_update", step_update: { tool_name: tool, state, tool_info: { parameters: { Path: path }, ...(message ? { error: { message } } : {}) } } });
-const hookLine = (path) => ({ toolName: "write_file", args: { Path: path } });
+const WS = "C:\\ws";
+const step = (tool, state, params, message = "") => JSON.stringify({ event: "step_update", step_update: { tool_name: tool, state, tool_info: { parameters: params, ...(message ? { error: { message } } : {}) } } });
+const hookLine = (path, toolName = "write_file") => ({ toolName, args: { Path: path } });
 const T = "probe-deny.txt";
+const run = (hook, target, { fileExists = false, hookLines = [], stream = "" }) => classifyRun(hook, { target, workspace: WS, fileExists, hookLines, steps: parseStream(stream).steps });
 
-test("classifyRun: negação só conta com o alvo no hook e o erro típico daquele hook no stream", () => {
-  const denied = parseStream([step("write_file", "ERROR", `C:\\ws\\${T}`, "tool call denied by pre-tool hook: probe-deny")].join("\n"));
-  assert.equal(classifyRun("deny", { target: T, fileExists: false, hookLines: [hookLine(`C:\\ws\\${T}`)], steps: denied.steps }), "pass");
+test("classifyRun: negação só conta com o caminho exato do alvo no hook e o erro típico daquele hook", () => {
+  const deny = "tool call denied by pre-tool hook: probe-deny";
+  assert.equal(run("deny", T, { hookLines: [hookLine(`C:\\ws\\${T}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\${T}` }, deny) }), "pass");
+  // Caminho relativo resolvido contra a pasta de trabalho.
+  assert.equal(run("deny", T, { hookLines: [hookLine(T)], stream: step("write_file", "ERROR", { Path: T }, deny) }), "pass");
+  // Mesmo nome em subpasta não é o alvo.
+  assert.equal(run("deny", T, { hookLines: [hookLine(`C:\\ws\\sub\\${T}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\sub\\${T}` }, deny) }), "inconclusive");
+  // Parâmetro que não é caminho não identifica o alvo.
+  assert.equal(run("deny", T, { hookLines: [{ toolName: "write_file", args: { Path: "C:\\ws\\x.txt", Content: T } }], stream: step("write_file", "ERROR", { Path: "C:\\ws\\x.txt", Content: T }, deny) }), "inconclusive");
   // Erro comum do sistema de arquivos depois de um hook que liberou: não é prova.
-  const fsErr = parseStream(step("write_file", "ERROR", `C:\\ws\\${T}`, "open C:\\ws\\probe-deny.txt: Access is denied."));
-  assert.equal(classifyRun("deny", { target: T, fileExists: false, hookLines: [hookLine(`C:\\ws\\${T}`)], steps: fsErr.steps }), "inconclusive");
-  // Erro do hook em outro caminho: não é prova para o alvo.
-  const other = parseStream(step("write_file", "ERROR", "C:\\ws\\other.txt", "tool call denied by pre-tool hook: probe-deny"));
-  assert.equal(classifyRun("deny", { target: T, fileExists: false, hookLines: [hookLine("C:\\ws\\other.txt")], steps: other.steps }), "inconclusive");
-  assert.equal(classifyRun("deny", { target: T, fileExists: true, hookLines: [], steps: [] }), "fail");
-  const crash = parseStream(step("write_file", "ERROR", "C:\\ws\\probe-crash.txt", 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:'));
-  assert.equal(classifyRun("crash", { target: "probe-crash.txt", fileExists: false, hookLines: [hookLine("C:\\ws\\probe-crash.txt")], steps: crash.steps }), "pass");
-  const garbage = parseStream(step("write_file", "ERROR", "C:\\ws\\probe-garbage.txt", "failed to unmarshal result from hook jsonhook__probe_PreToolUse_0_0 via protojson: not json"));
-  assert.equal(classifyRun("garbage", { target: "probe-garbage.txt", fileExists: false, hookLines: [hookLine("C:\\ws\\probe-garbage.txt")], steps: garbage.steps }), "pass");
+  assert.equal(run("deny", T, { hookLines: [hookLine(`C:\\ws\\${T}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\${T}` }, "Access is denied.") }), "inconclusive");
+  assert.equal(run("deny", T, { fileExists: true }), "fail");
+  const C = "probe-crash.txt";
+  assert.equal(run("crash", C, { hookLines: [hookLine(`C:\\ws\\${C}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\${C}` }, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:') }), "pass");
+  const G = "probe-garbage.txt";
+  assert.equal(run("garbage", G, { hookLines: [hookLine(`C:\\ws\\${G}`)], stream: step("write_file", "ERROR", { Path: `C:\\ws\\${G}` }, "failed to unmarshal result from hook jsonhook__probe_PreToolUse_0_0 via protojson: not json") }), "pass");
 });
 
-test("classifyRun: controle allow-log separa hook que não rodou, comando do hook quebrado e modelo que não tentou", () => {
+test("classifyRun: tempo esgotado exige motivo de tempo, não falha comum do comando", () => {
+  const M = "probe-timeout.txt";
+  const base = { hookLines: [hookLine(`C:\\ws\\${M}`)] };
+  assert.equal(run("timeout", M, { ...base, stream: step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: signal: killed, stderr:') }), "pass");
+  assert.equal(run("timeout", M, { ...base, stream: step("write_file", "ERROR", { Path: `C:\\ws\\${M}` }, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:') }), "inconclusive");
+});
+
+test("classifyRun: controle allow-log separa hook que não rodou, comando quebrado, evidência ilegível e modelo que não tentou", () => {
   const A = "probe-allow-log.txt";
-  const done = parseStream(step("write_file", "DONE", `C:\\ws\\${A}`));
-  assert.equal(classifyRun("allow-log", { target: A, fileExists: true, hookLines: [hookLine(`C:\\ws\\${A}`)], steps: done.steps }), "pass");
-  assert.equal(classifyRun("allow-log", { target: A, fileExists: true, hookLines: [], steps: done.steps }), "hook-not-run");
-  const broken = parseStream(step("write_file", "ERROR", `C:\\ws\\${A}`, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1'));
-  assert.equal(classifyRun("allow-log", { target: A, fileExists: false, hookLines: [], steps: broken.steps }), "hook-cmd-failed");
-  assert.equal(classifyRun("allow-log", { target: A, fileExists: false, hookLines: [], steps: [] }), "inconclusive");
-  assert.equal(classifyRun("allow-log", { target: A, fileExists: true, hookLines: [{ toolName: "list_dir", args: { Path: "." } }], steps: done.steps }), "hook-not-run");
+  const done = step("write_file", "DONE", { Path: `C:\\ws\\${A}` });
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [hookLine(`C:\\ws\\${A}`)], stream: done }), "pass");
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [], stream: done }), "hook-not-run");
+  assert.equal(run("allow-log", A, { stream: step("write_file", "ERROR", { Path: `C:\\ws\\${A}` }, 'JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1') }), "hook-cmd-failed");
+  assert.equal(run("allow-log", A, {}), "inconclusive");
+  // O hook rodou mas a sonda não reconhece a entrada (stdin ilegível ou ferramenta nova): não é "hook não rodou".
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [{ stdinError: "SyntaxError", toolName: null, args: null }], stream: done }), "inconclusive");
+  assert.equal(run("allow-log", A, { fileExists: true, hookLines: [hookLine(`C:\\ws\\${A}`, "save_file")], stream: done }), "inconclusive");
 });

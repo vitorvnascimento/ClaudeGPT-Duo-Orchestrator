@@ -49,7 +49,7 @@ If the last line is `OK: dry-run concluído, nenhuma cota gasta`, run the full p
 | `STOP sonda: …` | A problem in the probe itself (for example, a character in your profile path it refuses). Not a fact about agy; send the line. |
 | `INCONCLUSIVO: …` | A run gave no proof either way (the model never tried to write, or `hook-cmd-failed`: the hook command line did not run in agy's shell). Send `results.json`. |
 | `PROIBIDO: …` (analyze-trace) | The agy process tree touched your real profile: F5 fails. |
-| `INCOMPLETO: …` (analyze-trace) | The capture missed some agy launches. Capture again from start to end. |
+| `INCOMPLETO: …` (analyze-trace) | The capture missed an agy launch, or stopped before it ended. Capture again, starting before the probe and stopping after it finishes. |
 
 ## Returning the evidence
 
@@ -108,7 +108,7 @@ Se a última linha for `OK: dry-run concluído, nenhuma cota gasta`, rode a sond
 | `STOP sonda: …` | Problema da própria sonda (por exemplo, um caractere no caminho do seu perfil que ela recusa). Não é fato sobre o agy; mande a linha. |
 | `INCONCLUSIVO: …` | Uma execução não provou nada (o modelo nem tentou gravar, ou `hook-cmd-failed`: a linha de comando do hook não rodou no shell do agy). Mande o `results.json`. |
 | `PROIBIDO: …` (analyze-trace) | A árvore de processos do `agy` mexeu no seu perfil real: o F5 falha. |
-| `INCOMPLETO: …` (analyze-trace) | A captura perdeu algum lançamento do agy. Capture de novo do início ao fim. |
+| `INCOMPLETO: …` (analyze-trace) | A captura perdeu um lançamento do agy, ou parou antes de ele terminar. Capture de novo, começando antes da sonda e parando depois que ela terminar. |
 
 ## Devolvendo a evidência
 

@@ -63,14 +63,15 @@ export function authVerdict(logText) {
   return { verdict, methods, effectives, lines };
 }
 
-/** Linha de comando do hook. Sem aspas quando não há espaço (vale no cmd, no PowerShell e no sh); com espaço, aspas.
- * Caracteres que cmd ou PowerShell interpretariam são recusados. */
-export function hookCommand(parts) {
-  for (const p of parts) {
+/** Linha de comando do hook: o executável vai sem aspas (no PowerShell, aspas no início viram texto, não comando) e
+ * cada argumento vai entre aspas (protege espaço e `;`). Caracteres que cmd ou PowerShell interpretariam são recusados. */
+export function hookCommand([exe, ...args]) {
+  if (!/^[\w.\-]+$/.test(exe)) throw new Error(`executável do hook precisa ser um nome simples sem espaço: ${JSON.stringify(exe)}`);
+  for (const p of args) {
     const bad = /[%^&"!$`'\x00-\x1f]/.exec(p);
     if (bad) throw new Error(`caractere não suportado no caminho do hook: ${JSON.stringify(bad[0])}`);
   }
-  return parts.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(" ");
+  return [exe, ...args.map((p) => `"${p}"`)].join(" ");
 }
 
 /** Uma linha de CSV (RFC 4180, sem quebra de linha dentro de campo, como o Process Monitor exporta). */
@@ -97,18 +98,23 @@ const under = (path, prefixes) => {
   return prefixes.some((p) => { const q = p.toLowerCase().replace(/\\+$/, ""); return low === q || low.startsWith(`${q}\\`); });
 };
 
-/** Analisa o rastreio do Process Monitor linha a linha. Só conta eventos dos processos lançados pela sonda (launchPids)
- * e dos descendentes deles (pelas linhas "Process Create"/"Process Start"); a própria sonda fica de fora.
- * Cobertura: cada launchPid precisa ter ao menos um evento, senão o rastreio está incompleto. */
-export function createTraceAnalyzer({ launchPids, forbidden, allowed }) {
-  const tree = new Set(launchPids.map(String));
-  const seen = new Set();
+/** Analisa o rastreio do Process Monitor linha a linha. Só conta eventos dos processos lançados pela sonda e dos
+ * descendentes deles, cada um da criação até a saída (um PID reaproveitado antes ou depois não entra). Um lançamento
+ * só entra na árvore quando a própria sonda (probePid) o cria.
+ * Cobertura: cada lançamento precisa ter criação, ao menos um evento de arquivo e saída; senão o rastreio está
+ * incompleto. Acesso proibido comprovado vence a cobertura incompleta. */
+export function createTraceAnalyzer({ probePid, launchPids, forbidden, allowed }) {
+  const roots = new Set(launchPids.map(String));
+  const probe = String(probePid);
+  const live = new Map(); // pid vivo → lançamento de origem
+  const cover = new Map(launchPids.map((p) => [String(p), { created: false, fs: 0, exited: false }]));
   const hits = [];
   let idx = null;
   let rows = 0;
+  const join = (pid, origin) => { live.set(pid, origin); if (pid === origin) cover.get(origin).created = true; };
   return {
     line(text) {
-      const raw = text.replace(/^﻿/, "");
+      const raw = text.replace(/^\uFEFF/, "");
       if (!raw.trim()) return;
       const cells = parseCsvLine(raw);
       if (!idx) {
@@ -121,16 +127,30 @@ export function createTraceAnalyzer({ launchPids, forbidden, allowed }) {
       const pid = cells[idx.pid];
       const op = cells[idx.op];
       const detail = cells[idx.detail] ?? "";
-      if (op === "Process Create" && tree.has(pid)) { const m = /\bPID: (\d+)/.exec(detail); if (m) tree.add(m[1]); }
-      if (op === "Process Start") { const m = /Parent PID: (\d+)/.exec(detail); if (m && tree.has(m[1])) tree.add(pid); }
-      if (!tree.has(pid)) return;
-      seen.add(pid);
+      if (op === "Process Create") {
+        const child = /\bPID: (\d+)/.exec(detail)?.[1];
+        if (child && pid === probe && roots.has(child)) join(child, child);
+        else if (child && live.has(pid)) join(child, live.get(pid));
+        return;
+      }
+      if (op === "Process Start") {
+        const parent = /Parent PID: (\d+)/.exec(detail)?.[1];
+        if (parent === probe && roots.has(pid)) join(pid, pid);
+        else if (parent && live.has(parent)) join(pid, live.get(parent));
+        return;
+      }
+      if (!live.has(pid)) return;
+      const origin = live.get(pid);
+      if (op === "Process Exit") { if (pid === origin) cover.get(origin).exited = true; live.delete(pid); return; }
       const path = cells[idx.path] ?? "";
-      if (path && under(path, forbidden) && !under(path, allowed)) hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
+      if (!path || /^(Thread |Load Image|Reg|TCP|UDP|Profiling)/.test(op)) return;
+      cover.get(origin).fs++;
+      if (under(path, forbidden) && !under(path, allowed)) hits.push({ time: cells[idx.time], process: cells[idx.process], pid, op, path });
     },
     result() {
-      const missing = launchPids.map(String).filter((p) => !seen.has(p));
-      return { rows, hits, missingPids: missing, verdict: !idx || missing.length ? "incomplete" : hits.length ? "forbidden" : "ok" };
+      const missing = [...cover].filter(([, c]) => !(c.created && c.fs > 0 && c.exited)).map(([p]) => p);
+      const verdict = hits.length ? "forbidden" : !idx || missing.length ? "incomplete" : "ok";
+      return { rows, hits, missingPids: missing, verdict };
     },
   };
 }
@@ -151,7 +171,7 @@ export function resolveAgy(whereOutput, readFile) {
 
 export const WRITE_TOOLS = new Set(["write_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content"]);
 
-/** Passos de ferramenta do stream-json do agy: ferramenta, estado, valores de texto dos parâmetros e mensagem de erro. */
+/** Passos de ferramenta do stream-json do agy: ferramenta, estado, parâmetros de texto (com o nome) e mensagem de erro. */
 export function parseStream(stdout) {
   const events = new Set();
   const steps = [];
@@ -162,33 +182,38 @@ export function parseStream(stdout) {
     if (ev.event === "result") status = ev.result?.status ?? null;
     const u = ev.step_update;
     if (u && typeof u.tool_name === "string") {
-      const params = Object.values(u.tool_info?.parameters ?? {}).filter((v) => typeof v === "string");
+      const params = Object.fromEntries(Object.entries(u.tool_info?.parameters ?? {}).filter(([, v]) => typeof v === "string"));
       steps.push({ tool: u.tool_name, state: u.state ?? null, params, message: String(u.tool_info?.error?.message ?? "") });
     }
   }
   return { events: [...events], status, steps };
 }
 
-/** Mensagem do agy que prova a falha/negação vinda do hook "probe" (formatos vistos no macOS 1.5.x). */
+/** Mensagem do agy que prova a falha/negação vinda do hook "probe" (formatos vistos no macOS 1.5.x). O tempo esgotado
+ * precisa de motivo de tempo: uma falha comum do comando (exit status) não distingue estouro de travamento. */
 export const HOOK_REASON = {
   deny: /denied by pre-tool hook: probe-deny/i,
-  crash: /hook\W+jsonhook__probe_\S*\W+failed/i,
+  crash: /hook\W+jsonhook__probe_\S*\W+failed: command failed: exit status/i,
   garbage: /unmarshal result from hook jsonhook__probe_/i,
-  timeout: /hook\W+jsonhook__probe_\S*\W+failed/i,
+  timeout: /hook\W+jsonhook__probe_\S*\W+failed\b.*(signal: killed|timed? ?out|deadline exceeded|context canceled)/i,
 };
 const ANY_HOOK_FAILURE = /jsonhook__probe_/i;
+const PATH_ARG = /path|file/i;
 
-/** Resultado de uma execução de sonda. Arquivo ausente só prova a trava quando a escrita do alvo chegou ao hook e o
- * stream mostra a mesma escrita terminando no erro típico daquele hook. */
-export function classifyRun(hook, { target, fileExists, hookLines, steps }) {
-  const isTarget = (s) => s.toLowerCase().replace(/\\/g, "/").split("/").pop() === target.toLowerCase();
-  const hookSaw = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && Object.values(l.args ?? {}).some((v) => typeof v === "string" && isTarget(v)));
-  const writes = steps.filter((s) => WRITE_TOOLS.has(s.tool) && s.params.some(isTarget));
+/** Resultado de uma execução de sonda. Arquivo ausente só prova a trava quando a escrita do caminho exato do alvo
+ * (argumento de caminho resolvido contra a pasta de trabalho) chegou ao hook e o stream mostra a mesma escrita
+ * terminando no erro típico daquele hook. */
+export function classifyRun(hook, { target, workspace, fileExists, hookLines, steps }, pathApi = win32) {
+  const want = pathApi.resolve(workspace, target).toLowerCase();
+  const isTarget = (args) => Object.entries(args ?? {}).some(([k, v]) => PATH_ARG.test(k) && typeof v === "string" && pathApi.resolve(workspace, v).toLowerCase() === want);
+  const hookSaw = hookLines.some((l) => WRITE_TOOLS.has(l.toolName) && isTarget(l.args));
+  const writes = steps.filter((s) => WRITE_TOOLS.has(s.tool) && isTarget(s.params));
   if (hook === "allow-log") {
     if (fileExists && hookSaw) return "pass";
     if (!hookLines.length && steps.some((s) => ANY_HOOK_FAILURE.test(s.message))) return "hook-cmd-failed";
-    // Escrita do alvo concluída sem o hook ver essa escrita: o agy ignorou o hook para ela.
-    if (!hookSaw && (fileExists || writes.some((s) => s.state === "DONE"))) return "hook-not-run";
+    // Só "hook não rodou" quando o hook não registrou nada e a escrita do alvo aconteceu. Hook que registrou algo que a
+    // sonda não reconhece (stdin ilegível, ferramenta nova) fica inconclusivo.
+    if (!hookLines.length && (fileExists || writes.some((s) => s.state === "DONE"))) return "hook-not-run";
     return "inconclusive";
   }
   if (fileExists || writes.some((s) => s.state === "DONE")) return "fail";

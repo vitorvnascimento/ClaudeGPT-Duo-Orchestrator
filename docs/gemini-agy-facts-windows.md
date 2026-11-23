@@ -9,6 +9,8 @@ Evidence:
 
 **Decision: GO, conditional.** No stop rule fired. Two items are not yet proven: F5 for three of the eight launches, and the timeout attribution in F3. Phase 0 closes either with the owner's waiver of both (they are re-proven in the Phase 1 battery before any version is verified), or with a new run of the current probe whose analyzer verdict is `OK` over all launches **and** whose timeout run is `pass`. A rerun that is complete but not clean does not close it: a confirmed stop-rule failure (forbidden access, or a hook that does not fail closed) stops the work; an inconclusive result needs the waiver. Until one of the two is recorded here, Phase 1 may be planned but not released.
 
+**Owner waiver (2026-11-23, "Libero os dois"):** both open items are waived for Phase 0 — F5 for the `crash`, `garbage` and `timeout` launches, and the timeout attribution in F3. **Phase 0 is closed: GO.** Both items remain release gates: the Phase 1 battery must prove them on Windows before any `win32` entry goes into `GEMINI_VERIFIED`.
+
 | # | Question | Answer | Evidence |
 |---|----------|--------|----------|
 | F1 | Does `agy` exist for Windows? | Yes. Native `agy.exe` 1.5.15 in `%LOCALAPPDATA%\agy\bin`, installed with `irm https://antigravity.google/cli/install.ps1 \| iex`. | both `results.json` (`f1`) |
@@ -44,6 +46,8 @@ INCOMPLETO: 3 lançamento(s) do agy sem criação, eventos de arquivo ou saída 
 # agy no Windows — fatos da Fase 0
 
 **Decisão: SEGUE, com condição.** Nenhuma regra de parada disparou. Falta prova em dois pontos: o F5 de 3 das 8 execuções e a causa do corte no timeout (F3). A Fase 0 fecha de um destes dois jeitos: você libera os dois pontos (eles são provados de novo na bateria da Fase 1, antes de liberar qualquer versão), ou uma nova rodada da sonda atual dá `OK` na análise de todas as execuções **e** `pass` no timeout. Rodada completa mas não limpa não fecha: falha confirmada de regra de parada (acesso proibido, ou hook que não falha fechado) para o trabalho; resultado inconclusivo precisa da sua liberação. Até isso ficar registrado aqui, a Fase 1 pode ser planejada, mas não publicada.
+
+**Liberação do Vitor (23/11/2026, "Libero os dois"):** os dois pontos ficam liberados para a Fase 0: o F5 das execuções `crash`, `garbage` e `timeout`, e a causa do corte no timeout (F3). **A Fase 0 está fechada: SEGUE.** Os dois continuam como condição de release: a bateria da Fase 1 precisa prová-los no Windows antes de qualquer entrada `win32` em `GEMINI_VERIFIED`.
 
 - **F1:** existe `agy.exe` 1.5.15 nativo em `%LOCALAPPDATA%\agy\bin`.
 - **F2:** o modo headless com stream-json funciona como no Mac.

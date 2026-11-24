@@ -820,6 +820,40 @@ describe("raízes de config reais do agy no Windows", () => {
   });
 });
 
+describe("rastreio de lançamentos (DUO_TRACE_LOG, só testes)", () => {
+  const WIN = { verified: [{ version: "1.5.3", platform: "win32" as const }], platform: "win32" as const, gate: WIN_GATE };
+
+  it("each agy launch of a delegation records its launcher, PID, image and allowed roots", async () => {
+    const s = setup();
+    const log = join(s.tmp, "trace.jsonl");
+    const prev = process.env.DUO_TRACE_LOG;
+    process.env.DUO_TRACE_LOG = log;
+    let out;
+    try { out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN); }
+    finally { if (prev === undefined) delete process.env.DUO_TRACE_LOG; else process.env.DUO_TRACE_LOG = prev; }
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { launcher: { pid: number; image: string }; pid: number; image: string; label: string; allowedRoots: string[] });
+    const labels = lines.map((l) => l.label);
+    assert.ok(labels.includes("auth agy models") && labels.includes("delegate agy"), JSON.stringify(labels));
+    for (const l of lines) {
+      assert.deepEqual(l.launcher, { pid: process.pid, image: process.execPath });
+      assert.ok(Number.isInteger(l.pid) && l.pid > 0 && typeof l.image === "string" && l.image.length > 0, JSON.stringify(l));
+    }
+    const run1 = lines.find((l) => l.label === "delegate agy")!;
+    assert.ok(run1.allowedRoots.includes(t.worktree!), JSON.stringify(run1.allowedRoots));
+    assert.ok(run1.allowedRoots.every((r) => r === t.worktree || r.startsWith(t.geminiStateDir!)), JSON.stringify(run1.allowedRoots));
+  });
+
+  it("without DUO_TRACE_LOG nothing is recorded", async () => {
+    const s = setup();
+    assert.equal(process.env.DUO_TRACE_LOG, undefined);
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(existsSync(join(s.tmp, "trace.jsonl")), false);
+  });
+});
+
 function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", "0"]);
   return r.pid;

@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG, type DuoConfig, type Provider } from "../config.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { childEnv, codexConfiguredModel, defaultAuthPaths } from "../permissions/auth.js";
@@ -466,7 +466,7 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
         if (found) throw Object.assign(new Error("config do agy acima"), { code: `config do agy acima: ${basename(found)}` });
         // Mesma base do resolveExecutable (a pasta atual do duo) e do cliVersions: os dois usam o mesmo executável.
         const launch = launcherFor(resolved, cwd);
-        r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000 });
+        r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000, trace: { label: "catalog agy models", allowedRoots: [dir, work] } });
       } finally { removeProbeDir(work); }
     } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
   } catch (e) {
@@ -518,7 +518,7 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform
       let r: ReturnType<typeof runQuick>;
       try {
         r = platform === "win32"
-          ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
+          ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd, trace: { label: "cliVersions agy --version", allowedRoots: [dirname(cwd)] } }); }, "win32")
           : (() => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env }); })();
       } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; } // perfil de sondagem indisponível: versão desconhecida
       // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.

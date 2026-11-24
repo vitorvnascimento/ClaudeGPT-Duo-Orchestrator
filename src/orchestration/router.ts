@@ -4,7 +4,7 @@
 // 3) sinais do próprio fornecedor (recomendado / legado) e preferências declaradas pelo usuário pesam pouco;
 // 4) disponibilidade atual (CLI, login por assinatura, ciência de uso extra, limite observado).
 // Não há ranking fixo de fornecedores: sem evidência suficiente, a recomendação diz isso.
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { readdirSync, existsSync } from "node:fs";
 import { describeSource, type Capability, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { compareModelVersions, selectEffort, tierOf, type Tier } from "../adapters/tiers.js";
@@ -218,7 +218,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       let profileError: string | null = null;
       try {
         r = platform === "win32"
-          ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
+          ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd, trace: { label: "router agy --version", allowedRoots: [dirname(cwd)] } }); }, "win32")
           : (() => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: childEnv(env).env }); })();
       } catch (e) { profileError = (e as Error).message.replace(/\s+/g, " ").slice(0, 300); r = { ok: false, code: null, stdout: "", stderr: "" }; }
       const v = r.ok ? r.stdout.trim() || null : null;

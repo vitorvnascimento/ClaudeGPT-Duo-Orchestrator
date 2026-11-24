@@ -78,8 +78,9 @@ export type GeminiDelegateOptions = {
   platform?: NodeJS.Platform;
   probe?: () => { ok: true } | { ok: false; reason: string };
   sandbox?: boolean;
-  /** Testes: monta o comando do hook como no Windows (o padrão é o sistema real, onde o hook roda). */
-  gate?: { platform: NodeJS.Platform; nodePath: string };
+  /** Testes: monta o comando do hook como no Windows (o padrão é o sistema real, onde o hook roda); a bateria troca o
+   * script do hook por um de teste (falha, saída inválida, lento) e o prazo dele. */
+  gate?: { platform?: NodeJS.Platform; nodePath?: string; hookScript?: string; timeoutSec?: number };
 };
 
 export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean; quotaExceeded?: boolean; capacityUntil?: string };
@@ -965,7 +966,8 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     let files: ReturnType<typeof writeGateFiles>;
     try {
       files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) },
-        ctx.gemini?.gate ? { nodePath: ctx.gemini.gate.nodePath, platform: ctx.gemini.gate.platform } : { nodePath: process.execPath });
+        { nodePath: ctx.gemini?.gate?.nodePath ?? process.execPath, ...(ctx.gemini?.gate?.platform ? { platform: ctx.gemini.gate.platform } : {}),
+          ...(ctx.gemini?.gate?.hookScript ? { hookScript: ctx.gemini.gate.hookScript } : {}), ...(ctx.gemini?.gate?.timeoutSec ? { timeoutSec: ctx.gemini.gate.timeoutSec } : {}) });
     } catch (e) {
       // Caminho que a linha do hook não aceita (aspas no perfil do Windows, por exemplo): bloqueio registrado e retomável.
       // A pasta da tentativa sai no finally de quem chamou (ctx.cleanups): uma falha ao remover não esconde o bloqueio.
@@ -1155,6 +1157,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
       timeoutMs: ctx.timeoutSec * 1000,
       maxOutputBytes: cfg.limits.maxOutputBytes,
       firstSignal: plan.firstSignal,
+      ...(gemPrep ? { trace: { label: "delegate agy", allowedRoots: [gemPrep.home, gemPrep.attempt.path, plan.cwd] } } : {}),
       signal: ctx.signal ? AbortSignal.any([ctx.signal, nativeAbort.signal]) : nativeAbort.signal,
       onSpawn: (pid) => {
         gemPrep?.attempt.setChildPid(pid);

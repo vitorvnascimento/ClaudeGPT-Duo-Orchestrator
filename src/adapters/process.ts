@@ -1,6 +1,7 @@
 // Execução de processos sem shell: argumentos separados, prompt por stdin,
 // limites de saída, timeout e encerramento da árvore de processos.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 
 const IS_WINDOWS = process.platform === "win32";
@@ -9,6 +10,18 @@ const TAIL_BYTES = 256 * 1024;
 const STDERR_TAIL_BYTES = 64 * 1024;
 /** Espera máxima por um "close" que não vem: depois do SIGKILL (processo preso no kernel) ou com o grupo já vazio (pipes herdados de fora do grupo). */
 const KILL_SETTLE_MS = 2000;
+
+/** Lançamento observável num rastreio (bateria do Windows): rótulo e pastas que esse processo pode tocar. */
+export type LaunchTrace = { label: string; allowedRoots: string[] };
+
+/** Só testes: com DUO_TRACE_LOG, anota este processo (o lançador), o PID e o executável de cada lançamento rastreado. */
+function traceLaunch(trace: LaunchTrace | undefined, pid: number | undefined, image: string): void {
+  const log = process.env.DUO_TRACE_LOG;
+  if (!trace || !log || !pid) return;
+  try {
+    appendFileSync(log, `${JSON.stringify({ launcher: { pid: process.pid, image: process.execPath }, pid, image, label: trace.label, allowedRoots: trace.allowedRoots })}\n`);
+  } catch { /* evidência auxiliar de teste: nunca muda a execução */ }
+}
 
 /** Divide um stream em linhas completas, tolerando fragmentação e UTF-8 partido entre chunks. */
 export class LineSplitter {
@@ -99,6 +112,7 @@ export type RunOptions = {
   /** Uma linha acima de maxLineBytes foi descartada sem passar por onLine. */
   onOversizeLine?: () => void;
   onSpawn?: (pid: number) => void;
+  trace?: LaunchTrace;
   signal?: AbortSignal;
   /** Primeiro sinal no encerramento. Claude Code encerra o turno de forma limpa com SIGINT. */
   firstSignal?: NodeJS.Signals;
@@ -221,6 +235,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
       resolve(emptyResult(started, { spawnError: (e as Error).message }));
       return;
     }
+    traceLaunch(opts.trace, child.pid, opts.command);
     // Grupo visto vazio: com o "close" já recebido, devolve; sem ele, o trabalho acabou (o timeout não vale mais),
     // mas os pipes podem estar herdados: dá um tempo para drenarem e os solta.
     live.set(child, {
@@ -448,7 +463,7 @@ function emptyResult(started: number, extra: Partial<RunResult>): RunResult {
 export function runQuick(
   command: string,
   args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; trace?: LaunchTrace } = {},
 ): { ok: boolean; code: number | null; stdout: string; stderr: string; error?: string } {
   const r = spawnSync(command, args, {
     cwd: opts.cwd,
@@ -462,6 +477,7 @@ export function runQuick(
     maxBuffer: 4 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  traceLaunch(opts.trace, r.pid, command);
   if (!IS_WINDOWS && r.error && r.pid > 0) {
     try {
       process.kill(-r.pid, "SIGKILL");

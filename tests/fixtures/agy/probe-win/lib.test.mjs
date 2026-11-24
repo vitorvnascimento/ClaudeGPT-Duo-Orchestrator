@@ -1,7 +1,7 @@
 // Testes dos helpers puros do teste de fatos do Gemini no Windows. Rodam em qualquer SO (usam path.win32).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, tracePolicy, resolveAgy, parseStream, classifyRun, summarizeAlive } from "./lib.mjs";
+import { redact, privateEnv, authVerdict, hookCommand, createTraceAnalyzer, launchPolicies, tracePolicy, resolveAgy, parseStream, classifyRun, summarizeAlive } from "./lib.mjs";
 
 test("redact: e-mail, token longo e pasta do perfil em todas as grafias", () => {
   const tok = "a".repeat(20) + "B9_-" + "c".repeat(16);
@@ -370,4 +370,61 @@ test("trace: resultado desconhecido ou REPARSE intermediário em pasta proibida 
   assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "ReadFile", "C:\\Users\\v\\.gemini\\x", "")]).verdict, "incomplete");
   assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\x", "REPARSE")]).verdict, "incomplete");
   assert.equal(analyzeR([rowR("10:00:01", "agy.exe", "100", "CreateFile", "C:\\Users\\v\\.gemini\\x", "SHARING VIOLATION")]).verdict, "ok");
+});
+
+// Bateria do duo: cada comando do duo (lançador) cria os seus agy; cada lançamento tem as suas pastas.
+const L = "C:\\Users\\v\\AppData\\Local\\duo\\gemini-state";
+const DUO_LAUNCHES = [
+  { launcher: 60, pid: 100, image: "agy.exe", allowedRoots: [`${L}\\probe\\duo-agy-meta-a`] },
+  { launcher: 61, pid: 101, image: "agy.exe", allowedRoots: [`${L}\\abc\\chain1\\home`, `${L}\\abc\\chain1\\attempts\\t1`, "C:\\proj\\.duo\\worktrees\\t1"] },
+];
+const DUO_LAUNCHERS = [{ pid: 60, image: "C:\\Program Files\\nodejs\\node.exe" }, { pid: 61, image: "C:\\Program Files\\nodejs\\node.exe" }];
+const bornBy = (launcher, pid) => row("09:59:59", "node.exe", String(launcher), "Process Create", "C:\\agy\\agy.exe", `PID: ${pid}, Command line: agy`);
+const duoAnalyze = (lines) => {
+  const a = createTraceAnalyzer({ launchers: DUO_LAUNCHERS, launches: DUO_LAUNCHES, policy: launchPolicies({ ...POLICY_OPTS, runRoot: undefined, probeBase: L }, DUO_LAUNCHES) });
+  for (const l of [HEADER, ...lines]) a.line(l);
+  return a.result();
+};
+
+test("trace duo: cada lançamento se ancora no seu lançador; os dois cobertos dão OK", () => {
+  const r = duoAnalyze([bornBy(60, 100), read(100, `${L}\\probe\\duo-agy-meta-a\\home\\x`), died(100), bornBy(61, 101), read(101, "C:\\proj\\.duo\\worktrees\\t1\\src\\a.ts"), died(101)]);
+  assert.equal(r.verdict, "ok", JSON.stringify(r));
+});
+
+test("trace duo: lançamento esperado ausente, ou criado por outro lançador, fica incompleto e nunca OK", () => {
+  const absent = duoAnalyze([bornBy(60, 100), read(100, `${L}\\probe\\duo-agy-meta-a\\x`), died(100)]);
+  assert.equal(absent.verdict, "incomplete");
+  assert.deepEqual(absent.missing.map((m) => [m.pid, m.launcher, m.created]), [["101", "61", false]]);
+  const wrong = duoAnalyze([bornBy(60, 100), read(100, `${L}\\probe\\duo-agy-meta-a\\x`), died(100), bornBy(60, 101), read(101, "C:\\proj\\.duo\\worktrees\\t1\\a"), died(101)]);
+  assert.equal(wrong.verdict, "incomplete");
+});
+
+test("trace duo: um lançamento lê as próprias pastas, não as de outro lançamento nem a config do dono", () => {
+  const p = launchPolicies({ ...POLICY_OPTS, runRoot: undefined, probeBase: L }, DUO_LAUNCHES);
+  assert.equal(p(`${L}\\abc\\chain1\\home\\.gemini\\x`, 1), "allowed");
+  assert.equal(p("C:\\proj\\.duo\\worktrees\\t1\\src\\a.ts", 1), "allowed");
+  assert.equal(p(`${L}\\abc\\chain1\\home\\.gemini\\x`, 0), "forbidden");
+  assert.equal(p("C:\\proj\\.duo\\worktrees\\t1\\src\\a.ts", 0), "forbidden");
+  assert.equal(p("C:\\Users\\v\\.gemini\\settings.json", 1), "forbidden");
+  assert.equal(p(`${L}\\abc\\chain2\\home\\x`, 1), "forbidden");
+  // Subida de pasta até uma raiz própria não é acesso; o resto da pasta da cadeia é.
+  assert.equal(p(`${L}\\abc\\chain1`, 1), "other");
+  assert.equal(p(`${L}\\abc\\chain1\\owner.json`, 1), "forbidden");
+  const hit = duoAnalyze([bornBy(60, 100), read(100, "C:\\proj\\.duo\\worktrees\\t1\\src\\a.ts"), died(100), bornBy(61, 101), read(101, "C:\\proj\\x"), died(101)]);
+  assert.equal(hit.verdict, "forbidden");
+});
+
+test("trace: o formato antigo (probePid) continua valendo e vira um lançador só", () => {
+  const a = createTraceAnalyzer({ probePid: PROBE, launches: [{ pid: 100, image: "agy.exe" }], policy: POLICY });
+  for (const l of [HEADER, born(100), read(100, "C:\\Windows\\a"), died(100)]) a.line(l);
+  assert.equal(a.result().verdict, "ok");
+  assert.throws(() => createTraceAnalyzer({ launches: [], policy: POLICY }), /sem lançador/);
+});
+
+test("classifyRun: hookName troca o nome do hook nos motivos (bateria do duo: chave duo-gate)", () => {
+  const C = "src/new.ts";
+  const go = (msg, hookName) => classifyRun("crash", { target: C, workspace: WS, fileExists: false, hookLines: [hookLine(`C:\\ws\\${C}`)], steps: parseStream(step("write_file", "ERROR", { Path: `C:\\ws\\${C}` }, msg)).steps, hookName });
+  assert.equal(go('JSON hook "jsonhook__duo-gate_PreToolUse_0_0" failed: command failed: exit status 1, stderr:', "duo-gate"), "pass");
+  assert.equal(go('JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:', "duo-gate"), "inconclusive");
+  assert.equal(go('JSON hook "jsonhook__duo-gate_PreToolUse_0_0" failed: command failed: exit status 1, stderr:', undefined), "inconclusive");
 });

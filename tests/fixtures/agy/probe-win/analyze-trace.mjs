@@ -3,12 +3,14 @@
 // do agy (os lançamentos que a sonda registrou e os filhos deles) acessa o perfil real fora das pastas permitidas.
 // Saída: 0 limpo, 1 acesso proibido, 2 rastreio incompleto ou uso errado. Caminhos impressos passam por redact().
 // Uso: node analyze-trace.mjs <procmon.csv> <results.json>
+// Dois formatos: o results.json da sonda da Fase 0 (probePid + root) e o trace.json da bateria do duo (cada lançamento com
+// o seu lançador { pid, image } e as suas pastas permitidas; stateRoot = a raiz do estado privado do duo).
 import { spawnSync } from "node:child_process";
 import { createReadStream, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { createTraceAnalyzer, redact, resolveAgy, tracePolicy } from "./lib.mjs";
+import { createTraceAnalyzer, launchPolicies, redact, resolveAgy, tracePolicy } from "./lib.mjs";
 
 const [csvPath, resultsPath] = process.argv.slice(2);
 if (!csvPath || !resultsPath) { console.error("uso: node analyze-trace.mjs <procmon.csv> <results.json>"); process.exit(2); }
@@ -20,15 +22,29 @@ const launchPids = launches.map((l) => l.pid);
 // Política do F5 decidida só pelos caminhos do CSV (lib.tracePolicy). O results.json foi limpo por redact: a raiz
 // desta execução volta a partir de %USERPROFILE%. O agy e o Node são localizados nesta máquina.
 const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
-const runRoot = typeof res.root === "string" ? res.root.replace(/%USERPROFILE%/gi, homedir()) : null;
-if (!runRoot || /<token>|<email>/.test(runRoot)) { console.error("results.json sem a raiz privada da execução legível"); process.exit(2); }
+const unredact = (p) => p.replace(/%USERPROFILE%/gi, homedir());
+const readable = (p) => typeof p === "string" && !/<token>|<email>/.test(p);
+const duo = launches.some((l) => l.launcher);
 const where = spawnSync("cmd.exe", ["/d", "/c", "where", "agy"], { encoding: "utf8", timeout: 15_000 });
-const agy = resolveAgy(where.stdout ?? "", (p) => readFileSync(p, "utf8"));
-const probeBase = typeof res.rootBase === "string" ? res.rootBase.replace(/%USERPROFILE%/gi, homedir()) : join(localAppData, "duo-probe-win");
-const policy = tracePolicy({ home: homedir(), appData: process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), localAppData, runRoot, probeBase, agyPath: agy.path, nodeDir: dirname(process.execPath) });
-
-if (!Number.isInteger(res.probePid)) { console.error("results.json sem o PID da sonda"); process.exit(2); }
-const analyzer = createTraceAnalyzer({ probePid: res.probePid, launches, policy });
+const agy = resolveAgy(where.stdout ?? "", (p) => { try { return readFileSync(p, "utf8"); } catch { return ""; } });
+const base = { home: homedir(), appData: process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), localAppData, agyPath: agy.path, nodeDir: dirname(process.execPath) };
+let analyzer;
+if (duo) {
+  // Bateria do duo: todo lançamento com lançador e pastas legíveis; um lançador sem PID/executável é uso errado.
+  if (!launches.every((l) => Number.isInteger(l.launcher?.pid) && typeof l.launcher?.image === "string" && Array.isArray(l.allowedRoots) && l.allowedRoots.length && l.allowedRoots.every(readable))) {
+    console.error("trace.json com lançamento sem lançador ou sem pastas permitidas legíveis"); process.exit(2);
+  }
+  if (!readable(res.stateRoot)) { console.error("trace.json sem a raiz do estado privado do duo legível"); process.exit(2); }
+  for (const l of launches) l.allowedRoots = l.allowedRoots.map(unredact);
+  const launchers = [...new Map(launches.map((l) => [l.launcher.pid, l.launcher])).values()];
+  analyzer = createTraceAnalyzer({ launchers, launches: launches.map((l) => ({ ...l, launcher: l.launcher.pid })), policy: launchPolicies({ ...base, probeBase: unredact(res.stateRoot) }, launches) });
+} else {
+  const runRoot = typeof res.root === "string" ? unredact(res.root) : null;
+  if (!runRoot || !readable(runRoot)) { console.error("results.json sem a raiz privada da execução legível"); process.exit(2); }
+  const probeBase = typeof res.rootBase === "string" ? unredact(res.rootBase) : join(localAppData, "duo-probe-win");
+  if (!Number.isInteger(res.probePid)) { console.error("results.json sem o PID da sonda"); process.exit(2); }
+  analyzer = createTraceAnalyzer({ probePid: res.probePid, launches, policy: tracePolicy({ ...base, runRoot, probeBase }) });
+}
 const rl = createInterface({ input: createReadStream(csvPath, { encoding: "utf8" }), crlfDelay: Infinity });
 for await (const line of rl) analyzer.line(line);
 const r = analyzer.result();

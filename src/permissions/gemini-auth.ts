@@ -66,7 +66,7 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const launch = opts.cwd || opts.projectRoot ? launcherFor(resolved, opts.projectRoot) : resolved;
   const agy = [launch.command, ...launch.prefixArgs, "models"];
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
-  const r = runQuick(cmd as string, args, { env: clean, cwd: opts.cwd, timeoutMs: 30_000 });
+  const r = runQuick(cmd as string, args, { env: clean, cwd: opts.cwd, timeoutMs: 30_000, trace: { label: "auth agy models", allowedRoots: [home, ...(opts.cwd ? [opts.cwd] : [])] } });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
   // Arquivos regulares são lidos; pasta vazia é ignorada (o agy grava o log em arquivos soltos). Qualquer outra entrada
   // (pasta com conteúdo, link, arquivo ou pasta ilegível) pode esconder o sinal conflitante: sem evidência negativa

@@ -45,7 +45,7 @@ Uso:
   duo status [--run-id <id>] [--json]
   duo report [--run-id <id>] [--json]         métricas determinísticas
   duo cancel --run-id <id>
-  duo apply --task-id <id>                    integra patch de task em worktree
+  duo apply --task-id <id> [--ack-drift]      integra patch de task em worktree (--ack-drift: aplica mesmo com aviso da conferência pós-tarefa)
   duo accept --task-id <id> [--reject] [--note <texto>]
   duo handoff --to claude|codex [--run-id <id>] [--next <texto>]
   duo quota refresh
@@ -59,7 +59,7 @@ Códigos de saída de delegate: 0 succeeded, 1 failed, 2 pedido inválido, 3 blo
 
 type Args = { _: string[]; flags: Record<string, string | true> };
 
-const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet", "no-adaptive", "confirm-executor-stopped"]);
+const BOOLEAN_FLAGS = new Set(["json", "apply", "overwrite", "reject", "help", "version", "refresh", "check", "quiet", "no-adaptive", "confirm-executor-stopped", "ack-drift"]);
 
 /** Opções aceitas por comando: uma opção desconhecida é erro (evita flags ignoradas em silêncio). */
 const COMMAND_FLAGS: Record<string, string[]> = {
@@ -71,7 +71,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   status: ["run-id"],
   report: ["run-id"],
   cancel: ["run-id"],
-  apply: ["task-id"],
+  apply: ["task-id", "ack-drift"],
   accept: ["task-id", "reject", "note"],
   handoff: ["to", "run-id", "next"],
   quota: ["provider", "used-percent", "resets-at", "note"],
@@ -358,7 +358,7 @@ async function main(argv: string[]): Promise<number> {
     case "apply": {
       const taskId = str(args, "task-id");
       if (!taskId) throw new Error("informe --task-id");
-      const r = applyTask(projectRootOf(cwd), taskId);
+      const r = applyTask(projectRootOf(cwd), taskId, process.env, { ackDrift: Boolean(args.flags["ack-drift"]) });
       print(r);
       return r.ok ? 0 : 1;
     }

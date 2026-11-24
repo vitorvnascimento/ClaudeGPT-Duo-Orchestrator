@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe, probeAgy } from "../adapters/capabilities.js";
 import { geminiPlatformSupported, isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT, type VerifiedAgy } from "../adapters/gemini.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
+import { lastGeminiDrift } from "../orchestration/drift-check.js";
 import { probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
@@ -216,6 +217,11 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
         missingRequired: caps.missingRequired, sandbox, verified, ...(auth ? { auth } : {}), blockers };
     }
   } else providers.gemini = { enabled: false, note: "executors.gemini.enabled=false" };
+  // Conferência pós-tarefa (Gemini no Windows): a última tarefa com aviso fica visível até alguém revisar.
+  if (root && effectiveCfg.executors.gemini.enabled) {
+    const drift = lastGeminiDrift(new Store(projectRoot));
+    if (drift) (providers.gemini as Record<string, unknown>).lastDrift = drift;
+  }
 
   const claudeUserSettings = join(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "settings.json");
   const audit = {
@@ -302,6 +308,8 @@ export function formatDoctor(r: DoctorReport): string {
       lines.push(`  ${String(info.path)} versão ${String(info.version ?? "?")} | verificada: ${info.verified ? "sim" : "não"} | sandbox-exec: ${!sb ? "não se aplica (Windows: uma trava, decisão do dono)" : sb.ok ? "ok" : `falhou (${sb.reason ?? "?"})`}`);
       if (auth) lines.push(`  login: ${String(auth.method)} — ${String(auth.detail)}`);
       for (const b of info.blockers as string[]) lines.push(`  bloqueio: ${b}`);
+      const drift = info.lastDrift as { taskId: string; changed: number; incomplete: boolean; status: string } | undefined;
+      if (drift) lines.push(`  conferência pós-tarefa: ${drift.taskId} — ${drift.changed} caminho(s) mudaram fora da worktree${drift.incomplete ? "; incompleta" : ""}${drift.status === "pending" ? " (executor sem fim confirmado)" : ""}; apply pede --ack-drift`);
       continue;
     }
     if (!info.installed) {

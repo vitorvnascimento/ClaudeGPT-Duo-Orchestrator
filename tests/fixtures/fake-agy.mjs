@@ -4,6 +4,7 @@
 import { symlinkSync, chmodSync, appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { log, readStdin, report as fakeReport } from "./fake-common.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,12 @@ log({ cmd: "agy-run", args, stdin, home: process.env.HOME, tmpdir: process.env.T
 // Simula escritas do executor no cwd (worktree), como o write_file real faria.
 const writes = JSON.parse(process.env.FAKE_AGY_WRITES ?? "{}");
 for (const [rel, content] of Object.entries(writes)) { mkdirSync(dirname(join(process.cwd(), rel)), { recursive: true }); writeFileSync(join(process.cwd(), rel), content); }
+// Conferência pós-tarefa (Windows): escrita fora da worktree e um comando de outro escritor durante a tentativa.
+for (const [abs, content] of Object.entries(JSON.parse(process.env.FAKE_AGY_ABS_WRITES ?? "{}"))) writeFileSync(abs, content);
+if (process.env.FAKE_AGY_EXEC) {
+  const r = spawnSync(process.execPath, JSON.parse(process.env.FAKE_AGY_EXEC), { cwd: process.env.FAKE_AGY_EXEC_CWD, encoding: "utf8", env: { ...process.env, ...JSON.parse(process.env.FAKE_AGY_EXEC_ENV ?? "{}") } });
+  if (process.env.FAKE_AGY_EXEC_OUT) writeFileSync(process.env.FAKE_AGY_EXEC_OUT, `${r.status}\n${r.stdout}\n${r.stderr}`);
+}
 const scenario = process.env.FAKE_AGY_SCENARIO;
 if (scenario) { process.stdout.write(readFileSync(join(here, "agy", `${scenario}.ndjson`), "utf8")); process.exit(0); }
 const model = valueOf("--model") ?? "gemini-x";

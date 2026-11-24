@@ -197,6 +197,10 @@ export type Task = {
   worktree: string | null;
   worktreeLinks?: string[];
   applied: boolean;
+  /** Quando o patch foi aplicado (janela da conferência pós-tarefa de outras tentativas). */
+  appliedAt?: string;
+  /** Executor gemini no Windows: conferência pós-tarefa do checkout e das configs reais (só avisa). */
+  drift?: TaskDrift;
   executorReport: ExecutorReport | null;
   verification: Verification | null;
   metrics: TaskMetrics | null;
@@ -205,6 +209,17 @@ export type Task = {
   limitations: string[];
   retryOf?: string;
   accepted?: { at: string; accepted: boolean; note: string };
+};
+
+export type TaskDrift = {
+  attemptId: string;
+  /** pending: o executor ainda não teve o fim confirmado; nunca vira complete sem a comparação */
+  status: "pending" | "complete";
+  changed: string[];
+  appliedNotes: { path: string; taskId: string }[];
+  hiddenUnchecked: string[];
+  unverified: string[];
+  incomplete: boolean;
 };
 
 export type Run = {

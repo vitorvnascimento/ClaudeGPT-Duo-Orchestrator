@@ -31,6 +31,7 @@ import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
 import { newId, Store, writeJsonAtomic } from "../state/store.js";
+import { DRIFT_INCOMPLETE, finishDrift, startDrift } from "./drift-check.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
@@ -1054,6 +1055,19 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     if (!policyReason) fresh.invocations++;
   });
   if (policyReason) return block(`política: ${policyReason}`);
+  // Windows sem sandbox do sistema: retrato do checkout e das configs reais antes do spawn (conferência que só avisa).
+  // Sem o marcador gravado o agy não sobe: a conferência nunca fica sem o "antes".
+  const driftCheck = !!gemPrep && (ctx.gemini?.platform ?? process.platform) === "win32";
+  if (driftCheck) {
+    try { startDrift(task, projectRoot, env, basename(gemPrep!.attempt.path)); }
+    catch (error) { return block(`conferência pós-tarefa: não foi possível gravar o retrato inicial (${(error as Error).message})`); }
+  }
+  // Fim do executor confirmado antes de comparar; vivo, a conferência fica pendente e a recuperação termina depois.
+  const settleDrift = () => {
+    if (!driftCheck) return;
+    try { finishDrift(store, task, env, { executorAlive: !!task.pids.child && isPidAlive(task.pids.child) }); }
+    catch { if (!task.limitations.includes(DRIFT_INCOMPLETE)) task.limitations.push(DRIFT_INCOMPLETE); }
+  };
   if (computerUse) delete task.blockedReason;
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;
@@ -1176,6 +1190,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     });
   } catch (e) {
     // Falha ao registrar o andamento (ex.: disco cheio): o executor já foi encerrado; a task não pode ficar "running".
+    settleDrift();
     task.pids.child = null;
     if (computerUse) {
       delete task.blockedReason;
@@ -1196,6 +1211,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   const outcome = parser.finish(lastMessage, result.stderrTail);
   gemPrep?.attempt.cleanup();
   releaseClaim?.();
+  settleDrift();
   const reportedApps = outcome.report?.appsUsed;
   if (computerUse) {
     outcome.reportErrors = [];

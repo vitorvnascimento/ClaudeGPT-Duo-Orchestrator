@@ -1,12 +1,16 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
-import { applyTask } from "../src/orchestration/control.js";
+import { doctor, formatDoctor } from "../src/cli/doctor.js";
+import { applyTask, cancelRun, refreshInterrupted } from "../src/orchestration/control.js";
+import { DRIFT_MARKER, finishDrift, geminiConfigRoots, startDrift } from "../src/orchestration/drift-check.js";
 import { delegate, type DelegateOptions } from "../src/orchestration/delegate.js";
-import { packageRoot } from "../src/paths.js";
+import { cliEntry, packageRoot } from "../src/paths.js";
 import { Store } from "../src/state/store.js";
 import { baseRequest, fakeAgyCommand, makeSandbox, withFakeAgyPath, type Sandbox } from "./helpers.js";
 
@@ -379,3 +383,140 @@ describe("limpeza amarrada à cadeia da task", () => {
     assert.ok(existsSync(tb.geminiStateDir), "estado da outra cadeia preservado");
   });
 });
+
+describe("conferência pós-tarefa no Windows (só avisa)", () => {
+  const WIN = { verified: [{ version: "1.5.3", platform: "win32" as const }], platform: "win32" as const, gate: WIN_GATE };
+  const marker = (s: Sandbox, id: unknown) => join(task(s, id).artifactsDir, DRIFT_MARKER);
+
+  it("a write into the main checkout during the attempt is reported; the task still succeeds; apply needs --ack-drift", async () => {
+    const s = setup();
+    const out = await run(s, req(), { USERPROFILE: s.home, FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }), FAKE_AGY_ABS_WRITES: JSON.stringify({ [join(s.root, "notes.txt")]: "fora da worktree\n" }) }, WIN);
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    const t = task(s, out.summary.taskId);
+    assert.equal(t.drift?.status, "complete");
+    assert.ok(t.drift?.changed.some((p) => p.endsWith("notes.txt")), JSON.stringify(t.drift));
+    assert.ok(t.limitations.includes("checkout drift during the Gemini attempt (1 paths)"), JSON.stringify(t.limitations));
+    assert.equal(existsSync(marker(s, t.taskId)), false);
+    const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    const rep = await doctor(s.root, { ...s.env, USERPROFILE: s.home }, s.authPaths, offline, { platform: "win32", verified: WIN.verified });
+    assert.match(formatDoctor(rep), new RegExp(`conferência pós-tarefa: ${t.taskId} — 1 caminho\\(s\\) mudaram fora da worktree; apply pede --ack-drift`), formatDoctor(rep));
+    const refused = applyTask(s.root, t.taskId, s.env);
+    assert.equal(refused.ok, false);
+    assert.match(refused.message, /--ack-drift/);
+    assert.match(refused.message, /\b1\b/);
+    const ok = applyTask(s.root, t.taskId, s.env, { ackDrift: true });
+    assert.ok(ok.ok, ok.message);
+    assert.ok(task(s, t.taskId).appliedAt);
+  });
+
+  it("a sibling apply during the attempt is named in appliedNotes", async () => {
+    const s = setup();
+    const sib = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 9;\n" }) });
+    assert.equal(sib.summary.state, "succeeded", JSON.stringify(sib.summary));
+    const execOut = join(s.home, "exec.out");
+    const out = await run(s, req(), { FAKE_AGY_EXEC: JSON.stringify([cliEntry(), "apply", "--task-id", String(sib.summary.taskId)]), FAKE_AGY_EXEC_CWD: s.root, FAKE_AGY_EXEC_OUT: execOut, FAKE_AGY_EXEC_ENV: JSON.stringify({ LOCALAPPDATA: s.env.LOCALAPPDATA }) }, WIN);
+    assert.ok(task(s, sib.summary.taskId).applied, readFileSync(execOut, "utf8"));
+    const d = task(s, out.summary.taskId).drift;
+    assert.ok(d?.appliedNotes.some((n) => n.taskId === String(sib.summary.taskId) && n.path.endsWith(join("src", "app.ts"))), JSON.stringify(d));
+  });
+
+  it("darwin writes no marker and no task.drift", { skip: process.platform === "win32" }, async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }), FAKE_AGY_ABS_WRITES: JSON.stringify({ [join(s.root, "notes.txt")]: "x\n" }) });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(task(s, out.summary.taskId).drift, undefined);
+    assert.equal(existsSync(marker(s, out.summary.taskId)), false);
+  });
+
+  it("recovery: executor alive keeps the marker as pending; once it is dead the comparison is recorded once", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    const store = new Store(s.root);
+    const t = task(s, out.summary.taskId);
+    delete t.drift;
+    startDrift(t, s.root, s.env, "attempt-x");
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+    t.state = "running";
+    t.pids = { bridge: deadPid(), child: child.pid! };
+    store.saveTask(t);
+    refreshInterrupted(store, t.taskId, s.env);
+    let fresh = task(s, t.taskId);
+    assert.equal(fresh.drift?.status, "pending");
+    assert.equal(fresh.drift?.incomplete, true);
+    assert.ok(existsSync(marker(s, t.taskId)));
+    child.kill("SIGKILL");
+    await new Promise((r) => child.once("exit", r));
+    refreshInterrupted(store, t.taskId, s.env);
+    fresh = task(s, t.taskId);
+    assert.equal(fresh.drift?.status, "complete");
+    assert.ok(fresh.drift?.changed.some((p) => p.endsWith("late.txt")), JSON.stringify(fresh.drift));
+    assert.ok(!fresh.limitations.includes("post-run check incomplete"), JSON.stringify(fresh.limitations));
+    assert.equal(existsSync(marker(s, t.taskId)), false);
+    const saved = JSON.stringify(fresh.drift);
+    writeFileSync(join(s.root, "later.txt"), "x\n");
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.equal(JSON.stringify(task(s, t.taskId).drift), saved);
+  });
+
+  it("a crash between saving task.drift and removing the marker keeps the saved result", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    const store = new Store(s.root);
+    const t = task(s, out.summary.taskId);
+    startDrift(t, s.root, s.env, "attempt-y");
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    t.drift = { attemptId: "attempt-y", status: "complete", changed: ["salvo"], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false };
+    t.pids = { bridge: deadPid(), child: null };
+    store.saveTask(t);
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.deepEqual(task(s, t.taskId).drift?.changed, ["salvo"]);
+    assert.equal(existsSync(marker(s, t.taskId)), false);
+  });
+
+  it("cancel with a dead executor finishes the comparison from the marker", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    const store = new Store(s.root);
+    const t = task(s, out.summary.taskId);
+    delete t.drift;
+    startDrift(t, s.root, s.env, "attempt-z");
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    t.pids = { bridge: deadPid(), child: null };
+    store.saveTask(t);
+    await cancelRun(s.root, t.runId, 0, s.env);
+    assert.equal(task(s, t.taskId).drift?.status, "complete");
+    assert.equal(existsSync(marker(s, t.taskId)), false);
+  });
+
+  it("finishDrift with the executor still alive never records a complete result", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    const store = new Store(s.root);
+    const t = task(s, out.summary.taskId);
+    delete t.drift;
+    startDrift(t, s.root, s.env, "attempt-w");
+    finishDrift(store, t, s.env, { executorAlive: true });
+    assert.deepEqual(task(s, t.taskId).drift, { attemptId: "attempt-w", status: "pending", changed: [], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: true });
+    assert.ok(task(s, t.taskId).limitations.includes("post-run check incomplete"));
+    assert.ok(existsSync(marker(s, t.taskId)));
+  });
+});
+
+describe("raízes de config reais do agy no Windows", () => {
+  it("uses USERPROFILE (not HOME), its agent dot-dirs and matching APPDATA/LOCALAPPDATA entries", () => {
+    const base = mkdtempSync(join(tmpdir(), "duo-roots-"));
+    try {
+      const home = join(base, "home"), profile = join(base, "profile"), appData = join(base, "Roaming"), local = join(base, "Local");
+      for (const d of [home, join(profile, ".codeium"), join(profile, ".outra"), join(appData, "Antigravity"), join(appData, "Outro"), join(local, "duo")]) mkdirSync(d, { recursive: true });
+      const { roots, errors } = geminiConfigRoots({ HOME: home, USERPROFILE: profile, APPDATA: appData, LOCALAPPDATA: local });
+      assert.deepEqual(roots, [join(appData, "Antigravity"), join(profile, ".codeium"), join(profile, ".gemini")].sort());
+      assert.deepEqual(errors, []);
+    } finally { rmSync(base, { recursive: true, force: true }); }
+  });
+});
+
+function deadPid(): number {
+  const r = spawnSync(process.execPath, ["-e", "0"]);
+  return r.pid;
+}

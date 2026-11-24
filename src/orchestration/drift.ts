@@ -3,7 +3,7 @@
 // reais do agy. Só detecta, não contém. Qualquer falha de leitura ou do git deixa a conferência incompleta, nunca limpa.
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { hashPathStrict } from "../git.js";
 
 type Dict = Record<string, string>;
@@ -18,7 +18,7 @@ export type DriftSnapshot = {
   blind: boolean;
   errors: string[];
 };
-/** unverified: caminhos cujo conteúdo não foi lido num dos retratos (só metadados comparados) */
+/** unverified: caminhos cujo conteúdo falhou na leitura num dos retratos (só metadados comparados); arquivo acima do limite de hash é metadados por desenho (spec) e não entra */
 export type DriftResult = { changed: string[]; appliedNotes: { path: string; taskId: string }[]; hiddenUnchecked: string[]; unverified: string[]; incomplete: boolean };
 export type DriftApply = { taskId: string; root: string; files: string[] };
 
@@ -102,13 +102,21 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
   const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks", "--git-path", "info/sparse-checkout"]);
   if (!dirs.ok) { err("rev-parse --git-dir", dirs); out.blind = true; return; }
   const [gitDir, common, hooks, sparse] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
-  // hooks dentro do .git: a pasta inteira (scripts auxiliares que um hook carrega); fora dele (ex.: core.hooksPath=.),
-  // só os pontos de entrada, e os arquivos rastreados ali já passam pelo status
-  const rel = relative(common!, hooks!);
-  const hooksInGit = !rel.startsWith("..") && !isAbsolute(rel);
-  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...(hooksInGit ? [hooks!] : []), ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
+  // Pasta de hooks inteira (scripts auxiliares que um hook carrega) quando o caminho real fica no .git ou fora do
+  // checkout. Dentro do checkout (ex.: core.hooksPath=., ou link/junção para ele) só os pontos de entrada: os
+  // rastreados passam pelo status e os ignorados ficam fora da conferência (spec). Pasta que não resolve: só entradas.
+  const real = (p: string) => { try { return realpathSync(p); } catch { return null; } };
+  const hooksReal = real(hooks!), commonReal = real(common!), coReal = real(co);
+  const walkHooks = !!hooksReal && ((!!commonReal && inside(commonReal, hooksReal)) || (!!coReal && !inside(coReal, hooksReal)));
+  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...(walkHooks ? [hooks!] : []), ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
     if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
   }
+}
+
+// componente "..", não prefixo: `..hooks` é um nome válido dentro da pasta
+function inside(base: string, p: string): boolean {
+  const rel = relative(base, p);
+  return !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 }
 
 function snapRoot(root: string, out: DriftSnapshot): void {
@@ -131,8 +139,9 @@ function snapRoot(root: string, out: DriftSnapshot): void {
     if (st.isDirectory()) {
       manifest[rel] = "d";
       let names: string[];
+      // listagem que falhou marca "d?": o que havia embaixo no outro retrato não conta como apagado
       try { names = readdirSync(abs); }
-      catch (error) { out.errors.push(`${abs}: ${code(error)}`); return; }
+      catch (error) { out.errors.push(`${abs}: ${code(error)}`); manifest[rel] = "d?"; return; }
       for (const n of names) walk(join(abs, n), rel === "." ? n : `${rel}/${n}`);
       return;
     }
@@ -163,6 +172,7 @@ function diffMaps(a: Dict, b: Dict, same = (x?: string, y?: string) => x === y):
 // assinatura de raiz: tipo:tamanho:mtime:ctime[:hash|?]; com conteúdo não lido num lado, valem só os metadados
 function sameSig(x?: string, y?: string): boolean {
   if (x === y) return true;
+  if (x?.startsWith("d") && y?.startsWith("d")) return true; // "d" e "d?" (diretório não listado)
   if (!x || !y || !(x.endsWith(":?") || y.endsWith(":?"))) return false;
   const meta = (s: string) => s.split(":").slice(0, 4).join(":");
   return meta(x) === meta(y);
@@ -190,7 +200,12 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     const a = before.roots[root] ?? "absent", b = after.roots[root] ?? "absent";
     if (a === "absent" || b === "absent") { if (a !== b) changed.add(root); continue; }
     const abs = (rel: string) => (rel === "." ? root : join(root, rel));
-    for (const rel of diffMaps(a, b, sameSig)) changed.add(abs(rel));
+    const unlisted = (m: Dict, rel: string) => Object.keys(m).some((d) => m[d] === "d?" && (d === "." || rel.startsWith(`${d}/`)));
+    for (const rel of diffMaps(a, b, sameSig)) {
+      // presente só de um lado, sob um diretório que o outro lado não conseguiu listar: sem prova
+      if ((a[rel] === undefined && unlisted(a, rel)) || (b[rel] === undefined && unlisted(b, rel))) continue;
+      changed.add(abs(rel));
+    }
     for (const rel of Object.keys(a)) if (b[rel] !== undefined && (a[rel]!.endsWith(":?") || b[rel]!.endsWith(":?")) && sameSig(a[rel], b[rel])) unverified.add(abs(rel));
   }
   const list = [...changed].sort();

@@ -354,5 +354,52 @@ describe("drift snapshot", () => {
     writeFileSync(sparse, "/a.txt\n");
     assert.deepEqual(compareDrift(before, snap([r, wt]), []).changed, [sparse]);
   });
+
+  it("a .git/hooks symlink to a directory outside .git is not walked whole", { skip: process.platform === "win32" }, () => {
+    const r = repo();
+    writeFileSync(join(r, ".gitignore"), "node_modules/\n");
+    g(r, "add", ".gitignore");
+    g(r, "commit", "-q", "-m", "ignore");
+    g(r, "config", "core.hooksPath", ".git/hooks");
+    rmSync(join(r, ".git", "hooks"), { recursive: true, force: true });
+    symlinkSync(r, join(r, ".git", "hooks"));
+    const before = snap([r]);
+    mkdirSync(join(r, "node_modules"));
+    writeFileSync(join(r, "node_modules", "x.js"), "x");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, []);
+  });
+
+  it("a hooks directory that cannot be listed afterwards is incomplete, not a mass deletion", { skip: process.platform === "win32" || asRoot }, () => {
+    const r = repo();
+    g(r, "config", "core.hooksPath", ".git/hooks");
+    writeFileSync(join(r, ".git", "hooks", "lib.sh"), "true\n");
+    const before = snap([r]);
+    chmodSync(join(r, ".git", "hooks"), 0o000);
+    let after;
+    try { after = snap([r]); } finally { chmodSync(join(r, ".git", "hooks"), 0o755); }
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("a hooks directory named ..hooks inside .git is still walked whole", () => {
+    const r = repo();
+    mkdirSync(join(r, ".git", "..hooks"));
+    writeFileSync(join(r, ".git", "..hooks", "lib.sh"), "true\n");
+    g(r, "config", "core.hooksPath", ".git/..hooks");
+    const before = snap([r]);
+    writeFileSync(join(r, ".git", "..hooks", "lib.sh"), "false\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(r, ".git", "..hooks", "lib.sh")]);
+  });
+
+  it("a hooks directory outside the checkout is walked whole (helper scripts included)", () => {
+    const r = repo();
+    const ext = tmp("duo-drift-githooks-");
+    writeFileSync(join(ext, "lib.sh"), "true\n");
+    g(r, "config", "core.hooksPath", ext);
+    const before = snap([r]);
+    writeFileSync(join(ext, "lib.sh"), "false\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(ext, "lib.sh")]);
+  });
 });
 

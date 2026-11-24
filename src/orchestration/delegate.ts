@@ -111,6 +111,12 @@ function agyConfigProblem(worktree: string): string | null {
   return `config do agy acima da worktree (${basename(above)}, ${levels} níveis acima): remova ou mova o arquivo`;
 }
 
+/** Config do agy na própria worktree ou acima dela (o agy lê as duas). */
+function agyWorktreeConfigProblem(worktree: string): string | null {
+  const own = CODEIUM_CONFIG_NAMES.find((n) => existsSync(join(worktree, n)));
+  return own ? `config do agy na worktree (${own}): remova ou mova o arquivo` : agyConfigProblem(worktree);
+}
+
 function blockTask(task: Task, reason: string): void {
   if (task.state !== "blocked") transition(task, "blocked", reason);
   else { task.outcome = reason; task.updatedAt = new Date().toISOString(); }
@@ -931,9 +937,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     // (fatos da Fase 0). Recusa antes do HOME privado e do gate; a mensagem traz só o nome e a distância, não o caminho.
     // Segunda barreira (os portões já olharam antes do snapshot): pega um arquivo gravado na worktree numa tentativa anterior.
     if ((ctx.gemini?.platform ?? process.platform) === "win32") {
-      const own = CODEIUM_CONFIG_NAMES.find((n) => existsSync(join(execCwd, n)));
-      if (own) return block(`config do agy na worktree (${own}): remova ou mova o arquivo`);
-      const problem = agyConfigProblem(execCwd);
+      const problem = agyWorktreeConfigProblem(execCwd);
       if (problem) return block(problem);
     }
     // Raiz do estado pela plataforma real (a mesma que o apply usa para remover); a injetada só muda o perfil.
@@ -1030,14 +1034,20 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     effectiveCodexConfig,
   });
   const authReason = authBlockReason(auth);
-  if (authReason) { gemPrep?.attempt.cleanup(); return block(`autenticação/cobrança: ${authReason}`); }
+  if (authReason) return block(`autenticação/cobrança: ${authReason}`);
+  // Última olhada antes do spawn: a checagem de login (agy models) pode levar até 30 s, e um arquivo novo nesse meio
+  // tempo seria carregado pelo agy da worktree.
+  if (gemPrep && (ctx.gemini?.platform ?? process.platform) === "win32") {
+    const problem = agyWorktreeConfigProblem(plan.cwd);
+    if (problem) return block(problem);
+  }
   writeJsonAtomic(join(task.artifactsDir, "invocation.json"), redactDeep({ command: plan.command, args: plan.args, cwd: plan.cwd, enforced: plan.enforced }));
 
   // Toda execução marca a passagem para o spawn antes de contar a invocação: se a ponte morrer entre o spawn e o
   // registro do pid, a vaga fica ocupada até recuperação confirmada. Sem o marcador (vaga perdida, falha ao gravar)
   // o executor não sobe e nenhuma invocação é cobrada.
   try { lock.markSpawning(plan); }
-  catch (error) { gemPrep?.attempt.cleanup(); return block(`vaga do executor indisponível antes do spawn: ${(error as Error).message}`); }
+  catch (error) { return block(`vaga do executor indisponível antes do spawn: ${(error as Error).message}`); }
   let policyReason: string | null = null;
   store.updateRun(run.runId, (fresh) => {
     policyReason = policyBlockReason(req, cfg, fresh);

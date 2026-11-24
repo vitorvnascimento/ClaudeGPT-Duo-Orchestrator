@@ -21,6 +21,8 @@ if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? 
 if (has("--help")) { process.stdout.write(readFileSync(join(here, "agy", "help-1.5.3.txt"), "utf8")); process.exit(0); }
 if (args[0] === "models") {
   log({ cmd: "agy-models", home: process.env.HOME });
+  // Testes de corrida: cria um arquivo durante a checagem de login da delegação (a que roda na pasta da tentativa).
+  if (process.env.FAKE_AGY_MODELS_TOUCH && /attempt-/.test(process.cwd())) writeFileSync(process.env.FAKE_AGY_MODELS_TOUCH, "");
   if (process.env.HOME) {
     const d = join(process.env.HOME, ".gemini", "antigravity-cli", "log");
     mkdirSync(d, { recursive: true });

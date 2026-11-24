@@ -200,6 +200,14 @@ describe("delegação ao gemini", () => {
     assert.equal(again.summary.taskId, out.summary.taskId);
   });
 
+  it("win32: an agy config that appears during the login check still blocks before the spawn", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_MODELS_TOUCH: join(s.root, ".duo", "codeium.yml") }, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: WIN_GATE });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /config do agy acima da worktree \(codeium\.yml, 2 níveis acima\)/);
+    assert.equal(agyRuns(s).length, 0);
+  });
+
   it("win32: a refused probe profile blocks with its own reason, not as an unverified version", async () => {
     const s = setup();
     const local = join(s.home, "AppData", "Local");

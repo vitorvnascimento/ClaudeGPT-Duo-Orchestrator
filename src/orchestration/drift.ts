@@ -54,7 +54,7 @@ export function batchByLength(items: string[], budget: number): string[][] {
   return out;
 }
 
-function snapCheckout(co: string, out: DriftSnapshot): void {
+function snapCheckout(co: string, out: DriftSnapshot, checkoutReals: string[]): void {
   const err = (what: string, r: { stderr: string; error?: string }) => out.errors.push(`${co}: git ${what}: ${(r.error ?? r.stderr).trim() || "falhou"}`);
   const fail = (what: string, r: { stderr: string; error?: string }) => { err(what, r); out.failed.push(co); out.blind = true; };
   const head = observe(co, ["rev-parse", "--verify", "--quiet", "HEAD"]);
@@ -105,11 +105,18 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
   // Pasta de hooks inteira (scripts auxiliares que um hook carrega) quando o caminho real fica no .git ou fora do
   // checkout. Dentro do checkout (ex.: core.hooksPath=., ou link/junção para ele) só os pontos de entrada: os
   // rastreados passam pelo status e os ignorados ficam fora da conferência (spec). Pasta que não resolve: só entradas.
-  const real = (p: string) => { try { return realpathSync(p); } catch { return null; } };
-  const hooksReal = real(hooks!), commonReal = real(common!), coReal = real(co);
-  const walkHooks = !!hooksReal && ((!!commonReal && inside(commonReal, hooksReal)) || (!!coReal && !inside(coReal, hooksReal)));
+  // Nenhum checkout observado conta como "fora" (um hooksPath absoluto no checkout principal, visto de uma irmã).
+  let hooksReal: string | null = null;
+  try { hooksReal = realpathSync(hooks!); }
+  catch (error) {
+    const c = (error as NodeJS.ErrnoException).code;
+    // inacessível (não ausente): falha da raiz, nunca "removida"
+    if (c !== "ENOENT" && c !== "ENOTDIR") { out.errors.push(`${hooks}: ${c ?? (error as Error).message}`); if (!out.failed.includes(hooks!)) out.failed.push(hooks!); }
+  }
+  const commonReal = (() => { try { return realpathSync(common!); } catch { return null; } })();
+  const walkHooks = !!hooksReal && ((!!commonReal && inside(commonReal, hooksReal)) || !checkoutReals.some((c) => inside(c, hooksReal!)));
   for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...(walkHooks ? [hooks!] : []), ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
-    if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
+    if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out, checkoutReals);
   }
 }
 
@@ -119,7 +126,7 @@ function inside(base: string, p: string): boolean {
   return !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 }
 
-function snapRoot(root: string, out: DriftSnapshot): void {
+function snapRoot(root: string, out: DriftSnapshot, skipDirs: string[] = []): void {
   const code = (error: unknown) => (error as NodeJS.ErrnoException).code ?? (error as Error).message;
   let real: string;
   try { real = realpathSync(root); }
@@ -138,6 +145,8 @@ function snapRoot(root: string, out: DriftSnapshot): void {
     catch (error) { out.errors.push(`${abs}: ${code(error)}`); return; }
     if (st.isDirectory()) {
       manifest[rel] = "d";
+      // pasta acima de um checkout (ex.: hooksPath=$HOME): não desce nele, o status cobre o que é rastreado
+      if (skipDirs.includes(abs)) return;
       let names: string[];
       // listagem que falhou marca "d?": o que havia embaixo no outro retrato não conta como apagado
       try { names = readdirSync(abs); }
@@ -160,7 +169,8 @@ function snapRoot(root: string, out: DriftSnapshot): void {
 
 export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: string[] }): DriftSnapshot {
   const out: DriftSnapshot = { checkouts: Object.create(null), roots: Object.create(null), failed: [], blind: false, errors: [] };
-  for (const co of opts.checkouts) snapCheckout(co, out);
+  const reals = opts.checkouts.flatMap((co) => { try { return [realpathSync(co)]; } catch { return []; } });
+  for (const co of opts.checkouts) snapCheckout(co, out, reals);
   for (const root of opts.configRoots) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out);
   return out;
 }
@@ -200,7 +210,12 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     const a = before.roots[root] ?? "absent", b = after.roots[root] ?? "absent";
     if (a === "absent" || b === "absent") { if (a !== b) changed.add(root); continue; }
     const abs = (rel: string) => (rel === "." ? root : join(root, rel));
-    const unlisted = (m: Dict, rel: string) => Object.keys(m).some((d) => m[d] === "d?" && (d === "." || rel.startsWith(`${d}/`)));
+    // só os ancestrais do caminho: comparação linear mesmo com milhares de adições
+    const unlisted = (m: Dict, rel: string) => {
+      if (m["."] === "d?") return true;
+      for (let i = rel.indexOf("/"); i > 0; i = rel.indexOf("/", i + 1)) if (m[rel.slice(0, i)] === "d?") return true;
+      return false;
+    };
     for (const rel of diffMaps(a, b, sameSig)) {
       // presente só de um lado, sob um diretório que o outro lado não conseguiu listar: sem prova
       if ((a[rel] === undefined && unlisted(a, rel)) || (b[rel] === undefined && unlisted(b, rel))) continue;

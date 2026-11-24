@@ -401,5 +401,64 @@ describe("drift snapshot", () => {
     writeFileSync(join(ext, "lib.sh"), "false\n");
     assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(ext, "lib.sh")]);
   });
+
+  it("an absolute hooksPath at the main checkout is not walked from a sibling worktree", () => {
+    const r = repo();
+    writeFileSync(join(r, ".gitignore"), "node_modules/\n");
+    g(r, "add", ".gitignore");
+    g(r, "commit", "-q", "-m", "ignore");
+    const wt = join(tmp("duo-drift-wt-"), "sib");
+    g(r, "worktree", "add", "-q", "--detach", wt);
+    g(r, "config", "core.hooksPath", r);
+    const before = snap([r, wt]);
+    mkdirSync(join(r, "node_modules"));
+    writeFileSync(join(r, "node_modules", "x.js"), "x");
+    assert.deepEqual(compareDrift(before, snap([r, wt]), []).changed, []);
+  });
+
+  it("a hooks directory above a checkout does not descend into the checkout", () => {
+    const parent = tmp("duo-drift-parent-");
+    const r = join(parent, "repo");
+    mkdirSync(r);
+    g(r, "init", "-q");
+    writeFileSync(join(r, ".gitignore"), "node_modules/\n");
+    g(r, "add", ".");
+    g(r, "commit", "-q", "-m", "base");
+    g(r, "config", "core.hooksPath", parent);
+    const before = snap([r]);
+    mkdirSync(join(r, "node_modules"));
+    writeFileSync(join(r, "node_modules", "x.js"), "x");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, []);
+  });
+
+  it("a hooks directory that becomes unreachable is incomplete, not removed", { skip: process.platform === "win32" || asRoot }, () => {
+    const r = repo();
+    const ext = tmp("duo-drift-githooks-");
+    mkdirSync(join(ext, "sub", "hooks"), { recursive: true });
+    writeFileSync(join(ext, "sub", "hooks", "lib.sh"), "true\n");
+    g(r, "config", "core.hooksPath", join(ext, "sub", "hooks"));
+    const before = snap([r]);
+    chmodSync(join(ext, "sub"), 0o000);
+    let after;
+    try { after = snap([r]); } finally { chmodSync(join(ext, "sub"), 0o755); }
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("bulk additions compare in linear time", () => {
+    const mk = (n: number, extra: number) => {
+      const m: Record<string, string> = Object.create(null);
+      m["."] = "d";
+      for (let i = 0; i < n; i++) m[`same/${i}`] = "f:1:1:1";
+      for (let i = 0; i < extra; i++) m[`new/${i}`] = "f:1:1:1";
+      return m;
+    };
+    const base = { checkouts: Object.create(null), failed: [], blind: false, errors: [] };
+    const t = Date.now();
+    const out = compareDrift({ ...base, roots: { "/r": mk(8000, 0) } }, { ...base, roots: { "/r": mk(8000, 8000) } }, []);
+    assert.equal(out.changed.length, 8000);
+    assert.ok(Date.now() - t < 500, `${Date.now() - t} ms`);
+  });
 });
 

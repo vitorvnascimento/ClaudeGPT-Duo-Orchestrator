@@ -59,6 +59,9 @@ export function hashPath(abs: string): string | null {
   }
 }
 
+// buffer único reaproveitado: a leitura é síncrona, então nunca há duas em andamento
+const HASH_CHUNK = Buffer.allocUnsafe(1024 * 1024);
+
 /** Como hashPath, mas erro de leitura (arquivo travado, sem permissão) nunca se confunde com ausência. */
 export function hashPathStrict(abs: string): { hash: string } | { missing: true } | { error: string } {
   try {
@@ -67,9 +70,9 @@ export function hashPathStrict(abs: string): { hash: string } | { missing: true 
     if (st.isDirectory()) return { hash: "dir" };
     if (!st.isFile()) return { hash: "other" };
     // leitura em blocos: um arquivo enorme não vira um buffer do mesmo tamanho
-    const h = createHash("sha256"), buf = Buffer.allocUnsafe(1024 * 1024);
+    const h = createHash("sha256");
     const fd = openSync(abs, "r");
-    try { for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) h.update(buf.subarray(0, n)); }
+    try { for (let n; (n = readSync(fd, HASH_CHUNK, 0, HASH_CHUNK.length, null)) > 0;) h.update(HASH_CHUNK.subarray(0, n)); }
     finally { closeSync(fd); }
     return { hash: h.digest("hex") };
   } catch (error) {

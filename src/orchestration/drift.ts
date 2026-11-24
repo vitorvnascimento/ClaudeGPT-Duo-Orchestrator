@@ -24,6 +24,9 @@ export type DriftApply = { taskId: string; root: string; files: string[] };
 // chaves vindas do disco: sem protótipo, `__proto__` é um nome de arquivo como outro
 const dict = (): Dict => Object.create(null) as Dict;
 const SMALL_FILE = 256 * 1024;
+// Pontos de entrada que o git executa: só eles são observados no diretório de hooks (core.hooksPath pode ser
+// qualquer pasta, até a raiz do checkout). Cada um é uma raiz própria, e a raiz segue link: vale o alvo que o git roda.
+const HOOK_NAMES = ["applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit", "post-index-change"];
 // O observador nunca pega o index.lock de um stage, commit ou `duo apply` concorrente, nunca roda o fsmonitor
 // do repositório (comando arbitrário que também poderia esconder mudanças) e não confia no cache de não rastreados.
 function observe(cwd: string, args: string[]) {
@@ -95,10 +98,10 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
   out.checkouts[co] = { head: head.ok ? head.stdout.trim() : null, files, index, indexGaps, hidden };
   // .git fica fora do status: config, config.worktree (também do checkout principal), info/exclude e o diretório
   // de hooks que o git usa de fato (core.hooksPath) entram como raízes
-  const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks"]);
+  const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks", "--git-path", "info/sparse-checkout"]);
   if (!dirs.ok) { err("rev-parse --git-dir", dirs); out.blind = true; return; }
-  const [gitDir, common, hooks] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
-  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), hooks!])) {
+  const [gitDir, common, hooks, sparse] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
+  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
     if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
   }
 }
@@ -131,7 +134,8 @@ function snapRoot(root: string, out: DriftSnapshot): void {
     let sig = `${st.isFile() ? "f" : st.isSymbolicLink() ? "l" : "o"}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
     if (st.isFile() && st.size <= SMALL_FILE) {
       const h = hashPathStrict(abs);
-      if ("error" in h) out.errors.push(h.error);
+      // conteúdo ilegível (arquivo travado no Windows) marca "?": compara só os metadados, e errors deixa incompleto
+      if ("error" in h) { out.errors.push(h.error); sig += ":?"; }
       else if ("hash" in h) sig += `:${h.hash}`;
     }
     manifest[rel] = sig;
@@ -147,8 +151,16 @@ export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: stri
   return out;
 }
 
-function diffMaps(a: Dict, b: Dict): string[] {
-  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => a[k] !== b[k]);
+function diffMaps(a: Dict, b: Dict, same = (x?: string, y?: string) => x === y): string[] {
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => !same(a[k], b[k]));
+}
+
+// assinatura de raiz: tipo:tamanho:mtime:ctime[:hash|?]; com conteúdo não lido num lado, valem só os metadados
+function sameSig(x?: string, y?: string): boolean {
+  if (x === y) return true;
+  if (!x || !y || !(x.endsWith(":?") || y.endsWith(":?"))) return false;
+  const meta = (s: string) => s.split(":").slice(0, 4).join(":");
+  return meta(x) === meta(y);
 }
 
 export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applies: DriftApply[]): DriftResult {
@@ -171,7 +183,7 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     if ((!(root in before.roots) && before.blind) || (!(root in after.roots) && after.blind)) continue;
     const a = before.roots[root] ?? "absent", b = after.roots[root] ?? "absent";
     if (a === "absent" || b === "absent") { if (a !== b) changed.add(root); continue; }
-    for (const rel of diffMaps(a, b)) changed.add(rel === "." ? root : join(root, rel));
+    for (const rel of diffMaps(a, b, sameSig)) changed.add(rel === "." ? root : join(root, rel));
   }
   const list = [...changed].sort();
   // o apply registra caminhos relativos ao checkout principal; ele não absolve o caminho (outro escritor pode ter mexido depois)

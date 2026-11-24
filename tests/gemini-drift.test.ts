@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -209,6 +209,7 @@ describe("drift snapshot", () => {
 
   it("changes to the repository's hooks and config are reported", () => {
     const r = repo();
+    g(r, "config", "core.hooksPath", ".git/hooks"); // isola de um core.hooksPath global
     const before = snap([r]);
     writeFileSync(join(r, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
     g(r, "config", "core.excludesFile", "/tmp/x");
@@ -292,6 +293,56 @@ describe("drift snapshot", () => {
     const out = compareDrift(before, after, []);
     assert.deepEqual(out.changed, []);
     assert.equal(out.incomplete, true);
+  });
+
+  it("core.hooksPath=. watches only hook entry points, not the whole tree", () => {
+    const r = repo();
+    writeFileSync(join(r, ".gitignore"), "node_modules/\n");
+    g(r, "add", ".gitignore");
+    g(r, "commit", "-q", "-m", "ignore");
+    g(r, "config", "core.hooksPath", ".");
+    const before = snap([r]);
+    mkdirSync(join(r, "node_modules"));
+    writeFileSync(join(r, "node_modules", "x.js"), "x");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, []);
+  });
+
+  it("editing the target of a symlinked hook is a change", { skip: process.platform === "win32" }, () => {
+    const r = repo();
+    g(r, "config", "core.hooksPath", ".git/hooks");
+    const shared = join(tmp("duo-drift-shared-"), "hook.sh");
+    writeFileSync(shared, "#!/bin/sh\nexit 0\n");
+    symlinkSync(shared, join(r, ".git", "hooks", "pre-commit"));
+    const before = snap([r]);
+    writeFileSync(shared, "#!/bin/sh\nexit 1\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(r, ".git", "hooks", "pre-commit")]);
+  });
+
+  // travamento de leitura no Windows: os metadados seguem legíveis e iguais, só o conteúdo falha (chmod mudaria o ctime)
+  it("a config file readable before and locked after is incomplete, not changed", () => {
+    const r = repo();
+    const root = join(tmp("duo-drift-home-"), ".gemini");
+    mkdirSync(root);
+    writeFileSync(join(root, "settings.json"), "{}");
+    const before = snap([r], [root]);
+    const after = structuredClone(before);
+    const m = after.roots[root] as Record<string, string>;
+    m["settings.json"] = m["settings.json"]!.replace(/:[0-9a-f]{64}$/, ":?");
+    after.errors.push("settings.json: EBUSY");
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("a linked worktree's own sparse-checkout rules are observed", () => {
+    const r = repo();
+    const wt = join(tmp("duo-drift-wt-"), "sib");
+    g(r, "worktree", "add", "-q", "--detach", wt);
+    const before = snap([r, wt]);
+    const sparse = join(r, ".git", "worktrees", "sib", "info", "sparse-checkout");
+    mkdirSync(join(r, ".git", "worktrees", "sib", "info"), { recursive: true });
+    writeFileSync(sparse, "/a.txt\n");
+    assert.deepEqual(compareDrift(before, snap([r, wt]), []).changed, [sparse]);
   });
 });
 

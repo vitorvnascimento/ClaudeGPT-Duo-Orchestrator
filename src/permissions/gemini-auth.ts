@@ -42,7 +42,9 @@ function classifyAgyLog(text: string): { method: AuthMethod; detail: string; con
 }
 
 /** opts.cwd: pasta privada onde o `agy models` roda (nunca a pasta do projeto: o agy procura config nas pastas acima). */
-export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, profilePath: string | null, opts: { cwd?: string; platform?: NodeJS.Platform; projectRoot?: string } = {}): AuthCheck {
+/** opts.privateRoots: pastas do perfil privado que quem chama criou (HOME, trabalho, temporário); só para o rastreio da
+ * bateria (DUO_TRACE_LOG). Nunca derivadas do ambiente do filho, que é justamente o que o rastreio confere. */
+export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, cfg: DuoConfig, profilePath: string | null, opts: { cwd?: string; platform?: NodeJS.Platform; projectRoot?: string; privateRoots?: string[] } = {}): AuthCheck {
   const { env: clean, removed } = childEnv(env);
   const base = {
     provider: "gemini" as const,
@@ -66,7 +68,7 @@ export function geminiAuthPreflight(resolved: Resolved, env: NodeJS.ProcessEnv, 
   const launch = opts.cwd || opts.projectRoot ? launcherFor(resolved, opts.projectRoot) : resolved;
   const agy = [launch.command, ...launch.prefixArgs, "models"];
   const [cmd, ...args] = profilePath ? [SANDBOX_EXEC, "-f", profilePath, ...agy] : agy;
-  const r = runQuick(cmd as string, args, { env: clean, cwd: opts.cwd, timeoutMs: 30_000, trace: { label: "auth agy models", allowedRoots: [...new Set([home, opts.cwd, clean.TEMP, clean.TMP, clean.TMPDIR].filter((x): x is string => !!x))] } });
+  const r = runQuick(cmd as string, args, { env: clean, cwd: opts.cwd, timeoutMs: 30_000, trace: { label: "auth agy models", allowedRoots: opts.privateRoots ?? [] } });
   // Nunca repassa o stderr cru (pode conter conta ou URL com credencial): só a classe da falha.
   // Arquivos regulares são lidos; pasta vazia é ignorada (o agy grava o log em arquivos soltos). Qualquer outra entrada
   // (pasta com conteúdo, link, arquivo ou pasta ilegível) pode esconder o sinal conflitante: sem evidência negativa
@@ -114,7 +116,7 @@ export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg
       const tmp = join(tmpHome, "tmp");
       mkdirSync(work, { recursive: true });
       mkdirSync(tmp, { recursive: true });
-      a = geminiAuthPreflight(resolved, privateProfileEnv(env, { home, tmpDir: tmp }, platform).env, cfg, null, { cwd: work, platform, ...(projectRoot ? { projectRoot } : {}) });
+      a = geminiAuthPreflight(resolved, privateProfileEnv(env, { home, tmpDir: tmp }, platform).env, cfg, null, { cwd: work, platform, privateRoots: [home, work, tmp], ...(projectRoot ? { projectRoot } : {}) });
     } else a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null, projectRoot ? { projectRoot } : {});
     return { ok: a.method === "subscription", method: a.method, detail: a.detail, conflict: (a as { conflict?: boolean }).conflict === true };
   } catch (e) {

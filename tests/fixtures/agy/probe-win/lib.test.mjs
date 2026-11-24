@@ -429,3 +429,10 @@ test("classifyRun: hookName troca o nome do hook nos motivos (bateria do duo: ch
   assert.equal(go('JSON hook "jsonhook__probe_PreToolUse_0_0" failed: command failed: exit status 1, stderr:', "duo-gate"), "inconclusive");
   assert.equal(go('JSON hook "jsonhook__duo-gate_PreToolUse_0_0" failed: command failed: exit status 1, stderr:', undefined), "inconclusive");
 });
+
+test("trace duo: Process Start não ancora lançamento sem o Process Create do lançador certo (PID reaproveitado)", () => {
+  const wrongCreate = row("09:59:59", "evil.exe", "61", "Process Create", "C:\\agy\\agy.exe", "PID: 101, Command line: agy");
+  const start = row("09:59:59", "agy.exe", "101", "Process Start", "", "Parent PID: 61, Command line: agy");
+  const r = duoAnalyze([bornBy(60, 100), read(100, `${L}\\probe\\duo-agy-meta-a\\x`), died(100), wrongCreate, start, read(101, "C:\\proj\\.duo\\worktrees\\t1\\a"), died(101)]);
+  assert.equal(r.verdict, "incomplete");
+});

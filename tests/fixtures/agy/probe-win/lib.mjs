@@ -202,7 +202,9 @@ export function createTraceAnalyzer({ launchers, probePid, launches, policy }) {
       }
       if (op === "Process Start") {
         const parent = /Parent PID: (\d+)/.exec(detail)?.[1];
-        if (parent && isLauncher(parent, null) && !live.has(pid) && !live.has(parent)) startRoot(parent, pid, cells[idx.process]);
+        // Process Start não traz o executável do pai: só o formato antigo (um lançador, a sonda) o aceita como âncora; com
+        // vários lançadores, só o Process Create do lançador certo (PID e executável) ancora o lançamento.
+        if (!launchers && parent && isLauncher(parent, null) && !live.has(pid) && !live.has(parent)) startRoot(parent, pid, cells[idx.process]);
         else if (parent && live.has(parent) && !live.has(pid)) live.set(pid, live.get(parent));
         return;
       }

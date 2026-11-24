@@ -208,6 +208,26 @@ describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
     assert.ok(inside(String(c.cwd)));
   });
 
+  it("rastreio: as pastas permitidas da checagem de login vêm de quem criou o perfil, nunca do ambiente do filho", () => {
+    const { base, env, cfg, REAL } = setup();
+    const log = join(base, "trace.jsonl");
+    const prev = process.env.DUO_TRACE_LOG;
+    process.env.DUO_TRACE_LOG = log;
+    const resolved = { ok: true as const, command: process.execPath, prefixArgs: [FAKE], source: "config" as const };
+    const priv = join(base, "privado");
+    mkdirSync(priv, { recursive: true });
+    try {
+      // Perfil montado errado: HOME/TEMP do dono. O rastreio não pode liberar o perfil real por causa disso.
+      geminiAuthPreflight(resolved, { ...env, HOME: REAL.USERPROFILE, TEMP: REAL.LOCALAPPDATA }, cfg, null, { cwd: priv, platform: "win32", privateRoots: [priv] });
+      geminiAuthPreflight(resolved, { ...env, HOME: REAL.USERPROFILE }, cfg, null, { cwd: priv, platform: "win32" });
+    } finally { if (prev === undefined) delete process.env.DUO_TRACE_LOG; else process.env.DUO_TRACE_LOG = prev; }
+    const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { label: string; allowedRoots: string[] });
+    assert.equal(lines.length, 2);
+    assert.deepEqual(lines[0]!.allowedRoots, [priv]);
+    // Sem as pastas de quem criou o perfil: nenhuma pasta permitida (o analyze-trace recusa o rastreio; nunca libera o dono).
+    assert.deepEqual(lines[1]!.allowedRoots, []);
+  });
+
   it("preflight da delegação roda na pasta privada que recebe e recusa config do agy acima dela", () => {
     const { base, env, cfg, calls } = setup();
     const home = join(base, "chain", "home");

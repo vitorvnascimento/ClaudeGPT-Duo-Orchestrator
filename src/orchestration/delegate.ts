@@ -1036,7 +1036,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   // Valida o plano efetivo: flags ausentes não excluem fontes, e a worktree
   // pode carregar settings diferentes das que estavam no diretório do cérebro.
   const sourceIndex = plan.args.indexOf("--setting-sources");
-  const auth = gemPrep ? geminiAuthPreflight(ctx.resolved, plan.env, cfg, gemPrep.profilePath, { cwd: gemPrep.attempt.path, platform: ctx.gemini?.platform ?? process.platform }) : await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
+  const auth = gemPrep ? geminiAuthPreflight(ctx.resolved, plan.env, cfg, gemPrep.profilePath, { cwd: gemPrep.attempt.path, platform: ctx.gemini?.platform ?? process.platform, privateRoots: [gemPrep.home, gemPrep.attempt.path] }) : await checkAuth(task.executor, ctx.resolved, cfg, { ...ctx.authPaths, projectRoot: plan.cwd }, plan.env, {
     settingSources: sourceIndex < 0 ? "" : plan.args[sourceIndex + 1] ?? "",
     ignoreUserConfig: plan.args.includes("--ignore-user-config"),
     effectiveCodexConfig,

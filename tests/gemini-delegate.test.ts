@@ -173,7 +173,7 @@ describe("delegação ao gemini", () => {
     assert.equal(agyRuns(s).length, 0);
   });
 
-  it("win32: an agy config file above the worktree blocks before the gate is written; darwin does not check", async () => {
+  it("win32: an agy config file above the worktree blocks before the gate is written", async () => {
     const s = setup();
     writeFileSync(join(s.root, ".duo", ".codeium.yml"), "");
     const out = await run(s, req(), {}, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: WIN_GATE });
@@ -182,6 +182,12 @@ describe("delegação ao gemini", () => {
     assert.ok(!String(out.summary.outcome).includes(s.root), "caminho completo não aparece");
     assert.equal(existsSync(join(s.root, ".duo", "worktrees", String(out.summary.taskId), ".agents", "hooks.json")), false);
     assert.equal(agyRuns(s).length, 0);
+  });
+
+  // O perfil do macOS cria um link para o Keychain: no Windows nativo isso pede privilégio de symlink.
+  it("darwin does not check agy config files above the worktree", { skip: process.platform === "win32" }, async () => {
+    const s = setup();
+    writeFileSync(join(s.root, ".duo", ".codeium.yml"), "");
     const mac = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
     assert.equal(mac.summary.state, "succeeded", JSON.stringify(mac.summary));
   });

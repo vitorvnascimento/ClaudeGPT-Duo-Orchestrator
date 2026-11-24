@@ -5,14 +5,15 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync 
 import { join } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
-import { writeJsonAtomic, type Store } from "../state/store.js";
+import { withFileLock, writeJsonAtomic, type Store } from "../state/store.js";
 import type { Task, TaskDrift } from "../state/types.js";
 import { compareDrift, takeDriftSnapshot, type DriftApply, type DriftSnapshot } from "./drift.js";
 
 export const DRIFT_MARKER = "drift-pending.json";
 export const DRIFT_INCOMPLETE = "post-run check incomplete";
 const DRIFT_PREFIX = "checkout drift during the Gemini attempt";
-export type DriftMarker = { attemptId: string; state: "pending"; startedAt: string; checkouts: string[]; configRoots: string[]; before: DriftSnapshot };
+/** siblingErrors: a lista de worktrees irmãs falhou no retrato "antes"; irmãs achadas depois não são comparáveis */
+export type DriftMarker = { attemptId: string; state: "pending"; startedAt: string; checkouts: string[]; siblingErrors: boolean; configRoots: string[]; before: DriftSnapshot };
 
 const F5_DOT = /^\.(gemini|codeium|antigravity|windsurf)/i;
 const F5_APP = /antigravity|gemini|codeium|windsurf/i;
@@ -93,11 +94,19 @@ export function startDrift(task: Task, projectRoot: string, env: NodeJS.ProcessE
   const startedAt = new Date().toISOString(); // antes do primeiro retrato: a janela de applies cobre tudo o que for visto
   const found = driftCheckouts(projectRoot, task.worktree);
   const { snap, roots } = snapshot(found.checkouts, [], env, found.errors);
-  const marker: DriftMarker = { attemptId, state: "pending", startedAt, checkouts: found.checkouts, configRoots: roots, before: snap };
+  const marker: DriftMarker = { attemptId, state: "pending", startedAt, checkouts: found.checkouts, siblingErrors: found.errors.length > 0, configRoots: roots, before: snap };
   writeJsonAtomic(join(task.artifactsDir, DRIFT_MARKER), marker);
   if (task.drift && unresolved(task.drift)) task.driftHistory = [...(task.driftHistory ?? []), task.drift.status === "complete" ? task.drift : { ...task.drift, incomplete: true }];
   task.drift = emptyDrift(attemptId, "pending", true);
   return marker;
+}
+
+/**
+ * Lock da conferência por task: a publicação de uma tentativa nova (retrato + task pendente) e a gravação feita pela
+ * recuperação nunca se intercalam. Próprio (não o de admissão, que não é reentrante e já envolve quem chama a recuperação).
+ */
+export function withDriftLock<T>(task: Task, fn: () => T): T {
+  return withFileLock(join(task.artifactsDir, "drift.lock"), 5000, fn);
 }
 
 /** Tentativa que não chegou ao spawn (bloqueio depois do retrato): nenhum executor rodou nesta tentativa. */
@@ -133,17 +142,23 @@ function appliesInWindow(store: Store, task: Task, since: number, until: number)
  */
 export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, opts: { executorAlive: boolean; marker?: DriftMarker; recovery?: boolean }): void {
   const commit = (drift: TaskDrift, removeMarker: boolean) => {
-    let target = task;
-    if (opts.recovery) {
-      const fresh = store.loadTask(task.runId, task.taskId);
-      if (!fresh || (fresh.drift && fresh.drift.attemptId !== drift.attemptId)) return; // outra tentativa já assumiu
-      target = fresh;
-    }
-    target.drift = drift;
-    setLimitations(target);
-    store.saveTask(target);
-    if (target !== task) { task.drift = target.drift; task.limitations = target.limitations; task.driftHistory = target.driftHistory; }
-    if (removeMarker) removeMarkerOf(task, drift.attemptId);
+    const apply = () => {
+      let target = task;
+      if (opts.recovery) {
+        const fresh = store.loadTask(task.runId, task.taskId);
+        if (!fresh || (fresh.drift && fresh.drift.attemptId !== drift.attemptId)) return; // outra tentativa já assumiu
+        target = fresh;
+      }
+      const before = JSON.stringify([target.drift, target.limitations]);
+      target.drift = drift;
+      setLimitations(target);
+      // nada mudou (ex.: pendente a cada duo status): não regrava, a task não parece mais nova do que é
+      if (JSON.stringify([target.drift, target.limitations]) !== before) store.saveTask(target);
+      if (target !== task) { task.drift = target.drift; task.limitations = target.limitations; task.driftHistory = target.driftHistory; }
+      // falha ao apagar (arquivo preso no Windows) não desfaz o resultado salvo: a recuperação apaga depois
+      if (removeMarker) { try { removeMarkerOf(task, drift.attemptId); } catch { /* fica para a recuperação */ } }
+    };
+    if (opts.recovery) withDriftLock(task, apply); else apply();
   };
   if (opts.recovery) {
     // a task pode ter mudado desde que o chamador a leu (retomada começou outra tentativa): só segue na mesma
@@ -171,9 +186,9 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
   // marcador de outra tentativa que a registrada na task: não é desta conferência (fica, e o apply segue pedindo --ack-drift)
   if (opts.recovery && task.drift && task.drift.attemptId !== marker.attemptId) return;
   if (opts.executorAlive) { commit(emptyDrift(marker.attemptId, "pending", true), false); return; }
-  // worktrees irmãs criadas durante a tentativa também entram no retrato "depois"
+  // worktrees irmãs criadas durante a tentativa também entram no retrato "depois", se o "antes" conseguiu listá-las
   const found = driftCheckouts(store.projectRoot, task.worktree);
-  const checkouts = [...new Set([...marker.checkouts, ...found.checkouts])];
+  const checkouts = marker.siblingErrors ? marker.checkouts : [...new Set([...marker.checkouts, ...found.checkouts])];
   const { snap: after } = snapshot(checkouts, marker.configRoots, env, found.errors);
   const result = compareDrift(marker.before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now()));
   commit({ attemptId: marker.attemptId, status: "complete", ...result }, true);
@@ -181,11 +196,14 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
 
 /** Comparação que falhou na ponte: incompleta (o apply pede --ack-drift), nunca limpa. */
 export function failDrift(task: Task, attemptId: string): void {
+  if (task.drift?.attemptId === attemptId && task.drift.status === "complete") { task.drift.incomplete = true; setLimitations(task); return; } // mantém os caminhos já achados
   task.drift = emptyDrift(attemptId, "complete", true);
   setLimitations(task);
 }
 
 export const hasDriftMarker = (task: Task) => !!task.artifactsDir && existsSync(join(task.artifactsDir, DRIFT_MARKER));
+/** Conferência a terminar: marcador presente ou task.drift pendente (o marcador pode ter sumido). */
+export const driftNeedsSettling = (task: Task) => hasDriftMarker(task) || task.drift?.status === "pending";
 
 /** Última tarefa gemini com aviso da conferência (duo doctor), mesmo com o executor desligado ou ausente hoje. */
 export function lastGeminiDrift(store: Store): { taskId: string; changed: number; incomplete: boolean } | null {

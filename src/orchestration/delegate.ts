@@ -31,7 +31,7 @@ import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
 import { newId, Store, writeJsonAtomic } from "../state/store.js";
-import { abandonDrift, executorMaybeAlive, failDrift, finishDrift, hasDriftMarker, startDrift, type DriftMarker } from "./drift-check.js";
+import { abandonDrift, driftNeedsSettling, executorMaybeAlive, failDrift, finishDrift, hasDriftMarker, startDrift, withDriftLock, type DriftMarker } from "./drift-check.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
@@ -399,6 +399,11 @@ export async function delegate(opts: DelegateOptions): Promise<DelegateOutcome> 
     if (cuReason) return invalid(cuReason, [], EXIT.blocked);
     if (task.pids.child && isPidAlive(task.pids.child)) {
       return invalid(`o executor da task ${task.taskId} ainda está ativo (pid ${task.pids.child}); rode duo cancel --run-id ${run.runId} antes de retomar`);
+    }
+    // Conferência pós-tarefa da tentativa anterior com o PID dela (a admissão zera o PID): termina antes da nova.
+    if (driftNeedsSettling(task)) {
+      try { finishDrift(store, task, opts.env ?? process.env, { executorAlive: executorMaybeAlive(task.pids.child), recovery: true }); }
+      catch { /* fica pendente: o apply segue pedindo --ack-drift */ }
     }
     if (["planned", "approved", "running"].includes(task.state)) blockTask(task, "interrompida: o processo da ponte não está mais ativo");
     if (task.state !== "blocked") return invalid(`só tarefas em blocked podem ser retomadas (estado atual: ${task.state})`);
@@ -1045,7 +1050,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   if (driftCheck) {
     // conferência da tentativa anterior ainda pendente (retomada): termina ou fica no histórico antes do novo retrato
     if (hasDriftMarker(task)) { try { finishDrift(store, task, env, { executorAlive: executorMaybeAlive(task.pids.child) }); } catch { /* fica no histórico como incompleta */ } }
-    try { driftMarker = startDrift(task, projectRoot, env, driftAttempt); store.saveTask(task); }
+    try { driftMarker = withDriftLock(task, () => { const m = startDrift(task, projectRoot, env, driftAttempt); store.saveTask(task); return m; }); }
     catch (error) { return block(`conferência pós-tarefa: não foi possível gravar o retrato inicial (${(error as Error).message})`); }
   }
   // bloqueio entre o retrato e o spawn: nenhum executor rodou nesta tentativa

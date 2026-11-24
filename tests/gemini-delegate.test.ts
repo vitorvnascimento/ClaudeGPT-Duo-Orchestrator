@@ -8,7 +8,7 @@ import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
 import { doctor, formatDoctor } from "../src/cli/doctor.js";
 import { applyTask, cancelRun, refreshInterrupted } from "../src/orchestration/control.js";
-import { DRIFT_MARKER, finishDrift, geminiConfigRoots, startDrift } from "../src/orchestration/drift-check.js";
+import { DRIFT_MARKER, failDrift, finishDrift, geminiConfigRoots, startDrift } from "../src/orchestration/drift-check.js";
 import { delegate, type DelegateOptions } from "../src/orchestration/delegate.js";
 import { cliEntry, packageRoot } from "../src/paths.js";
 import { Store } from "../src/state/store.js";
@@ -630,6 +630,119 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     assert.equal(fresh.state, "running");
     assert.equal(fresh.drift?.attemptId, "attempt-new");
     assert.ok(existsSync(marker(s, t.taskId)));
+  });
+});
+
+describe("conferência pós-tarefa: ciclo de vida (revisão 2)", () => {
+  const WIN = { verified: [{ version: "1.5.3", platform: "win32" as const }], platform: "win32" as const, gate: WIN_GATE };
+  const marker = (s: Sandbox, id: unknown) => join(task(s, id).artifactsDir, DRIFT_MARKER);
+  async function clean(s: Sandbox) {
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    return task(s, out.summary.taskId);
+  }
+
+  it("an adaptive resume (new task id) cannot apply without --ack-drift for the earlier attempt's drift", async () => {
+    const s = setup();
+    const first = await run(s, req({ adaptive: true }), { FAKE_AGY_ABS_WRITES: JSON.stringify({ [join(s.root, "fora.txt")]: "x\n" }), FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "precisa de decisão" }) }, WIN);
+    assert.equal(first.summary.state, "blocked", JSON.stringify(first.summary));
+    assert.ok(task(s, first.summary.taskId).drift?.changed.length, JSON.stringify(task(s, first.summary.taskId).drift));
+    const next = await resume(s, String(first.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    assert.equal(next.summary.state, "succeeded", JSON.stringify(next.summary));
+    assert.notEqual(next.summary.taskId, first.summary.taskId); // retomada adaptativa: task nova na mesma cadeia
+    const r = applyTask(s.root, String(next.summary.taskId), s.env);
+    assert.equal(r.ok, false, r.message);
+    assert.match(r.message, /fora\.txt/);
+  });
+
+  it("resume settles the previous attempt with its own (dead) executor PID, keeping the changed paths", async () => {
+    const s = setup();
+    const first = await run(s, req(), { FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "precisa de decisão" }) }, WIN);
+    assert.equal(first.summary.state, "blocked", JSON.stringify(first.summary));
+    const store = new Store(s.root);
+    const t = task(s, first.summary.taskId);
+    startDrift(t, s.root, s.env, "attempt-old");
+    t.pids = { bridge: deadPid(), child: deadPid() };
+    store.saveTask(t);
+    writeFileSync(join(s.root, "durante.txt"), "x\n");
+    await resume(s, t.taskId, { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    const old = task(s, t.taskId);
+    const all = [old.drift, ...(old.driftHistory ?? [])].filter((d) => d?.attemptId === "attempt-old");
+    assert.ok(all.some((d) => d?.status === "complete" && d.changed.some((p) => p.endsWith("durante.txt"))), JSON.stringify(old));
+  });
+
+  it("cancel of a running task with a confirmed-dead executor records the comparison", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-cancel");
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    t.state = "running";
+    t.pids = { bridge: deadPid(), child: deadPid() };
+    store.saveTask(t);
+    await cancelRun(s.root, t.runId, 0, s.env);
+    const fresh = task(s, t.taskId);
+    assert.equal(fresh.drift?.status, "complete", JSON.stringify(fresh.drift));
+    assert.ok(fresh.drift?.changed.some((p) => p.endsWith("late.txt")));
+  });
+
+  it("failDrift after a saved comparison keeps the changed paths", async () => {
+    const s = setup();
+    const t = await clean(s);
+    t.drift = { attemptId: "a", status: "complete", changed: ["x"], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false };
+    failDrift(t, "a");
+    assert.deepEqual(t.drift.changed, ["x"]);
+    assert.equal(t.drift.incomplete, true);
+  });
+
+  it("recovery finishes a pending drift whose marker disappeared (through refreshInterrupted)", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-lost");
+    t.pids = { bridge: deadPid(), child: deadPid() };
+    store.saveTask(t);
+    rmSync(marker(s, t.taskId));
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.deepEqual({ status: task(s, t.taskId).drift?.status, incomplete: task(s, t.taskId).drift?.incomplete }, { status: "complete", incomplete: true });
+  });
+
+  it("siblings not listable at baseline are not reported as created afterwards", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const sib = join(s.root, ".duo", "worktrees", "irma");
+    assert.equal(spawnSync("git", ["worktree", "add", "-q", "--detach", sib], { cwd: s.root }).status, 0);
+    const wts = join(s.root, ".duo", "worktrees");
+    chmodSync(wts, 0o000);
+    let m;
+    try { m = startDrift(t, s.root, s.env, "attempt-unlisted"); } finally { chmodSync(wts, 0o755); }
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    const d = task(s, t.taskId).drift;
+    assert.equal(d?.incomplete, true);
+    assert.ok(!d?.changed.some((p) => p.endsWith("irma")), JSON.stringify(d));
+  });
+
+  it("a pending check is not rewritten on every status poll", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-poll");
+    t.pids = { bridge: deadPid(), child: null };
+    store.saveTask(t);
+    refreshInterrupted(store, t.taskId, s.env);
+    const first = task(s, t.taskId).updatedAt;
+    await new Promise((r) => setTimeout(r, 20));
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.equal(task(s, t.taskId).updatedAt, first);
+  });
+
+  it("duo apply --ack-drift false is refused (no positional value counts as consent)", async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }), FAKE_AGY_ABS_WRITES: JSON.stringify({ [join(s.root, "notes.txt")]: "x\n" }) }, WIN);
+    const r = spawnSync(process.execPath, [cliEntry(), "apply", "--task-id", String(out.summary.taskId), "--ack-drift", "false"], { cwd: s.root, env: s.env, encoding: "utf8" });
+    assert.notEqual(r.status, 0);
+    assert.equal(task(s, out.summary.taskId).applied, false);
   });
 });
 

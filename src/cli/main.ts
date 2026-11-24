@@ -356,6 +356,8 @@ async function main(argv: string[]): Promise<number> {
       return r.ok ? 0 : 1;
     }
     case "apply": {
+      // nada solto depois das flags: `--ack-drift false` não pode virar confirmação
+      if (args._.length !== 1) throw new Error("duo apply não aceita argumentos posicionais adicionais");
       const taskId = str(args, "task-id");
       if (!taskId) throw new Error("informe --task-id");
       const r = applyTask(projectRootOf(cwd), taskId, process.env, { ackDrift: args.flags["ack-drift"] === true } /* só a flag nua: --ack-drift=false não confirma */);

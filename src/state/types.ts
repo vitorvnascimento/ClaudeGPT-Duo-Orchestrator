@@ -201,6 +201,8 @@ export type Task = {
   appliedAt?: string;
   /** Executor gemini no Windows: conferência pós-tarefa do checkout e das configs reais (só avisa). */
   drift?: TaskDrift;
+  /** Conferências de tentativas anteriores (retomadas) ainda não resolvidas: o apply também pede --ack-drift por elas. */
+  driftHistory?: TaskDrift[];
   executorReport: ExecutorReport | null;
   verification: Verification | null;
   metrics: TaskMetrics | null;

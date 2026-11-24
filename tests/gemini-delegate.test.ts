@@ -1,7 +1,7 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -399,11 +399,13 @@ describe("conferência pós-tarefa no Windows (só avisa)", () => {
     assert.equal(existsSync(marker(s, t.taskId)), false);
     const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
     const rep = await doctor(s.root, { ...s.env, USERPROFILE: s.home }, s.authPaths, offline, { platform: "win32", verified: WIN.verified });
-    assert.match(formatDoctor(rep), new RegExp(`conferência pós-tarefa: ${t.taskId} — 1 caminho\\(s\\) mudaram fora da worktree; apply pede --ack-drift`), formatDoctor(rep));
+    assert.match(formatDoctor(rep), new RegExp(`conferência pós-tarefa do gemini: ${t.taskId} — 1 caminho\\(s\\) mudaram fora da worktree; apply pede --ack-drift`), formatDoctor(rep));
     const refused = applyTask(s.root, t.taskId, s.env);
     assert.equal(refused.ok, false);
     assert.match(refused.message, /--ack-drift/);
     assert.match(refused.message, /\b1\b/);
+    assert.match(refused.message, /notes\.txt/);
+    assert.ok(refused.message.includes(join(t.artifactsDir, "task.json")), refused.message);
     const ok = applyTask(s.root, t.taskId, s.env, { ackDrift: true });
     assert.ok(ok.ok, ok.message);
     assert.ok(task(s, t.taskId).appliedAt);
@@ -482,7 +484,7 @@ describe("conferência pós-tarefa no Windows (só avisa)", () => {
     delete t.drift;
     startDrift(t, s.root, s.env, "attempt-z");
     writeFileSync(join(s.root, "late.txt"), "x\n");
-    t.pids = { bridge: deadPid(), child: null };
+    t.pids = { bridge: deadPid(), child: deadPid() };
     store.saveTask(t);
     await cancelRun(s.root, t.runId, 0, s.env);
     assert.equal(task(s, t.taskId).drift?.status, "complete");
@@ -499,6 +501,134 @@ describe("conferência pós-tarefa no Windows (só avisa)", () => {
     finishDrift(store, t, s.env, { executorAlive: true });
     assert.deepEqual(task(s, t.taskId).drift, { attemptId: "attempt-w", status: "pending", changed: [], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: true });
     assert.ok(task(s, t.taskId).limitations.includes("post-run check incomplete"));
+    assert.ok(existsSync(marker(s, t.taskId)));
+  });
+});
+
+describe("conferência pós-tarefa: falha fechado (revisão)", () => {
+  const WIN = { verified: [{ version: "1.5.3", platform: "win32" as const }], platform: "win32" as const, gate: WIN_GATE };
+  const marker = (s: Sandbox, id: unknown) => join(task(s, id).artifactsDir, DRIFT_MARKER);
+  async function clean(s: Sandbox) {
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    return task(s, out.summary.taskId);
+  }
+
+  it("recovery with no recorded child PID keeps the check pending (executor may still be writing)", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-np");
+    t.state = "running";
+    t.pids = { bridge: deadPid(), child: null };
+    store.saveTask(t);
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.equal(task(s, t.taskId).drift?.status, "pending");
+    assert.ok(existsSync(marker(s, t.taskId)));
+  });
+
+  it("a resumed attempt keeps the earlier attempt's unresolved drift; apply still needs --ack-drift", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    t.drift = { attemptId: "attempt-1", status: "complete", changed: [join(s.root, "fora.txt")], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false };
+    const m = startDrift(t, s.root, s.env, "attempt-2");
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    const fresh = task(s, t.taskId);
+    assert.equal(fresh.drift?.attemptId, "attempt-2");
+    assert.deepEqual(fresh.drift?.changed, []);
+    assert.equal(fresh.driftHistory?.[0]?.attemptId, "attempt-1");
+    assert.ok(fresh.limitations.includes("checkout drift during the Gemini attempt (1 paths)"), JSON.stringify(fresh.limitations));
+    const r = applyTask(s.root, t.taskId, s.env);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /fora\.txt/);
+  });
+
+  it("an outstanding marker or a pending drift blocks apply without --ack-drift", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-p");
+    store.saveTask(t);
+    const r = applyTask(s.root, t.taskId, s.env);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /incompleta/);
+  });
+
+  it("a baseline marker that disappeared while the drift was pending is incomplete, not clean", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-gone");
+    store.saveTask(t);
+    rmSync(marker(s, t.taskId));
+    finishDrift(store, t, s.env, { executorAlive: false, recovery: true });
+    assert.deepEqual({ status: task(s, t.taskId).drift?.status, incomplete: task(s, t.taskId).drift?.incomplete }, { status: "complete", incomplete: true });
+  });
+
+  it("the bridge compares against its in-memory baseline, not a rewritten marker file", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const m = startDrift(t, s.root, s.env, "attempt-mem");
+    writeFileSync(join(s.root, "escondido.txt"), "x\n");
+    // o executor reescreve o marcador com um "antes" que já inclui a mudança
+    const forged = startDrift(structuredClone(t), s.root, s.env, "attempt-mem");
+    assert.ok(forged);
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.endsWith("escondido.txt")), JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  it("a sibling worktree created after the baseline is seen in the final snapshot", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const m = startDrift(t, s.root, s.env, "attempt-sib");
+    const sib = join(s.root, ".duo", "worktrees", "nova");
+    const r = spawnSync("git", ["worktree", "add", "-q", "--detach", sib], { cwd: s.root, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.endsWith("nova")), JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  it("siblings that cannot be listed make the check incomplete", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const wts = join(s.root, ".duo", "worktrees");
+    const m = startDrift(t, s.root, s.env, "attempt-acl");
+    chmodSync(wts, 0o000);
+    try { finishDrift(store, t, s.env, { executorAlive: false, marker: m }); } finally { chmodSync(wts, 0o755); }
+    assert.equal(task(s, t.taskId).drift?.incomplete, true);
+  });
+
+  it("a marker that cannot be read right now stays pending; the baseline is kept", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-lock");
+    store.saveTask(t);
+    chmodSync(marker(s, t.taskId), 0o000);
+    try { finishDrift(store, t, s.env, { executorAlive: false, recovery: true }); } finally { chmodSync(marker(s, t.taskId), 0o644); }
+    assert.equal(task(s, t.taskId).drift?.status, "pending");
+    assert.ok(existsSync(marker(s, t.taskId)));
+  });
+
+  it("a recovery that read the task before a resume never overwrites the new attempt nor removes its marker", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-old");
+    store.saveTask(t);
+    const stale = task(s, t.taskId);
+    const next = task(s, t.taskId);
+    startDrift(next, s.root, s.env, "attempt-new");
+    next.state = "running";
+    store.saveTask(next);
+    finishDrift(store, stale, s.env, { executorAlive: false, recovery: true });
+    const fresh = task(s, t.taskId);
+    assert.equal(fresh.state, "running");
+    assert.equal(fresh.drift?.attemptId, "attempt-new");
     assert.ok(existsSync(marker(s, t.taskId)));
   });
 });

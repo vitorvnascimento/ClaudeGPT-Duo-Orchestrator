@@ -9,7 +9,7 @@ import { inScope, validateScope } from "../permissions/scope.js";
 import { canTransition, isTerminal, transition } from "../state/machine.js";
 import { recoverSlotsLocked, withAdmission } from "../state/slots.js";
 import { Store } from "../state/store.js";
-import { finishDrift, hasDriftMarker } from "./drift-check.js";
+import { driftOutstanding, executorMaybeAlive, finishDrift, hasDriftMarker } from "./drift-check.js";
 import type { Task } from "../state/types.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -55,7 +55,7 @@ function settlePendingDrift(store: Store, taskId: string | undefined, env: NodeJ
     for (const task of store.listTasks(run)) {
       if ((taskId && task.taskId !== taskId) || !hasDriftMarker(task)) continue;
       if (task.pids.bridge && isPidAlive(task.pids.bridge)) continue; // a ponte ativa termina a própria conferência
-      try { finishDrift(store, task, env, { executorAlive: !!task.pids.child && isPidAlive(task.pids.child) }); }
+      try { finishDrift(store, task, env, { executorAlive: executorMaybeAlive(task.pids.child), recovery: true }); }
       catch { /* fica o marcador: a próxima recuperação tenta de novo */ }
     }
   }
@@ -103,7 +103,7 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
   // ponte encerrada à força (sempre no Windows): a conferência pós-tarefa termina pelo marcador
   for (const task of store.listTasks(run)) {
     if (!hasDriftMarker(task) || (task.pids.bridge && isPidAlive(task.pids.bridge))) continue;
-    try { finishDrift(store, task, env, { executorAlive: !!task.pids.child && isPidAlive(task.pids.child) }); }
+    try { finishDrift(store, task, env, { executorAlive: executorMaybeAlive(task.pids.child), recovery: true }); }
     catch { /* fica o marcador: a recuperação tenta de novo */ }
   }
   store.telemetry({ event: "run_cancelled", runId, tasks: cancelled });
@@ -169,10 +169,11 @@ function applyAdmitted(projectRoot: string, taskId: string, ackDrift: boolean): 
   if (task.state !== "succeeded") return { ok: false, message: `só tasks succeeded podem ser integradas (estado: ${task.state})` };
   if (task.applied) return { ok: true, message: "patch já aplicado anteriormente; nada a fazer" };
   // Só avisa (decisão do dono): o patch fica parado até o cérebro revisar e confirmar com --ack-drift.
-  const d = task.drift;
-  if (d && (d.changed.length || d.incomplete || d.status !== "complete") && !ackDrift) {
-    const what = [d.changed.length ? `${d.changed.length} caminho(s) mudaram fora da worktree durante a tentativa do Gemini` : "", d.incomplete || d.status !== "complete" ? "a conferência pós-tarefa ficou incompleta" : ""].filter(Boolean).join("; ");
-    return { ok: false, message: `${what}. Revise (duo status --run-id ${task.runId}) e rode duo apply --task-id ${taskId} --ack-drift para aplicar mesmo assim.` };
+  // Inclui tentativas anteriores (retomadas) e marcador pendente: falha fechado.
+  const d = driftOutstanding(task);
+  if (d && !ackDrift) {
+    const what = [d.changed.length ? `${d.changed.length} caminho(s) mudaram fora da worktree durante a tentativa do Gemini (${d.changed.slice(0, 5).join(", ")}${d.changed.length > 5 ? ", …" : ""})` : "", d.incomplete ? "a conferência pós-tarefa ficou incompleta" : ""].filter(Boolean).join("; ");
+    return { ok: false, message: `${what}. Detalhes no campo drift de ${join(task.artifactsDir, "task.json")}. Depois de revisar, rode duo apply --task-id ${taskId} --ack-drift para aplicar mesmo assim.` };
   }
   const patch = task.verification?.patchPath;
   if (!patch || !existsSync(patch)) return { ok: false, message: "patch da task não encontrado" };

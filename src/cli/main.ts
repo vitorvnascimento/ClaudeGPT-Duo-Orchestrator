@@ -358,7 +358,7 @@ async function main(argv: string[]): Promise<number> {
     case "apply": {
       const taskId = str(args, "task-id");
       if (!taskId) throw new Error("informe --task-id");
-      const r = applyTask(projectRootOf(cwd), taskId, process.env, { ackDrift: Boolean(args.flags["ack-drift"]) });
+      const r = applyTask(projectRootOf(cwd), taskId, process.env, { ackDrift: args.flags["ack-drift"] === true } /* só a flag nua: --ack-drift=false não confirma */);
       print(r);
       return r.ok ? 0 : 1;
     }

@@ -217,11 +217,9 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
         missingRequired: caps.missingRequired, sandbox, verified, ...(auth ? { auth } : {}), blockers };
     }
   } else providers.gemini = { enabled: false, note: "executors.gemini.enabled=false" };
-  // Conferência pós-tarefa (Gemini no Windows): a última tarefa com aviso fica visível até alguém revisar.
-  if (root && effectiveCfg.executors.gemini.enabled) {
-    const drift = lastGeminiDrift(new Store(projectRoot));
-    if (drift) (providers.gemini as Record<string, unknown>).lastDrift = drift;
-  }
+  // Conferência pós-tarefa (Gemini no Windows): a última tarefa com aviso fica visível até alguém revisar, mesmo com o
+  // executor desligado ou ausente hoje (o patch continua pedindo --ack-drift).
+  const geminiDrift = root ? lastGeminiDrift(new Store(projectRoot)) : null;
 
   const claudeUserSettings = join(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "settings.json");
   const audit = {
@@ -277,6 +275,7 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     },
     warnings,
     ready,
+    ...(geminiDrift ? { geminiDrift } : {}),
   };
 }
 
@@ -298,6 +297,8 @@ export function formatDoctor(r: DoctorReport): string {
     lines.push(`  available=${cu.available} (prerequisites only) | appEnforcement=${cu.appEnforcement} | appsEnforcement=${cu.appsEnforcement}`);
     lines.push(`  ${cu.reason}`);
   }
+  const drift = r.geminiDrift as { taskId: string; changed: number; incomplete: boolean } | undefined;
+  if (drift) lines.push(`conferência pós-tarefa do gemini: ${drift.taskId} — ${drift.changed} caminho(s) mudaram fora da worktree${drift.incomplete ? "; conferência incompleta" : ""}; apply pede --ack-drift`);
   for (const [p, info] of Object.entries(r.providers as Record<string, Record<string, unknown>>)) {
     lines.push(`\n[${p}]`);
     if (p === "gemini") {
@@ -308,8 +309,6 @@ export function formatDoctor(r: DoctorReport): string {
       lines.push(`  ${String(info.path)} versão ${String(info.version ?? "?")} | verificada: ${info.verified ? "sim" : "não"} | sandbox-exec: ${!sb ? "não se aplica (Windows: uma trava, decisão do dono)" : sb.ok ? "ok" : `falhou (${sb.reason ?? "?"})`}`);
       if (auth) lines.push(`  login: ${String(auth.method)} — ${String(auth.detail)}`);
       for (const b of info.blockers as string[]) lines.push(`  bloqueio: ${b}`);
-      const drift = info.lastDrift as { taskId: string; changed: number; incomplete: boolean; status: string } | undefined;
-      if (drift) lines.push(`  conferência pós-tarefa: ${drift.taskId} — ${drift.changed} caminho(s) mudaram fora da worktree${drift.incomplete ? "; incompleta" : ""}${drift.status === "pending" ? " (executor sem fim confirmado)" : ""}; apply pede --ack-drift`);
       continue;
     }
     if (!info.installed) {

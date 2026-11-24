@@ -31,7 +31,7 @@ import { loadSchema, validate } from "../schema.js";
 import { transition } from "../state/machine.js";
 import { ExecutorSlots, activeSlots, type Isolation } from "../state/slots.js";
 import { newId, Store, writeJsonAtomic } from "../state/store.js";
-import { DRIFT_INCOMPLETE, finishDrift, startDrift } from "./drift-check.js";
+import { abandonDrift, executorMaybeAlive, failDrift, finishDrift, hasDriftMarker, startDrift, type DriftMarker } from "./drift-check.js";
 import { isWriteKind, type AcceptanceResult, type Chain, type ChainAttempt, type DelegationRequest, type Run, type Task, type TaskState, type Verification } from "../state/types.js";
 import { isAllowlisted, runAcceptance } from "./acceptance.js";
 import { policyBlockReason } from "./policy.js";
@@ -1036,11 +1036,31 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   });
   const authReason = authBlockReason(auth);
   if (authReason) return block(`autenticação/cobrança: ${authReason}`);
+  // Windows sem sandbox do sistema: retrato do checkout e das configs reais (conferência que só avisa), antes da última
+  // olhada nas configs do agy e antes de cobrar a invocação. Sem o marcador gravado o agy não sobe. A ponte guarda o
+  // retrato em memória para a comparação (o executor não o alcança); o arquivo serve à recuperação.
+  const driftCheck = !!gemPrep && (ctx.gemini?.platform ?? process.platform) === "win32";
+  const driftAttempt = gemPrep ? basename(gemPrep.attempt.path) : "";
+  let driftMarker: DriftMarker | null = null;
+  if (driftCheck) {
+    // conferência da tentativa anterior ainda pendente (retomada): termina ou fica no histórico antes do novo retrato
+    if (hasDriftMarker(task)) { try { finishDrift(store, task, env, { executorAlive: executorMaybeAlive(task.pids.child) }); } catch { /* fica no histórico como incompleta */ } }
+    try { driftMarker = startDrift(task, projectRoot, env, driftAttempt); store.saveTask(task); }
+    catch (error) { return block(`conferência pós-tarefa: não foi possível gravar o retrato inicial (${(error as Error).message})`); }
+  }
+  // bloqueio entre o retrato e o spawn: nenhum executor rodou nesta tentativa
+  const blockBeforeSpawn = (reason: string) => { if (driftMarker) abandonDrift(task, driftAttempt); return block(reason); };
+  // Fim do executor confirmado antes de comparar; vivo, a conferência fica pendente e a recuperação termina depois.
+  const settleDrift = () => {
+    if (!driftMarker) return;
+    try { finishDrift(store, task, env, { executorAlive: !!task.pids.child && isPidAlive(task.pids.child), marker: driftMarker }); }
+    catch { failDrift(task, driftAttempt); }
+  };
   // Última olhada antes do spawn: a checagem de login (agy models) pode levar até 30 s, e um arquivo novo nesse meio
   // tempo seria carregado pelo agy da worktree.
   if (gemPrep && (ctx.gemini?.platform ?? process.platform) === "win32") {
     const problem = agyWorktreeConfigProblem(plan.cwd);
-    if (problem) return block(problem);
+    if (problem) return blockBeforeSpawn(problem);
   }
   writeJsonAtomic(join(task.artifactsDir, "invocation.json"), redactDeep({ command: plan.command, args: plan.args, cwd: plan.cwd, enforced: plan.enforced }));
 
@@ -1048,26 +1068,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   // registro do pid, a vaga fica ocupada até recuperação confirmada. Sem o marcador (vaga perdida, falha ao gravar)
   // o executor não sobe e nenhuma invocação é cobrada.
   try { lock.markSpawning(plan); }
-  catch (error) { return block(`vaga do executor indisponível antes do spawn: ${(error as Error).message}`); }
+  catch (error) { return blockBeforeSpawn(`vaga do executor indisponível antes do spawn: ${(error as Error).message}`); }
   let policyReason: string | null = null;
   store.updateRun(run.runId, (fresh) => {
     policyReason = policyBlockReason(req, cfg, fresh);
     if (!policyReason) fresh.invocations++;
   });
-  if (policyReason) return block(`política: ${policyReason}`);
-  // Windows sem sandbox do sistema: retrato do checkout e das configs reais antes do spawn (conferência que só avisa).
-  // Sem o marcador gravado o agy não sobe: a conferência nunca fica sem o "antes".
-  const driftCheck = !!gemPrep && (ctx.gemini?.platform ?? process.platform) === "win32";
-  if (driftCheck) {
-    try { startDrift(task, projectRoot, env, basename(gemPrep!.attempt.path)); }
-    catch (error) { return block(`conferência pós-tarefa: não foi possível gravar o retrato inicial (${(error as Error).message})`); }
-  }
-  // Fim do executor confirmado antes de comparar; vivo, a conferência fica pendente e a recuperação termina depois.
-  const settleDrift = () => {
-    if (!driftCheck) return;
-    try { finishDrift(store, task, env, { executorAlive: !!task.pids.child && isPidAlive(task.pids.child) }); }
-    catch { if (!task.limitations.includes(DRIFT_INCOMPLETE)) task.limitations.push(DRIFT_INCOMPLETE); }
-  };
+  if (policyReason) return blockBeforeSpawn(`política: ${policyReason}`);
   if (computerUse) delete task.blockedReason;
   transition(task, "running", ctx.resuming ? "retomando execução" : "executor iniciado");
   task.invocations++;

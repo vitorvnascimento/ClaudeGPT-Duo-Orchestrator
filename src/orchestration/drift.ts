@@ -2,7 +2,7 @@
 // Retrato antes/depois do checkout principal, das worktrees irmãs, do .git de cada uma e das raízes de config
 // reais do agy. Só detecta, não contém. Qualquer falha de leitura ou do git deixa a conferência incompleta, nunca limpa.
 import { spawnSync } from "node:child_process";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { hashPathStrict } from "../git.js";
 
@@ -54,7 +54,15 @@ export function batchByLength(items: string[], budget: number): string[][] {
   return out;
 }
 
-function snapCheckout(co: string, out: DriftSnapshot, checkoutReals: string[]): void {
+// checkouts observados: caminho real (para classificar a pasta de hooks) e identidade no disco dev:ino (para não descer
+// neles; o texto do caminho falha em volume que ignora maiúsculas)
+type Checkouts = { reals: string[]; ids: Set<string> };
+const fileId = (p: string) => { const st = statSync(p, { bigint: true }); return `${st.dev}:${st.ino}`; };
+// teto da varredura da pasta de hooks: core.hooksPath no perfil ou na raiz do disco vira falha daquela raiz
+// (conferência incompleta), nunca uma varredura do disco; os pontos de entrada seguem conferidos à parte
+const HOOKS_DIR_BUDGET = 2000;
+
+function snapCheckout(co: string, out: DriftSnapshot, checkouts: Checkouts): void {
   const err = (what: string, r: { stderr: string; error?: string }) => out.errors.push(`${co}: git ${what}: ${(r.error ?? r.stderr).trim() || "falhou"}`);
   const fail = (what: string, r: { stderr: string; error?: string }) => { err(what, r); out.failed.push(co); out.blind = true; };
   const head = observe(co, ["rev-parse", "--verify", "--quiet", "HEAD"]);
@@ -114,9 +122,9 @@ function snapCheckout(co: string, out: DriftSnapshot, checkoutReals: string[]): 
     if (c !== "ENOENT" && c !== "ENOTDIR") { out.errors.push(`${hooks}: ${c ?? (error as Error).message}`); if (!out.failed.includes(hooks!)) out.failed.push(hooks!); }
   }
   const commonReal = (() => { try { return realpathSync(common!); } catch { return null; } })();
-  const walkHooks = !!hooksReal && ((!!commonReal && inside(commonReal, hooksReal)) || !checkoutReals.some((c) => inside(c, hooksReal!)));
+  const walkHooks = !!hooksReal && ((!!commonReal && inside(commonReal, hooksReal)) || !checkouts.reals.some((c) => inside(c, hooksReal!)));
   for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...(walkHooks ? [hooks!] : []), ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
-    if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out, checkoutReals);
+    if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out, p === hooks ? { skipIds: checkouts.ids, budget: HOOKS_DIR_BUDGET } : {});
   }
 }
 
@@ -126,7 +134,7 @@ function inside(base: string, p: string): boolean {
   return !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 }
 
-function snapRoot(root: string, out: DriftSnapshot, skipDirs: string[] = []): void {
+function snapRoot(root: string, out: DriftSnapshot, opts: { skipIds?: Set<string>; budget?: number } = {}): void {
   const code = (error: unknown) => (error as NodeJS.ErrnoException).code ?? (error as Error).message;
   let real: string;
   try { real = realpathSync(root); }
@@ -141,17 +149,19 @@ function snapRoot(root: string, out: DriftSnapshot, skipDirs: string[] = []): vo
   const manifest = dict();
   const walk = (abs: string, rel: string) => {
     let st;
+    if (opts.budget !== undefined && ++seen > opts.budget) { truncated = true; return; }
+    // listado mas sem metadados legíveis: desconhecido ("?"), nunca removido
     try { st = lstatSync(abs); }
-    catch (error) { out.errors.push(`${abs}: ${code(error)}`); return; }
+    catch (error) { out.errors.push(`${abs}: ${code(error)}`); manifest[rel] = "?"; return; }
     if (st.isDirectory()) {
       manifest[rel] = "d";
       // pasta acima de um checkout (ex.: hooksPath=$HOME): não desce nele, o status cobre o que é rastreado
-      if (skipDirs.includes(abs)) return;
+      if (opts.skipIds?.size) { try { if (opts.skipIds.has(fileId(abs))) return; } catch { /* lstat já passou; segue */ } }
       let names: string[];
       // listagem que falhou marca "d?": o que havia embaixo no outro retrato não conta como apagado
       try { names = readdirSync(abs); }
       catch (error) { out.errors.push(`${abs}: ${code(error)}`); manifest[rel] = "d?"; return; }
-      for (const n of names) walk(join(abs, n), rel === "." ? n : `${rel}/${n}`);
+      for (const n of names) { if (truncated) return; walk(join(abs, n), rel === "." ? n : `${rel}/${n}`); }
       return;
     }
     let sig = `${st.isFile() ? "f" : st.isSymbolicLink() ? "l" : "o"}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
@@ -163,14 +173,17 @@ function snapRoot(root: string, out: DriftSnapshot, skipDirs: string[] = []): vo
     }
     manifest[rel] = sig;
   };
+  let seen = 0, truncated = false;
   walk(real, ".");
+  if (truncated) { out.errors.push(`${root}: mais de ${opts.budget} entradas; só os pontos de entrada foram conferidos`); out.failed.push(root); return; }
   out.roots[root] = manifest;
 }
 
 export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: string[] }): DriftSnapshot {
   const out: DriftSnapshot = { checkouts: Object.create(null), roots: Object.create(null), failed: [], blind: false, errors: [] };
-  const reals = opts.checkouts.flatMap((co) => { try { return [realpathSync(co)]; } catch { return []; } });
-  for (const co of opts.checkouts) snapCheckout(co, out, reals);
+  const checkouts: Checkouts = { reals: [], ids: new Set() };
+  for (const co of opts.checkouts) { try { checkouts.reals.push(realpathSync(co)); checkouts.ids.add(fileId(co)); } catch { /* o snapCheckout registra a falha */ } }
+  for (const co of opts.checkouts) snapCheckout(co, out, checkouts);
   for (const root of opts.configRoots) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out);
   return out;
 }
@@ -183,6 +196,7 @@ function diffMaps(a: Dict, b: Dict, same = (x?: string, y?: string) => x === y):
 function sameSig(x?: string, y?: string): boolean {
   if (x === y) return true;
   if (x?.startsWith("d") && y?.startsWith("d")) return true; // "d" e "d?" (diretório não listado)
+  if (x === "?" || y === "?") return true; // metadados ilegíveis num lado: desconhecido (errors deixa incompleto)
   if (!x || !y || !(x.endsWith(":?") || y.endsWith(":?"))) return false;
   const meta = (s: string) => s.split(":").slice(0, 4).join(":");
   return meta(x) === meta(y);
@@ -213,7 +227,7 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     // só os ancestrais do caminho: comparação linear mesmo com milhares de adições
     const unlisted = (m: Dict, rel: string) => {
       if (m["."] === "d?") return true;
-      for (let i = rel.indexOf("/"); i > 0; i = rel.indexOf("/", i + 1)) if (m[rel.slice(0, i)] === "d?") return true;
+      for (let i = rel.indexOf("/"); i > 0; i = rel.indexOf("/", i + 1)) { const v = m[rel.slice(0, i)]; if (v === "d?" || v === "?") return true; }
       return false;
     };
     for (const rel of diffMaps(a, b, sameSig)) {
@@ -221,7 +235,7 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
       if ((a[rel] === undefined && unlisted(a, rel)) || (b[rel] === undefined && unlisted(b, rel))) continue;
       changed.add(abs(rel));
     }
-    for (const rel of Object.keys(a)) if (b[rel] !== undefined && (a[rel]!.endsWith(":?") || b[rel]!.endsWith(":?")) && sameSig(a[rel], b[rel])) unverified.add(abs(rel));
+    for (const rel of Object.keys(a)) if (b[rel] !== undefined && (a[rel]!.endsWith("?") || b[rel]!.endsWith("?")) && sameSig(a[rel], b[rel])) unverified.add(abs(rel));
   }
   const list = [...changed].sort();
   // o apply registra caminhos relativos ao checkout principal; ele não absolve o caminho (outro escritor pode ter mexido depois)

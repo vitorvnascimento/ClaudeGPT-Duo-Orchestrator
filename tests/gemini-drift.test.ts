@@ -454,11 +454,58 @@ describe("drift snapshot", () => {
       for (let i = 0; i < extra; i++) m[`new/${i}`] = "f:1:1:1";
       return m;
     };
+    // contagem determinística: enumerar o manifesto inteiro por caminho seria quadrático
+    let scans = 0;
+    const counted = (m: Record<string, string>) => new Proxy(m, { ownKeys: (t) => { scans++; return Reflect.ownKeys(t); } });
     const base = { checkouts: Object.create(null), failed: [], blind: false, errors: [] };
-    const t = Date.now();
-    const out = compareDrift({ ...base, roots: { "/r": mk(8000, 0) } }, { ...base, roots: { "/r": mk(8000, 8000) } }, []);
+    const out = compareDrift({ ...base, roots: { "/r": counted(mk(8000, 0)) } }, { ...base, roots: { "/r": counted(mk(8000, 8000)) } }, []);
     assert.equal(out.changed.length, 8000);
-    assert.ok(Date.now() - t < 500, `${Date.now() - t} ms`);
+    assert.ok(scans <= 6, `${scans} enumerações do manifesto`);
+  });
+
+  it("a huge external hooks directory is bounded: incomplete, entry points still checked, no noise", () => {
+    const r = repo();
+    const ext = tmp("duo-drift-bighooks-");
+    for (let i = 0; i < 2100; i++) writeFileSync(join(ext, `f${i}`), "x");
+    g(r, "config", "core.hooksPath", ext);
+    const before = snap([r]);
+    writeFileSync(join(ext, "f1"), "changed but not a hook");
+    writeFileSync(join(ext, "pre-commit"), "#!/bin/sh\n");
+    const out = compareDrift(before, snap([r]), []);
+    assert.deepEqual(out.changed, [join(ext, "pre-commit")]);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("a checkout opened with different casing is still recognized below a hooks directory", () => {
+    const parent = tmp("duo-drift-case-");
+    const stored = join(parent, "Repo");
+    mkdirSync(stored);
+    if (!existsSync(join(parent, "repo"))) return; // volume sensível a maiúsculas: o caso não existe
+    g(stored, "init", "-q");
+    writeFileSync(join(stored, ".gitignore"), "node_modules/\n");
+    g(stored, "add", ".");
+    g(stored, "commit", "-q", "-m", "base");
+    g(stored, "config", "core.hooksPath", parent);
+    const opened = join(parent, "repo");
+    const before = snap([opened]);
+    mkdirSync(join(stored, "node_modules"));
+    writeFileSync(join(stored, "node_modules", "x.js"), "x");
+    assert.deepEqual(compareDrift(before, snap([opened]), []).changed, []);
+  });
+
+  it("an entry listed but whose metadata cannot be read is unknown, not removed", { skip: process.platform === "win32" || asRoot }, () => {
+    const r = repo();
+    const ext = tmp("duo-drift-acl-");
+    mkdirSync(join(ext, "sub"));
+    writeFileSync(join(ext, "sub", "lib.sh"), "true\n");
+    g(r, "config", "core.hooksPath", ext);
+    const before = snap([r]);
+    chmodSync(join(ext, "sub"), 0o444); // lista, mas não deixa ler os metadados dos filhos
+    let after;
+    try { after = snap([r]); } finally { chmodSync(join(ext, "sub"), 0o755); }
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
   });
 });
 

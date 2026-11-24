@@ -3,7 +3,7 @@
 // reais do agy. Só detecta, não contém. Qualquer falha de leitura ou do git deixa a conferência incompleta, nunca limpa.
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { hashPathStrict } from "../git.js";
 
 type Dict = Record<string, string>;
@@ -18,7 +18,8 @@ export type DriftSnapshot = {
   blind: boolean;
   errors: string[];
 };
-export type DriftResult = { changed: string[]; appliedNotes: { path: string; taskId: string }[]; hiddenUnchecked: string[]; incomplete: boolean };
+/** unverified: caminhos cujo conteúdo não foi lido num dos retratos (só metadados comparados) */
+export type DriftResult = { changed: string[]; appliedNotes: { path: string; taskId: string }[]; hiddenUnchecked: string[]; unverified: string[]; incomplete: boolean };
 export type DriftApply = { taskId: string; root: string; files: string[] };
 
 // chaves vindas do disco: sem protótipo, `__proto__` é um nome de arquivo como outro
@@ -101,7 +102,11 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
   const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks", "--git-path", "info/sparse-checkout"]);
   if (!dirs.ok) { err("rev-parse --git-dir", dirs); out.blind = true; return; }
   const [gitDir, common, hooks, sparse] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
-  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
+  // hooks dentro do .git: a pasta inteira (scripts auxiliares que um hook carrega); fora dele (ex.: core.hooksPath=.),
+  // só os pontos de entrada, e os arquivos rastreados ali já passam pelo status
+  const rel = relative(common!, hooks!);
+  const hooksInGit = !rel.startsWith("..") && !isAbsolute(rel);
+  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), sparse!, ...(hooksInGit ? [hooks!] : []), ...HOOK_NAMES.map((n) => join(hooks!, n))])) {
     if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
   }
 }
@@ -166,6 +171,7 @@ function sameSig(x?: string, y?: string): boolean {
 export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applies: DriftApply[]): DriftResult {
   const changed = new Set<string>();
   const hidden = new Set<string>();
+  const unverified = new Set<string>();
   const failed = new Set([...before.failed, ...after.failed]);
   for (const co of new Set([...Object.keys(before.checkouts), ...Object.keys(after.checkouts)])) {
     if (failed.has(co)) continue; // observação falhou (já em errors): sem prova de mudança
@@ -183,10 +189,12 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     if ((!(root in before.roots) && before.blind) || (!(root in after.roots) && after.blind)) continue;
     const a = before.roots[root] ?? "absent", b = after.roots[root] ?? "absent";
     if (a === "absent" || b === "absent") { if (a !== b) changed.add(root); continue; }
-    for (const rel of diffMaps(a, b, sameSig)) changed.add(rel === "." ? root : join(root, rel));
+    const abs = (rel: string) => (rel === "." ? root : join(root, rel));
+    for (const rel of diffMaps(a, b, sameSig)) changed.add(abs(rel));
+    for (const rel of Object.keys(a)) if (b[rel] !== undefined && (a[rel]!.endsWith(":?") || b[rel]!.endsWith(":?")) && sameSig(a[rel], b[rel])) unverified.add(abs(rel));
   }
   const list = [...changed].sort();
   // o apply registra caminhos relativos ao checkout principal; ele não absolve o caminho (outro escritor pode ter mexido depois)
   const appliedNotes = list.flatMap((path) => applies.filter((ap) => ap.files.some((f) => normalize(resolve(ap.root, f)) === path)).map((ap) => ({ path, taskId: ap.taskId })));
-  return { changed: list, appliedNotes, hiddenUnchecked: [...hidden].sort(), incomplete: before.errors.length > 0 || after.errors.length > 0 };
+  return { changed: list, appliedNotes, hiddenUnchecked: [...hidden].sort(), unverified: [...unverified].sort(), incomplete: before.errors.length > 0 || after.errors.length > 0 };
 }

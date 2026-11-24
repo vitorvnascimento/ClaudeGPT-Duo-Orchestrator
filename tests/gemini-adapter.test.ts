@@ -12,7 +12,8 @@ import { DEFAULT_CONFIG } from "../src/config.js";
 import { packageRoot } from "../src/paths.js";
 
 const HELP = readFileSync(join(packageRoot(), "tests", "fixtures", "agy", "help-1.5.3.txt"), "utf8");
-const VERIFIED = [{ version: "1.5.3", platform: process.platform }];
+// Fixture comum do macOS (perfil sandbox-exec): plataforma fixa, roda igual em qualquer sistema.
+const VERIFIED = [{ version: "1.5.3", platform: "darwin" as const }];
 const PROMPT = "SEGREDO-DO-PROMPT objetivo confidencial";
 let dirs: string[] = [];
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
@@ -45,7 +46,7 @@ function input(over: Partial<InvocationInput> = {}, help = HELP, version: string
 }
 
 describe("GeminiAdapter.plan", () => {
-  const adapter = new GeminiAdapter({ verified: VERIFIED });
+  const adapter = new GeminiAdapter({ verified: VERIFIED, platform: "darwin" });
 
   it("plan wraps agy in sandbox-exec when a profile is given", () => {
     const i = input();
@@ -53,6 +54,18 @@ describe("GeminiAdapter.plan", () => {
     assert.equal(p.command, "/usr/bin/sandbox-exec");
     assert.deepEqual(p.args.slice(0, 3), ["-f", i.gemini?.profilePath, "/opt/agy/bin/agy"]);
     assert.equal(validateGeminiArgv(p.args.slice(3)), null);
+  });
+
+  it("on Windows: no sandbox-exec, schema in the attempt dir, one-lock line in enforced", () => {
+    const win = new GeminiAdapter({ verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32" });
+    const base = input();
+    const i = { ...base, gemini: { ...base.gemini!, profilePath: null } };
+    const p = win.plan(i);
+    assert.equal(p.command, "/opt/agy/bin/agy");
+    const schema = p.args[p.args.indexOf("--json-schema") + 1] ?? "";
+    assert.ok(schema.startsWith(i.gemini.tmpDir), schema);
+    assert.ok(p.enforced.some((e) => /sem sandbox do sistema no Windows/.test(e)), JSON.stringify(p.enforced));
+    assert.ok(!p.enforced.some((e) => /sandbox-exec/.test(e)));
   });
 
   it("prompt is absent from argv and stdin carries one NDJSON message", () => {

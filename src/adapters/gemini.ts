@@ -16,6 +16,12 @@ export type VerifiedAgy = { version: string; platform: NodeJS.Platform };
  * 22/11/2026; o navegador ficou inconclusivo porque o agy headless não o expõe ao modelo, e o dono aceitou como
  * limitação documentada (o hook nega toda ferramenta browser_* de qualquer forma). Versão nova só entra após a bateria.
  */
+/** Plataformas em que o executor gemini pode rodar. Windows: uma trava só (o gate), decisão do dono em 2026-11-23. */
+export const GEMINI_PLATFORMS: readonly NodeJS.Platform[] = ["darwin", "win32"];
+export function geminiPlatformSupported(p: NodeJS.Platform): boolean {
+  return GEMINI_PLATFORMS.includes(p);
+}
+
 export const GEMINI_VERIFIED: readonly VerifiedAgy[] = [{ version: "1.5.14", platform: "darwin" }];
 /** Mensagens de ferramenta negada pela contenção (hook do duo, regras da sessão ou sandbox do SO). */
 const DENIAL = /denied by pre-tool hook|JSON hook .* failed|failed to unmarshal result from hook|permission check failed|Matches user-configured deny rule|operation not permitted/i;
@@ -71,7 +77,8 @@ export class GeminiAdapter implements ExecutorAdapter {
       "prompt por stdin (stream-json)",
     ];
     if (caps.flags.disableSlashCommands) { args.push("--disable-slash-commands"); enforced.push("disable-slash-commands"); }
-    if (caps.flags.jsonSchema) args.push("--json-schema", writeExecutorSchema(input.artifactsDir));
+    // Windows: o esquema fica na pasta da tentativa (privada), não nos artefatos do projeto.
+    if (caps.flags.jsonSchema) args.push("--json-schema", writeExecutorSchema(this.platform === "win32" ? input.gemini.tmpDir : input.artifactsDir));
     if (input.resumeSessionId) {
       if (!caps.flags.conversation) throw new Error("esta versão do agy não anuncia --conversation, necessário para retomar");
       args.push("--conversation", input.resumeSessionId);
@@ -82,7 +89,10 @@ export class GeminiAdapter implements ExecutorAdapter {
     const agy = [input.resolved.command, ...input.resolved.prefixArgs];
     let command = agy[0] as string;
     let fullArgs = [...agy.slice(1), ...args];
-    if (input.gemini.profilePath) {
+    if (this.platform === "win32") {
+      if (input.gemini.profilePath) throw new Error("sandbox-exec não existe no Windows; a ponte não monta perfil lá");
+      enforced.push("sem sandbox do sistema no Windows (decisão do dono, 2026-11-23); conferência pós-tarefa só avisa");
+    } else if (input.gemini.profilePath) {
       command = SANDBOX_EXEC;
       fullArgs = ["-f", input.gemini.profilePath, ...agy, ...args];
       enforced.push(`sandbox-exec (${input.gemini.profilePath}): escrita só nos alvos, no HOME privado e no TMPDIR`);

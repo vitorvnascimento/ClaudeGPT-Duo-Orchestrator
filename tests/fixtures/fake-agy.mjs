@@ -28,7 +28,9 @@ if (args[0] === "models") {
     if (process.env.FAKE_AGY_LOG_NESTED) { mkdirSync(join(d, "sub"), { recursive: true }); writeFileSync(join(d, "sub", "nested.log"), "authenticated via apikey (effective: apikey)\nauthMethod=api_key\n"); }
     if (process.env.FAKE_AGY_LOG_LINK) { writeFileSync(join(d, "..", "outside.log"), "authenticated via apikey (effective: apikey)\n"); symlinkSync(join(d, "..", "outside.log"), join(d, "link.log")); }
     if (process.env.FAKE_AGY_LOG_UNREADABLE) { writeFileSync(join(d, "locked.log"), "authenticated via apikey (effective: apikey)\n"); chmodSync(join(d, "locked.log"), 0); }
-    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "partial-apikey"
+    writeFileSync(join(d, "cli-fake.log"), process.env.FAKE_AGY_AUTH === "none"
+      ? "I1 main.go:1] sem sinal de login\n"
+      : process.env.FAKE_AGY_AUTH === "partial-apikey"
       ? "I1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\n"
       : process.env.FAKE_AGY_AUTH === "conflict"
       ? "I1 auth.go:157] ChainedAuth: authenticated via keyring (effective: keyring)\nI1 server_oauth.go:221] applyAuthResult: email=x@y.z, authMethod=consumer, quotaProject=\nI1 auth.go:157] ChainedAuth: authenticated via apikey (effective: apikey)\nI1 server_oauth.go:221] applyAuthResult: authMethod=api_key, quotaProject=\n"

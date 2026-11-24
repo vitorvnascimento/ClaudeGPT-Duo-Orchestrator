@@ -41,6 +41,10 @@ describe("alternativas", () => {
     assert.equal(executorEligible("gemini", ctx({ platform: "linux" })), false);
     assert.equal(executorEligible("claude", ctx({ platform: "linux" })), true);
   });
+  it("win32 with a verified win32 version is eligible; a darwin-only list is not", () => {
+    assert.equal(executorEligible("gemini", ctx({ platform: "win32", verified: [{ version: "1.5.15", platform: "win32" }] })), true);
+    assert.equal(executorEligible("gemini", ctx({ platform: "win32" })), false);
+  });
 });
 
 describe("escolha da alternativa", () => {

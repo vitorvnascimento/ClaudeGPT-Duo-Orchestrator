@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AGY_FLAGS, CLAUDE_FLAGS, CODEX_EXEC_FLAGS, probe, probeAgy } from "../adapters/capabilities.js";
-import { isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
+import { geminiPlatformSupported, isVerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT, type VerifiedAgy } from "../adapters/gemini.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { runQuick } from "../adapters/process.js";
@@ -123,7 +123,10 @@ function extensionBinaries(home: string): string[] {
   return out;
 }
 
-export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, authPathsOverride?: AuthPaths, fetchImpl?: FetchLike): Promise<DoctorReport> {
+/** Injeção para testes: plataforma, versões verificadas do agy e sonda do sandbox-exec. */
+export type DoctorGeminiOptions = { platform?: NodeJS.Platform; verified?: readonly VerifiedAgy[]; probeSandbox?: typeof probeSandbox };
+
+export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, authPathsOverride?: AuthPaths, fetchImpl?: FetchLike, gem: DoctorGeminiOptions = {}): Promise<DoctorReport> {
   const home = env.HOME ?? env.USERPROFILE ?? homedir();
   const root = repoRoot(cwd);
   const projectRoot = root ?? cwd;
@@ -183,26 +186,28 @@ export async function doctor(cwd: string, env: NodeJS.ProcessEnv = process.env, 
     const resolved = resolveExecutable("agy", effectiveCfg.executors.gemini.command, env);
     if (!resolved.ok) providers.gemini = { installed: false, reason: resolved.reason, blockers: [resolved.reason] };
     else {
-      const caps = probeAgy(resolved, env, process.platform, projectRoot);
-      const sandbox = probeSandbox();
-      const verified = isVerifiedAgy(caps.rawVersion ?? null, process.platform);
+      const platform = gem.platform ?? process.platform;
+      const caps = probeAgy(resolved, env, platform, projectRoot);
+      // Windows: sem sandbox-exec (uma trava só, o gate; decisão do dono). null = não se aplica.
+      const sandbox = platform === "win32" ? null : (gem.probeSandbox ?? probeSandbox)();
+      const verified = isVerifiedAgy(caps.rawVersion ?? null, platform, gem.verified);
       const blockers: string[] = [];
-      if (process.platform !== "darwin") blockers.push("executor gemini exige macOS nesta versão");
+      if (!geminiPlatformSupported(platform)) blockers.push("executor gemini exige macOS ou Windows nesta versão");
       const denyProblem = unsupportedDenyGlob(effectiveCfg.scope.deny);
       if (denyProblem) blockers.push(denyProblem);
       // Sonda que nem rodou (perfil privado recusado, por exemplo config do agy acima da pasta): esse é o problema.
       const probeFailed = Boolean(caps.profileError);
       if (caps.profileError) blockers.push(`sonda do agy: ${caps.profileError}`);
       if (!probeFailed && caps.missingRequired.length) blockers.push(`recursos obrigatórios ausentes: ${caps.missingRequired.join(", ")}`);
-      if (!sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
+      if (sandbox && !sandbox.ok) blockers.push(`sandbox-exec: ${sandbox.reason}`);
       if (!probeFailed && !verified) blockers.push(`versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}`);
       if (!effectiveCfg.billing.acknowledgeUnverifiableExtraUsage.gemini) blockers.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
-      const parent = geminiParentEnvProblem(env);
+      const parent = geminiParentEnvProblem(env, platform);
       if (parent) blockers.push(parent);
       // Login sem inferência (agy models) num HOME temporário só deste diagnóstico (não disputa logs nem a limpeza).
       let auth: { method: string; detail: string } | null = null;
-      if (process.platform === "darwin") {
-        const a = geminiLoginProbe(resolved, { ...probeEnv, HOME: env.HOME ?? probeEnv.HOME }, effectiveCfg, process.platform, projectRoot);
+      if (geminiPlatformSupported(platform)) {
+        const a = geminiLoginProbe(resolved, { ...probeEnv, HOME: env.HOME ?? probeEnv.HOME }, effectiveCfg, platform, projectRoot);
         auth = { method: a.method, detail: a.detail };
         if (!a.ok) blockers.push(`login do agy: ${a.method} (${a.detail})`);
       }
@@ -292,9 +297,9 @@ export function formatDoctor(r: DoctorReport): string {
     if (p === "gemini") {
       if (info.enabled === false) { lines.push("  desligado (executors.gemini.enabled=false)"); continue; }
       if (!info.installed) { lines.push(`  não disponível: ${String(info.reason)}`); continue; }
-      const sb = info.sandbox as { ok: boolean; reason?: string };
+      const sb = info.sandbox as { ok: boolean; reason?: string } | null;
       const auth = info.auth as { method?: string; detail?: string } | undefined;
-      lines.push(`  ${String(info.path)} versão ${String(info.version ?? "?")} | verificada: ${info.verified ? "sim" : "não"} | sandbox-exec: ${sb.ok ? "ok" : `falhou (${sb.reason ?? "?"})`}`);
+      lines.push(`  ${String(info.path)} versão ${String(info.version ?? "?")} | verificada: ${info.verified ? "sim" : "não"} | sandbox-exec: ${!sb ? "não se aplica (Windows: uma trava, decisão do dono)" : sb.ok ? "ok" : `falhou (${sb.reason ?? "?"})`}`);
       if (auth) lines.push(`  login: ${String(auth.method)} — ${String(auth.detail)}`);
       for (const b of info.blockers as string[]) lines.push(`  bloqueio: ${b}`);
       continue;

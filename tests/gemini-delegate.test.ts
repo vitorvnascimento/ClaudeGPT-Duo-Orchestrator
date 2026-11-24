@@ -1,14 +1,14 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
 import { applyTask } from "../src/orchestration/control.js";
 import { delegate, type DelegateOptions } from "../src/orchestration/delegate.js";
 import { packageRoot } from "../src/paths.js";
 import { Store } from "../src/state/store.js";
-import { baseRequest, makeSandbox, type Sandbox } from "./helpers.js";
+import { baseRequest, fakeAgyCommand, makeSandbox, withFakeAgyPath, type Sandbox } from "./helpers.js";
 
 const FAKE_AGY = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
 const VERIFIED = [{ version: "1.5.3", platform: "darwin" as const }];
@@ -16,8 +16,9 @@ let sb: Sandbox | undefined;
 afterEach(() => { sb?.cleanup(); sb = undefined; });
 
 function setup(extra: Record<string, unknown> = {}): Sandbox {
-  sb = makeSandbox({ executors: { gemini: { enabled: true, command: [FAKE_AGY] } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } }, ...extra });
-  sb.env.PATH = `${join(process.execPath, "..")}:${sb.env.PATH ?? ""}`;
+  // fakeAgyCommand: no Windows nativo, shim .cmd no PATH (a config do gemini aceita só um caminho).
+  sb = makeSandbox({ executors: { gemini: { enabled: true, command: fakeAgyCommand() } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } }, ...extra });
+  sb.env.PATH = withFakeAgyPath(`${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`);
   return sb;
 }
 function req(over: Record<string, unknown> = {}) {
@@ -131,11 +132,39 @@ describe("delegação ao gemini", () => {
     assert.equal(agyRuns(s).length, 0);
   });
 
-  it("non-darwin platform refuses every kind", async () => {
+  it("unsupported platform (linux) refuses every kind", async () => {
     const s = setup();
     const out = await run(s, req({ kind: "review", scope: { allowedPaths: ["src"] } }), {}, { verified: [{ version: "1.5.3", platform: "linux" }], sandbox: false, platform: "linux" });
     assert.equal(out.summary.state, "blocked");
-    assert.match(String(out.summary.outcome), /macOS/);
+    assert.match(String(out.summary.outcome), /exige macOS ou Windows nesta versão/);
+  });
+
+  it("win32 passes the gates without sandbox-exec and the preflight runs in the attempt dir", async () => {
+    const s = setup();
+    const envOut = join(s.home, "agy-env.jsonl");
+    let probed = 0;
+    const out = await run(s, req(), { LOCALAPPDATA: join(s.home, "AppData", "Local"), FAKE_AGY_ENV_OUT: envOut, FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) },
+      { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", probe: () => { probed++; return { ok: false, reason: "não deveria rodar" }; } });
+    assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.equal(probed, 0);
+    assert.ok(agyRuns(s)[0]);
+    const lines = readFileSync(envOut, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; cwd: string });
+    const login = lines.filter((l) => l.argv[0] === "models").at(-1);
+    assert.ok(login && /attempt-/.test(login.cwd), JSON.stringify(login));
+    const inv = readFileSync(join(task(s, out.summary.taskId).artifactsDir, "invocation.json"), "utf8");
+    assert.ok(!inv.includes("sandbox-exec"), inv.slice(0, 400));
+  });
+
+  it("win32: a refused probe profile blocks with its own reason, not as an unverified version", async () => {
+    const s = setup();
+    const local = join(s.home, "AppData", "Local");
+    mkdirSync(local, { recursive: true });
+    writeFileSync(join(local, ".codeium.yml"), "");
+    const out = await run(s, req(), { LOCALAPPDATA: local }, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32" });
+    assert.equal(out.summary.state, "blocked");
+    assert.match(String(out.summary.outcome), /sonda do agy: .*config do agy acima/);
+    assert.doesNotMatch(String(out.summary.outcome), /não verificada/);
+    assert.equal(agyRuns(s).length, 0);
   });
 
   it("failed OS probe refuses a review too", async () => {

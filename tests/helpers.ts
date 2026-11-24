@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { packageRoot } from "../src/paths.js";
 import type { AuthPaths } from "../src/permissions/auth.js";
 
@@ -153,4 +154,26 @@ function baseRequestRaw(brain: "claude" | "codex", overrides: Record<string, unk
     acceptance: { criteria: ["src/app.ts exporta a constante nova"] },
     ...overrides,
   };
+}
+
+/**
+ * agy falso para executors.gemini.command. macOS/Linux: o .mjs roda pelo shebang. Windows nativo: a config aceita só
+ * um caminho, sem argumentos, e o .mjs não roda sozinho; vai um shim .cmd do npm numa pasta temporária (o resolve abre
+ * o alvo pelo node, sem shell), a config fica null e a pasta entra no PATH do teste (withFakeAgyPath).
+ */
+let fakeAgyBin: string | null = null;
+export function fakeAgyCommand(): string[] | null {
+  const fake = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
+  if (process.platform !== "win32") return [fake];
+  if (!fakeAgyBin) {
+    fakeAgyBin = mkdtempSync(join(tmpdir(), "duo-fake-agy-"));
+    const pkg = join(fakeAgyBin, "node_modules", "fake-agy");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "agy.mjs"), `await import(${JSON.stringify(pathToFileURL(fake).href)});\n`);
+    writeFileSync(join(fakeAgyBin, "agy.cmd"), `@ECHO off\r\n"%dp0%\\node_modules\\fake-agy\\agy.mjs" %*\r\n`);
+  }
+  return null;
+}
+export function withFakeAgyPath(path: string | undefined): string {
+  return fakeAgyBin && process.platform === "win32" ? `${fakeAgyBin};${path ?? ""}` : path ?? "";
 }

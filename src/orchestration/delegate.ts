@@ -13,7 +13,7 @@ import { isPidAlive, runProcess } from "../adapters/process.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { sanitizeEventLine } from "../adapters/sanitize.js";
 import type { ExecutorAdapter, InvocationPlan, ParsedOutcome, StreamParser } from "../adapters/types.js";
-import { GeminiAdapter, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
+import { GeminiAdapter, geminiPlatformSupported, isVerifiedAgy, type VerifiedAgy, agyVersionLabel, AGY_UNVERIFIED_HINT } from "../adapters/gemini.js";
 import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
@@ -221,8 +221,9 @@ function runGates(
   }
   if (ADAPTERS[req.executor] instanceof UnavailableAdapter) return { ok: false, reason: `executor ${req.executor} ainda não disponível nesta versão` };
   if (req.executor === "gemini") {
-    if ((gem.platform ?? process.platform) !== "darwin") return { ok: false, reason: "executor gemini exige macOS nesta versão (trava do sistema por sandbox-exec)" };
-    const parent = geminiParentEnvProblem(env);
+    const platform = gem.platform ?? process.platform;
+    if (!geminiPlatformSupported(platform)) return { ok: false, reason: "executor gemini exige macOS ou Windows nesta versão" };
+    const parent = geminiParentEnvProblem(env, platform);
     if (parent) return { ok: false, reason: parent };
     if (task.model.requested && !/^gemini-/.test(task.model.requested)) return { ok: false, reason: `modelo fora do catálogo gemini-*: ${task.model.requested}` };
     const suffix = /-(low|medium|high|xhigh)$/.exec(task.model.requested ?? "")?.[1];
@@ -230,7 +231,8 @@ function runGates(
     // Configuração que a trava do SO não aplica: recusa antes de criar worktree, HOME privado e arquivos do gate.
     const denyProblem = unsupportedDenyGlob(cfg.scope.deny);
     if (denyProblem) return { ok: false, reason: denyProblem };
-    if (gem.sandbox !== false) {
+    // Windows: sem sandbox-exec (uma trava só, o gate; decisão do dono).
+    if (platform !== "win32" && gem.sandbox !== false) {
       const probeResult = (gem.probe ?? probeSandbox)();
       if (!probeResult.ok) return { ok: false, reason: `trava do sistema (sandbox-exec) indisponível: ${probeResult.reason}` };
     }
@@ -255,6 +257,8 @@ function runGates(
   const caps = req.executor === "claude" ? probe(resolved, ["--help"], CLAUDE_FLAGS, probeEnv)
     : req.executor === "gemini" ? probeAgy(resolved, env, gem.platform ?? process.platform, projectRoot)
     : probe(resolved, ["exec", "--help"], CODEX_EXEC_FLAGS, probeEnv);
+  // Perfil de sondagem recusado (config do agy acima da pasta, por exemplo): rodar a bateria não resolve.
+  if (req.executor === "gemini" && "profileError" in caps && caps.profileError) return { ok: false, reason: `sonda do agy: ${caps.profileError}` };
   if (req.executor === "gemini" && !isVerifiedAgy(caps.rawVersion ?? null, gem.platform ?? process.platform, gem.verified)) {
     return { ok: false, reason: `versão ${agyVersionLabel(caps.rawVersion)} do agy não verificada nesta plataforma; ${AGY_UNVERIFIED_HINT}; rode a bateria de contenção antes de liberar` };
   }
@@ -924,7 +928,7 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     ctx.cleanups?.push(() => attempt.cleanup());
     const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
     let profilePath: string | null = null;
-    if (ctx.gemini?.sandbox !== false) {
+    if ((ctx.gemini?.platform ?? process.platform) !== "win32" && ctx.gemini?.sandbox !== false) {
       const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path, gateLog: files.logPath });
       if (!prof.ok) { attempt.cleanup(); return block(`perfil sandbox-exec: ${prof.reason}`); }
       profilePath = join(home, "duo-gate", "profile.sb");

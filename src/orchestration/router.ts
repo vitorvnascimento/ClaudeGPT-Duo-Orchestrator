@@ -15,7 +15,7 @@ import { confirmFloor, selectModel, supportsNeed } from "./select.js";
 import { resolveExecutable } from "../adapters/resolve.js";
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
 import { executorEligible } from "./alternates.js";
-import { isVerifiedAgy, agyVersionLabel } from "../adapters/gemini.js";
+import { isVerifiedAgy, agyVersionLabel, type VerifiedAgy } from "../adapters/gemini.js";
 import { runQuick } from "../adapters/process.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
 import { launcherFor, withMetadataProfile } from "../state/gemini-state.js";
@@ -163,7 +163,10 @@ function routable(cfg: DuoConfig, kind: TaskKind): Provider[] {
 export type AvailabilityFn = (executor: Provider) => { available: boolean; reasons: string[] };
 
 /** Disponibilidade real, sem inferência: CLI instalada, login por assinatura, ciência de uso extra, limite observado. */
-export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths, deferSettingsToPlan = false): Promise<AvailabilityFn> {
+/** Injeção de plataforma, versões verificadas e sonda do sandbox (testes); o padrão é o sistema real. */
+export type GeminiAvailabilityOptions = { platform?: NodeJS.Platform; verified?: readonly VerifiedAgy[]; probeSandbox?: typeof probeSandbox };
+
+export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS.ProcessEnv = process.env, authPaths?: AuthPaths, deferSettingsToPlan = false, gem: GeminiAvailabilityOptions = {}): Promise<AvailabilityFn> {
   const paths = authPaths ?? defaultAuthPaths(store.projectRoot, env);
   const cache = new Map<Provider, { available: boolean; reasons: string[] }>();
   for (const executor of ["claude", "codex"] as const) {
@@ -198,43 +201,52 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
     const res = { available, reasons };
     cache.set(executor, res);
   }
-  // Gemini: elegível (ligado, macOS, versão verificada) e binário com versão verificada; login fica para o preflight da delegação.
+  // Gemini: elegível (ligado, macOS ou Windows, versão verificada) e binário com versão verificada; login pela assinatura.
+  const platform = gem.platform ?? process.platform;
   const gReasons: string[] = [];
   const gNotes: string[] = [];
   const denyProblem = unsupportedDenyGlob(cfg.scope.deny);
   if (cfg.executors.gemini.enabled && denyProblem) gReasons.push(denyProblem);
-  else if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform: process.platform })) gReasons.push("gemini desligado, fora do macOS ou sem versão verificada do agy");
+  else if (!executorEligible("gemini", { kind: "implement", fixedIsolation: null, cfg, platform, ...(gem.verified ? { verified: gem.verified } : {}) })) gReasons.push("gemini desligado, fora do macOS/Windows ou sem versão verificada do agy");
   else {
     const resolved = resolveExecutable("agy", cfg.executors.gemini.command, env);
     if (!resolved.ok) gReasons.push(resolved.reason);
     else {
       // Identidade exata: a saída completa de --version (1.5.14+build.7 não é a 1.5.14 verificada).
       let r: ReturnType<typeof runQuick>;
+      // Recusa local do perfil de sondagem (mensagem do próprio duo): é o problema, não a versão.
+      let profileError: string | null = null;
       try {
-        r = process.platform === "win32"
+        r = platform === "win32"
           ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd }); }, "win32")
           : (() => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: childEnv(env).env }); })();
-      } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; }
+      } catch (e) { profileError = (e as Error).message.replace(/\s+/g, " ").slice(0, 300); r = { ok: false, code: null, stdout: "", stderr: "" }; }
       const v = r.ok ? r.stdout.trim() || null : null;
-      if (!isVerifiedAgy(v, process.platform)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
+      if (profileError) gReasons.push(`sonda do agy: ${profileError}`);
+      else if (!isVerifiedAgy(v, platform, gem.verified)) gReasons.push(`agy ${agyVersionLabel(v)} não verificado`);
       else if (Boolean(env.CODEX_SANDBOX) || env.CODEX_SANDBOX_NETWORK_DISABLED === "1") {
         // Dentro do sandbox do Codex o sandbox-exec aninhado não é verificável e o Keychain pode não ser legível:
         // inconclusivo é adiado (o delegate repete fora do sandbox); login identificado como não aceito bloqueia.
         // O binário precisa existir; só o teste aninhado é adiado.
-        if (!existsSync(SANDBOX_EXEC)) gReasons.push(`sandbox-exec: ${SANDBOX_EXEC} não encontrado`);
-        else gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
-        const login = geminiLoginProbe(resolved, env, cfg, process.platform, store.projectRoot);
+        if (platform !== "win32") {
+          if (!existsSync(SANDBOX_EXEC)) gReasons.push(`sandbox-exec: ${SANDBOX_EXEC} não encontrado`);
+          else gNotes.push("sandbox-exec não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
+        }
+        const login = geminiLoginProbe(resolved, env, cfg, platform, store.projectRoot);
         if (login.method === "api_key" || login.method === "cloud" || login.conflict) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
         else if (!login.ok) gNotes.push("login do agy não verificável dentro do sandbox do Codex; a ponte confere de novo ao delegar (fora do sandbox)");
       } else {
         // Mesmos portões da delegação, antes de oferecer o gemini: trava do SO e login pela assinatura (sem inferência).
-        const sbx = probeSandbox();
-        if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
-        const login = geminiLoginProbe(resolved, env, cfg, process.platform, store.projectRoot);
+        // Windows: sem sandbox-exec (uma trava só, o gate; decisão do dono).
+        if (platform !== "win32") {
+          const sbx = (gem.probeSandbox ?? probeSandbox)();
+          if (!sbx.ok) gReasons.push(`sandbox-exec: ${sbx.reason}`);
+        }
+        const login = geminiLoginProbe(resolved, env, cfg, platform, store.projectRoot);
         if (!login.ok) gReasons.push(`login do agy: ${login.method} (${login.detail})`);
       }
     }
-    const parent = geminiParentEnvProblem(env);
+    const parent = geminiParentEnvProblem(env, platform);
     if (parent) gReasons.push(parent);
     if (cfg.billing.acknowledgeUnverifiableExtraUsage.gemini !== true) gReasons.push("billing.acknowledgeUnverifiableExtraUsage.gemini=false");
     const blocked = quotaBlock(quotaStates(store).gemini);

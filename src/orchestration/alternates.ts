@@ -1,6 +1,6 @@
 // Quem pode receber uma tarefa quando a conta atual fica sem cota ou capacidade (e na recomendação inicial).
 import { EXECUTORS, type DuoConfig, type Provider } from "../config.js";
-import { GEMINI_VERIFIED, type VerifiedAgy } from "../adapters/gemini.js";
+import { GEMINI_VERIFIED, geminiPlatformSupported, type VerifiedAgy } from "../adapters/gemini.js";
 import { unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import type { Isolation } from "../state/slots.js";
 import type { TaskKind } from "../state/types.js";
@@ -16,7 +16,7 @@ export type EligibilityCtx = {
 /** Filtra antes de ordenar: uma conta que seria recusada pelos portões nunca ganha a vaga de outra. */
 export function executorEligible(p: Provider, ctx: EligibilityCtx): boolean {
   if (p !== "gemini") return true;
-  if (!ctx.cfg.executors.gemini.enabled || ctx.platform !== "darwin") return false;
+  if (!ctx.cfg.executors.gemini.enabled || !geminiPlatformSupported(ctx.platform)) return false;
   if (!(ctx.verified ?? GEMINI_VERIFIED).some((v) => v.platform === ctx.platform)) return false;
   // O gate do gemini mora numa worktree descartável: nenhuma cadeia fixada in-place pode migrar para ele.
   if (ctx.fixedIsolation === "in-place") return false;

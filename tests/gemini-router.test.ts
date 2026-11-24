@@ -1,17 +1,18 @@
 // Roteador, doctor e limpeza de estado com o gemini presente.
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { parseAgyModels, type Catalog } from "../src/adapters/catalog.js";
 import { loadConfig } from "../src/config.js";
 import { packageRoot } from "../src/paths.js";
 import { liveAvailability, recommend, type AvailabilityFn } from "../src/orchestration/router.js";
+import { doctor, formatDoctor } from "../src/cli/doctor.js";
 import { quotaStates, saveQuota } from "../src/orchestration/quota.js";
 import { Store } from "../src/state/store.js";
 import { adaptiveCatalog } from "./adaptive-catalog.js";
-import { CLI, makeSandbox, type Sandbox } from "./helpers.js";
+import { CLI, fakeAgyCommand, makeSandbox, withFakeAgyPath, type Sandbox } from "./helpers.js";
 
 const FAKE_AGY = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
 let sb: Sandbox | undefined;
@@ -75,6 +76,49 @@ describe("executores simultâneos acima do recomendado", () => {
     sb = makeSandbox();
     const ok = JSON.parse(spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd: sb.root, env: sb.env, encoding: "utf8" }).stdout) as { warnings: string[] };
     assert.ok(!ok.warnings.some((w) => /maxConcurrentExecutors/.test(w)));
+  });
+});
+
+describe("gemini no Windows (plataforma injetada)", () => {
+  const WIN = [{ version: "1.5.3", platform: "win32" as const }];
+  const winEnv = (s: Sandbox, extra: Record<string, string> = {}) => ({ ...s.env, PATH: withFakeAgyPath(`${join(process.execPath, "..")}${delimiter}${s.env.PATH ?? ""}`), LOCALAPPDATA: join(s.home, "AppData", "Local"), ...extra });
+  const offline = async () => { throw new Error("offline"); };
+
+  it("live availability on win32 never calls probeSandbox and offers gemini", async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: fakeAgyCommand() } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    let probed = 0;
+    const avail = await liveAvailability(new Store(sb.root), loadConfig(sb.root), winEnv(sb), sb.authPaths, false,
+      { platform: "win32", verified: WIN, probeSandbox: () => { probed++; return { ok: false, reason: "não deveria rodar" }; } });
+    const g = avail("gemini");
+    assert.equal(probed, 0);
+    assert.equal(g.available, true, JSON.stringify(g));
+  });
+
+  it("live availability on win32 reports a refused probe profile, not an unverified version", async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: fakeAgyCommand() } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    const env = winEnv(sb);
+    mkdirSync(env.LOCALAPPDATA, { recursive: true });
+    writeFileSync(join(env.LOCALAPPDATA, ".codeium.yml"), "");
+    const g = (await liveAvailability(new Store(sb.root), loadConfig(sb.root), env, sb.authPaths, false, { platform: "win32", verified: WIN }))("gemini");
+    assert.equal(g.available, false);
+    assert.ok(g.reasons.some((r) => /^sonda do agy: .*config do agy acima/.test(r)), JSON.stringify(g.reasons));
+    assert.ok(!g.reasons.some((r) => /não verificado/.test(r)), JSON.stringify(g.reasons));
+  });
+
+  it("doctor on win32: sandbox-exec does not apply, and a missing login signal blocks", async () => {
+    sb = makeSandbox({ executors: { gemini: { enabled: true, command: fakeAgyCommand() } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } } });
+    let probed = 0;
+    const opts = { platform: "win32" as const, verified: WIN, probeSandbox: () => { probed++; return { ok: false, reason: "não deveria rodar" }; } };
+    const ok = await doctor(sb.root, winEnv(sb), sb.authPaths, offline, opts);
+    const g = (ok.providers as Record<string, unknown>).gemini as { blockers: string[]; sandbox: unknown };
+    assert.deepEqual(g.blockers, [], JSON.stringify(g));
+    assert.equal(g.sandbox, null);
+    assert.equal(probed, 0);
+    assert.equal(ok.ready.gemini, true);
+    assert.match(formatDoctor(ok), /sandbox-exec: não se aplica \(Windows: uma trava, decisão do dono\)/);
+    const none = await doctor(sb.root, winEnv(sb, { FAKE_AGY_AUTH: "none" }), sb.authPaths, offline, opts);
+    assert.equal(none.ready.gemini, false);
+    assert.ok(((none.providers as Record<string, unknown>).gemini as { blockers: string[] }).blockers.some((b) => /login do agy/.test(b)));
   });
 });
 

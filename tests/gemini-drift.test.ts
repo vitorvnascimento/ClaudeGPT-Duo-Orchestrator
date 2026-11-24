@@ -240,4 +240,58 @@ describe("drift snapshot", () => {
     writeFileSync(join(d, "big"), buf);
     assert.deepEqual(hashPathStrict(join(d, "big")), { hash: createHash("sha256").update(buf).digest("hex") });
   });
+
+  it("the main checkout's config.worktree is observed", () => {
+    const r = repo();
+    const before = snap([r]);
+    writeFileSync(join(r, ".git", "config.worktree"), "[core]\n\tfsmonitor = x\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(r, ".git", "config.worktree")]);
+  });
+
+  it("a shared .git root observed in both snapshots is compared even if a sibling failed", () => {
+    const r = repo();
+    const wt = join(tmp("duo-drift-wt-"), "sib");
+    g(r, "worktree", "add", "-q", "--detach", wt);
+    const before = snap([r, wt]);
+    g(r, "config", "core.excludesFile", "/tmp/x");
+    writeFileSync(join(wt, ".git"), "not a git dir\n");
+    const out = compareDrift(before, snap([r, wt]), []);
+    assert.deepEqual(out.changed, [join(r, ".git", "config")]);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("the hook directory set by core.hooksPath is observed", () => {
+    const r = repo();
+    mkdirSync(join(r, ".git", "custom-hooks"));
+    g(r, "config", "core.hooksPath", ".git/custom-hooks");
+    const before = snap([r]);
+    writeFileSync(join(r, ".git", "custom-hooks", "pre-commit"), "#!/bin/sh\n");
+    assert.deepEqual(compareDrift(before, snap([r]), []).changed, [join(r, ".git", "custom-hooks", "pre-commit")]);
+  });
+
+  it("an index batch not observed on one side is not reported as changed", () => {
+    const r = repo();
+    writeFileSync(join(r, "a.txt"), "dirty\n");
+    const before = snap([r]);
+    const after = structuredClone(before);
+    after.checkouts[r]!.index = Object.create(null);
+    after.checkouts[r]!.indexGaps = ["a.txt"];
+    after.errors.push("ls-files -s falhou");
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
+  });
+
+  it("git-dir discovery that failed on one side does not turn .git roots into additions or removals", () => {
+    const r = repo();
+    const before = snap([r]);
+    const after = structuredClone(before);
+    after.roots = Object.create(null);
+    after.blind = true;
+    after.errors.push("rev-parse --git-dir falhou");
+    const out = compareDrift(before, after, []);
+    assert.deepEqual(out.changed, []);
+    assert.equal(out.incomplete, true);
+  });
 });
+

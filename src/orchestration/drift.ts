@@ -7,12 +7,15 @@ import { isAbsolute, join, normalize, resolve } from "node:path";
 import { hashPathStrict } from "../git.js";
 
 type Dict = Record<string, string>;
-export type CheckoutSnap = { head: string | null; files: Dict; index: Dict; hidden: string[]; gitRoots: string[] };
+/** indexGaps: caminhos sujos cujo lote do `ls-files -s` falhou (índice não observado, não comparado) */
+export type CheckoutSnap = { head: string | null; files: Dict; index: Dict; indexGaps: string[]; hidden: string[] };
 export type DriftSnapshot = {
   checkouts: Record<string, CheckoutSnap>;
   roots: Record<string, Dict | "absent">;
   /** checkouts e raízes cuja observação falhou inteira: sem retrato, nunca contam como mudança */
   failed: string[];
+  /** algum checkout ou a descoberta do .git dele falhou: raízes que faltam neste retrato podem não ter sido vistas */
+  blind: boolean;
   errors: string[];
 };
 export type DriftResult = { changed: string[]; appliedNotes: { path: string; taskId: string }[]; hiddenUnchecked: string[]; incomplete: boolean };
@@ -49,7 +52,7 @@ export function batchByLength(items: string[], budget: number): string[][] {
 
 function snapCheckout(co: string, out: DriftSnapshot): void {
   const err = (what: string, r: { stderr: string; error?: string }) => out.errors.push(`${co}: git ${what}: ${(r.error ?? r.stderr).trim() || "falhou"}`);
-  const fail = (what: string, r: { stderr: string; error?: string }) => { err(what, r); out.failed.push(co); };
+  const fail = (what: string, r: { stderr: string; error?: string }) => { err(what, r); out.failed.push(co); out.blind = true; };
   const head = observe(co, ["rev-parse", "--verify", "--quiet", "HEAD"]);
   // código 1 sem stderr = repositório sem commits; qualquer outra falha é erro
   if (!head.ok && !(head.code === 1 && !head.stderr.trim() && !head.error)) return fail("rev-parse", head);
@@ -72,9 +75,10 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
     else files[rel] = "hash" in h ? h.hash : "missing";
   }
   const index = dict();
+  const indexGaps: string[] = [];
   for (const batch of batchByLength(Object.keys(files).map((rel) => `:(literal)${rel}`), 24_000)) {
     const r = observe(co, ["ls-files", "-s", "-z", "--", ...batch]);
-    if (!r.ok) { err("ls-files -s", r); continue; }
+    if (!r.ok) { err("ls-files -s", r); indexGaps.push(...batch.map((p) => p.slice(":(literal)".length))); continue; }
     for (const line of r.stdout.split("\0").filter(Boolean)) {
       const tab = line.indexOf("\t");
       const [mode, blob, stage] = line.slice(0, tab).split(" ");
@@ -88,14 +92,15 @@ function snapCheckout(co: string, out: DriftSnapshot): void {
   if (!tags.ok) err("ls-files -v", tags);
   // minúscula = assume-unchanged; S = skip-worktree: o status omite esses caminhos
   else hidden = tags.stdout.split("\0").filter((e) => e.length > 2 && (e[0] === "S" || e[0] !== e[0]!.toUpperCase())).map((e) => e.slice(2));
-  const snap: CheckoutSnap = { head: head.ok ? head.stdout.trim() : null, files, index, hidden, gitRoots: [] };
-  out.checkouts[co] = snap;
-  // .git fica fora do status: config (fsmonitor, excludesFile, hooksPath), hooks e info/exclude entram como raízes
-  const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir"]);
-  if (!dirs.ok) { err("rev-parse --git-dir", dirs); return; }
-  const [gitDir, common] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
-  snap.gitRoots = [join(common!, "config"), join(common!, "hooks"), join(common!, "info"), ...(gitDir !== common ? [join(gitDir!, "config.worktree")] : [])];
-  for (const p of snap.gitRoots) if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
+  out.checkouts[co] = { head: head.ok ? head.stdout.trim() : null, files, index, indexGaps, hidden };
+  // .git fica fora do status: config, config.worktree (também do checkout principal), info/exclude e o diretório
+  // de hooks que o git usa de fato (core.hooksPath) entram como raízes
+  const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks"]);
+  if (!dirs.ok) { err("rev-parse --git-dir", dirs); out.blind = true; return; }
+  const [gitDir, common, hooks] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
+  for (const p of new Set([join(common!, "config"), join(common!, "info"), join(gitDir!, "config.worktree"), hooks!])) {
+    if (!(p in out.roots) && !out.failed.includes(p)) snapRoot(p, out);
+  }
 }
 
 function snapRoot(root: string, out: DriftSnapshot): void {
@@ -136,7 +141,7 @@ function snapRoot(root: string, out: DriftSnapshot): void {
 }
 
 export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: string[] }): DriftSnapshot {
-  const out: DriftSnapshot = { checkouts: Object.create(null), roots: Object.create(null), failed: [], errors: [] };
+  const out: DriftSnapshot = { checkouts: Object.create(null), roots: Object.create(null), failed: [], blind: false, errors: [] };
   for (const co of opts.checkouts) snapCheckout(co, out);
   for (const root of opts.configRoots) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out);
   return out;
@@ -150,20 +155,20 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
   const changed = new Set<string>();
   const hidden = new Set<string>();
   const failed = new Set([...before.failed, ...after.failed]);
-  // o .git de um checkout que falhou num dos retratos não foi redescoberto: sem prova de mudança
-  for (const co of [...failed]) for (const p of [...(before.checkouts[co]?.gitRoots ?? []), ...(after.checkouts[co]?.gitRoots ?? [])]) failed.add(p);
   for (const co of new Set([...Object.keys(before.checkouts), ...Object.keys(after.checkouts)])) {
     if (failed.has(co)) continue; // observação falhou (já em errors): sem prova de mudança
     const a = before.checkouts[co], b = after.checkouts[co];
     if (!a || !b) { changed.add(co); continue; } // checkout surgiu ou sumiu
     if (a.head !== b.head) changed.add(`${co} (HEAD)`);
     // ausente de um lado = igual ao HEAD daquele retrato; aparecer, sumir ou mudar de hash conta
-    for (const rel of [...diffMaps(a.files, b.files), ...diffMaps(a.index, b.index)]) changed.add(join(co, rel));
+    const gaps = new Set([...a.indexGaps, ...b.indexGaps]); // índice não observado num lado: só o hash do arquivo conta
+    for (const rel of [...diffMaps(a.files, b.files), ...diffMaps(a.index, b.index).filter((rel) => !gaps.has(rel))]) changed.add(join(co, rel));
     for (const rel of [...a.hidden, ...b.hidden]) hidden.add(join(co, rel));
   }
   for (const root of new Set([...Object.keys(before.roots), ...Object.keys(after.roots)])) {
     if (failed.has(root)) continue;
-    // raiz descoberta só num retrato: o outro lado conta como ausente
+    // raiz que falta num retrato: ausente, a menos que esse retrato não tenha conseguido descobrir todas
+    if ((!(root in before.roots) && before.blind) || (!(root in after.roots) && after.blind)) continue;
     const a = before.roots[root] ?? "absent", b = after.roots[root] ?? "absent";
     if (a === "absent" || b === "absent") { if (a !== b) changed.add(root); continue; }
     for (const rel of diffMaps(a, b)) changed.add(rel === "." ? root : join(root, rel));

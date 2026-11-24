@@ -184,9 +184,8 @@ export function fakeAgyCommand(): string[] | null {
 export function withFakeAgyPath(path: string | undefined): string {
   if (!fakeAgyBin || process.platform !== "win32") return path ?? "";
   const clean = (path ?? "").split(";").filter((d) => d && !["agy.exe", "agy.com"].some((f) => existsSync(join(d, f))));
-  // O aceite resolve `node` pelo PATH: sumir com a pasta do node pularia o comando sem falhar o teste.
-  const nodeDir = dirname(process.execPath);
-  if (!clean.some((d) => d.toLowerCase() === nodeDir.toLowerCase())) throw new Error(`node (${nodeDir}) fora do PATH do teste ou na mesma pasta de um agy.exe; separe-os para rodar os testes offline`);
+  // O aceite resolve `node` pelo PATH: sem node no PATH filtrado, o comando seria pulado sem falhar o teste.
+  if (!resolveExecutable("node", null, { PATH: [fakeAgyBin, ...clean].join(";") }, "win32").ok) throw new Error("node fora do PATH do teste (a pasta dele também tem um agy.exe?); separe-os para rodar os testes offline");
   const out = [fakeAgyBin, ...clean].join(";");
   const r = resolveExecutable("agy", null, { PATH: out }, "win32");
   if (!r.ok || r.prefixArgs[0] !== join(fakeAgyBin, "node_modules", "fake-agy", "agy.mjs")) throw new Error(`agy do teste não resolve para o falso: ${JSON.stringify(r)}`);

@@ -71,12 +71,20 @@ function snapshot(checkouts: string[], configRoots: string[], env: NodeJS.Proces
 const unresolved = (d: TaskDrift) => d.changed.length > 0 || d.incomplete || d.status !== "complete";
 
 /** Todas as conferências da task ainda sem resolução (tentativa atual e retomadas anteriores) e marcador pendente. */
-export function driftOutstanding(task: Task): { changed: string[]; incomplete: boolean } | null {
-  const all = [...(task.driftHistory ?? []), ...(task.drift ? [task.drift] : [])].filter(unresolved);
+export function driftOutstanding(task: Task): { changed: string[]; incomplete: boolean; sources: string[] } | null {
+  // fonte de cada aviso (campo do task.json) para o revisor achar a evidência completa
+  const entries = [...(task.driftHistory ?? []).map((d, i) => [d, `driftHistory[${i}]`] as const), ...(task.drift ? [[task.drift, "drift"] as const] : [])].filter(([d]) => unresolved(d));
   const marker = hasDriftMarker(task);
-  if (!all.length && !marker) return null;
-  return { changed: [...new Set(all.flatMap((d) => d.changed))].sort(), incomplete: marker || all.some((d) => d.incomplete || d.status !== "complete") };
+  if (!entries.length && !marker) return null;
+  return {
+    changed: [...new Set(entries.flatMap(([d]) => d.changed))].sort(),
+    incomplete: marker || entries.some(([d]) => d.incomplete || d.status !== "complete"),
+    sources: [...entries.map(([, f]) => f), ...(marker ? [DRIFT_MARKER] : [])],
+  };
 }
+
+/** Tentativa em andamento (ponte viva): o "pendente" dela é o retrato ativo, não uma conferência interrompida. */
+const activeAttempt = (t: Task) => t.state === "running" && !!t.pids.bridge && isPidAlive(t.pids.bridge);
 
 function setLimitations(task: Task): void {
   task.limitations = task.limitations.filter((l) => l !== DRIFT_INCOMPLETE && !l.startsWith(DRIFT_PREFIX));
@@ -141,12 +149,14 @@ function appliesInWindow(store: Store, task: Task, since: number, until: number)
  * alcança); recuperação e cancelamento leem o marcador e só salvam se a task ainda estiver na mesma tentativa.
  */
 export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, opts: { executorAlive: boolean; marker?: DriftMarker; recovery?: boolean }): void {
-  const commit = (drift: TaskDrift, removeMarker: boolean) => {
+  const commit = (drift: TaskDrift, removeMarker: boolean, corrupt = false) => {
     const apply = () => {
       let target = task;
       if (opts.recovery) {
         const fresh = store.loadTask(task.runId, task.taskId);
         if (!fresh || (fresh.drift && fresh.drift.attemptId !== drift.attemptId)) return; // outra tentativa já assumiu
+        // outra recuperação já gravou o resultado desta tentativa: completo é final, nunca volta a vazio/pendente
+        if (fresh.drift?.status === "complete") { task.drift = fresh.drift; task.limitations = fresh.limitations; task.driftHistory = fresh.driftHistory; return; }
         target = fresh;
       }
       const before = JSON.stringify([target.drift, target.limitations]);
@@ -156,7 +166,11 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
       if (JSON.stringify([target.drift, target.limitations]) !== before) store.saveTask(target);
       if (target !== task) { task.drift = target.drift; task.limitations = target.limitations; task.driftHistory = target.driftHistory; }
       // falha ao apagar (arquivo preso no Windows) não desfaz o resultado salvo: a recuperação apaga depois
-      if (removeMarker) { try { removeMarkerOf(task, drift.attemptId); } catch { /* fica para a recuperação */ } }
+      if (removeMarker) {
+        // marcador corrompido não tem attemptId legível: sai só aqui, dentro do lock e depois de confirmar a tentativa
+        try { if (corrupt) rmSync(join(task.artifactsDir, DRIFT_MARKER), { force: true }); else removeMarkerOf(task, drift.attemptId); }
+        catch { /* fica para a recuperação */ }
+      }
     };
     if (opts.recovery) withDriftLock(task, apply); else apply();
   };
@@ -177,7 +191,7 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
         return;
       }
       // JSON corrompido sem executor vivo fecha incompleta; leitura transitória (arquivo preso no Windows) espera
-      if (error instanceof SyntaxError && !opts.executorAlive) { commit(emptyDrift(attemptId, "complete", true), false); rmSync(join(task.artifactsDir, DRIFT_MARKER), { force: true }); return; }
+      if (error instanceof SyntaxError && !opts.executorAlive) { commit(emptyDrift(attemptId, "complete", true), true, true); return; }
       commit(emptyDrift(attemptId, "pending", true), false);
       return;
     }
@@ -208,7 +222,7 @@ export const driftNeedsSettling = (task: Task) => hasDriftMarker(task) || task.d
 /** Última tarefa gemini com aviso da conferência (duo doctor), mesmo com o executor desligado ou ausente hoje. */
 export function lastGeminiDrift(store: Store): { taskId: string; changed: number; incomplete: boolean } | null {
   const hit = store.listRuns().flatMap((r) => store.listTasks(r))
-    .filter((t) => t.executor === "gemini" && driftOutstanding(t))
+    .filter((t) => t.executor === "gemini" && !activeAttempt(t) && driftOutstanding(t))
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
   const d = hit && driftOutstanding(hit);
   return hit && d ? { taskId: hit.taskId, changed: d.changed.length, incomplete: d.incomplete } : null;

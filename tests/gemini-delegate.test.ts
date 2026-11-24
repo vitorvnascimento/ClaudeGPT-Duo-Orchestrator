@@ -8,7 +8,7 @@ import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
 import { doctor, formatDoctor } from "../src/cli/doctor.js";
 import { applyTask, cancelRun, refreshInterrupted } from "../src/orchestration/control.js";
-import { DRIFT_MARKER, failDrift, finishDrift, geminiConfigRoots, startDrift } from "../src/orchestration/drift-check.js";
+import { DRIFT_MARKER, failDrift, finishDrift, geminiConfigRoots, lastGeminiDrift, startDrift } from "../src/orchestration/drift-check.js";
 import { delegate, type DelegateOptions } from "../src/orchestration/delegate.js";
 import { cliEntry, packageRoot } from "../src/paths.js";
 import { Store } from "../src/state/store.js";
@@ -542,6 +542,7 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     const r = applyTask(s.root, t.taskId, s.env);
     assert.equal(r.ok, false);
     assert.match(r.message, /fora\.txt/);
+    assert.ok(r.message.includes(`${t.taskId}: driftHistory[0]`), r.message);
   });
 
   it("an outstanding marker or a pending drift blocks apply without --ack-drift", async () => {
@@ -653,6 +654,66 @@ describe("conferência pós-tarefa: ciclo de vida (revisão 2)", () => {
     const r = applyTask(s.root, String(next.summary.taskId), s.env);
     assert.equal(r.ok, false, r.message);
     assert.match(r.message, /fora\.txt/);
+    assert.ok(r.message.includes(`${first.summary.taskId}: drift`), r.message);
+  });
+
+  it("an unreadable earlier Gemini attempt in the chain blocks apply and is named", async () => {
+    const s = setup();
+    const first = await run(s, req({ adaptive: true }), { FAKE_REPORT: JSON.stringify({ status: "blocked", blockedReason: "precisa de decisão" }) }, WIN);
+    const next = await resume(s, String(first.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, WIN);
+    assert.equal(next.summary.state, "succeeded", JSON.stringify(next.summary));
+    writeFileSync(join(task(s, first.summary.taskId).artifactsDir, "task.json"), "{corrompido");
+    const r = applyTask(s.root, String(next.summary.taskId), s.env);
+    assert.equal(r.ok, false, r.message);
+    assert.match(r.message, new RegExp(`${first.summary.taskId}: tentativa ilegível`));
+  });
+
+  it("a second recovery from a stale pending read never replaces a completed comparison", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-c");
+    t.pids = { bridge: deadPid(), child: deadPid() };
+    store.saveTask(t);
+    const stale = task(s, t.taskId);
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    finishDrift(store, task(s, t.taskId), s.env, { executorAlive: false, recovery: true });
+    finishDrift(store, stale, s.env, { executorAlive: false, recovery: true });
+    const d = task(s, t.taskId).drift;
+    assert.equal(d?.incomplete, false, JSON.stringify(d));
+    assert.ok(d?.changed.some((p) => p.endsWith("late.txt")), JSON.stringify(d));
+  });
+
+  it("cancel keeps the dead executor PID while the check is pending, so a later recovery can compare", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    startDrift(t, s.root, s.env, "attempt-keep");
+    writeFileSync(join(s.root, "late.txt"), "x\n");
+    t.state = "running";
+    t.pids = { bridge: deadPid(), child: deadPid() };
+    store.saveTask(t);
+    chmodSync(marker(s, t.taskId), 0o000);
+    try { await cancelRun(s.root, t.runId, 0, s.env); } finally { chmodSync(marker(s, t.taskId), 0o644); }
+    assert.equal(task(s, t.taskId).drift?.status, "pending");
+    assert.ok(task(s, t.taskId).pids.child);
+    refreshInterrupted(store, t.taskId, s.env);
+    assert.equal(task(s, t.taskId).drift?.status, "complete");
+    assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.endsWith("late.txt")));
+  });
+
+  it("doctor's last warning skips a healthy running attempt", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const old = await clean(s);
+    old.drift = { attemptId: "old", status: "complete", changed: ["x"], appliedNotes: [], hiddenUnchecked: [], unverified: [], incomplete: false };
+    store.saveTask(old);
+    const live = await clean(s);
+    startDrift(live, s.root, s.env, "attempt-live");
+    live.state = "running";
+    live.pids = { bridge: process.pid, child: null };
+    store.saveTask(live);
+    assert.equal(lastGeminiDrift(store)?.taskId, old.taskId);
   });
 
   it("resume settles the previous attempt with its own (dead) executor PID, keeping the changed paths", async () => {

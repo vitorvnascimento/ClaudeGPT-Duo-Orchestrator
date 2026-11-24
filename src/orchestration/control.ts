@@ -100,7 +100,8 @@ export async function cancelRun(projectRoot: string, runId: string, graceMs = 10
     if (!isTerminal(fresh.state) && canTransition(fresh.state, "cancelled")) {
       transition(fresh, "cancelled", "cancelado pelo usuário (duo cancel)");
       // Não descarte a evidência de um executor que ainda sobrevive ao cancelamento.
-      if (fresh.pids.child && !isPidAlive(fresh.pids.child)) fresh.pids.child = null;
+      // PID morto fica enquanto a conferência pós-tarefa não fechar: é a prova do fim do executor para a recuperação
+      if (fresh.pids.child && !isPidAlive(fresh.pids.child) && !driftNeedsSettling(fresh)) fresh.pids.child = null;
       store.saveTask(fresh);
     }
     if (fresh.state === "cancelled") cancelled.push(fresh.taskId);
@@ -169,12 +170,19 @@ function applyAdmitted(projectRoot: string, taskId: string, ackDrift: boolean): 
   if (task.applied) return { ok: true, message: "patch já aplicado anteriormente; nada a fazer" };
   // Só avisa (decisão do dono): o patch fica parado até o cérebro revisar e confirmar com --ack-drift.
   // Inclui tentativas anteriores (retomadas na mesma task ou em tasks novas da cadeia) e marcador pendente: falha fechado.
-  const chainTasks = store.chainForTask(task).attempts.map((a) => store.findTask(a.taskId)).filter((t): t is Task => !!t);
-  const parts = [task, ...chainTasks.filter((t) => t.taskId !== task.taskId)].map(driftOutstanding).filter((x): x is NonNullable<typeof x> => !!x);
-  const d = parts.length ? { changed: [...new Set(parts.flatMap((x) => x.changed))].sort(), incomplete: parts.some((x) => x.incomplete) } : null;
+  // tentativa gemini da cadeia que não se lê (task.json sumido ou corrompido): conferência incompleta, nunca ignorada
+  const unreadable: string[] = [];
+  const others = store.chainForTask(task).attempts.filter((a) => a.taskId !== task.taskId).flatMap((a) => {
+    const t = store.findTask(a.taskId);
+    if (!t && a.executor === "gemini") unreadable.push(a.taskId);
+    return t ? [t] : [];
+  });
+  const parts = [task, ...others].flatMap((t) => { const o = driftOutstanding(t); return o ? [{ ...o, where: `${t.taskId}: ${o.sources.join(", ")} em ${join(t.artifactsDir, "task.json")}` }] : []; });
+  const d = parts.length || unreadable.length ? { changed: [...new Set(parts.flatMap((x) => x.changed))].sort(), incomplete: unreadable.length > 0 || parts.some((x) => x.incomplete),
+    where: [...parts.map((x) => x.where), ...unreadable.map((id) => `${id}: tentativa ilegível`)] } : null;
   if (d && !ackDrift) {
     const what = [d.changed.length ? `${d.changed.length} caminho(s) mudaram fora da worktree durante a tentativa do Gemini (${d.changed.slice(0, 5).join(", ")}${d.changed.length > 5 ? ", …" : ""})` : "", d.incomplete ? "a conferência pós-tarefa ficou incompleta" : ""].filter(Boolean).join("; ");
-    return { ok: false, message: `${what}. Detalhes no campo drift de ${join(task.artifactsDir, "task.json")}. Depois de revisar, rode duo apply --task-id ${taskId} --ack-drift para aplicar mesmo assim.` };
+    return { ok: false, message: `${what}. Evidência: ${d.where.join("; ")}. Depois de revisar, rode duo apply --task-id ${taskId} --ack-drift para aplicar mesmo assim.` };
   }
   const patch = task.verification?.patchPath;
   if (!patch || !existsSync(patch)) return { ok: false, message: "patch da task não encontrado" };

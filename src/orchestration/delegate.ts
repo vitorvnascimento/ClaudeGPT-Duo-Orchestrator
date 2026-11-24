@@ -2,7 +2,7 @@
 // verifica o resultado de forma independente e registra estado e métricas. Não é um segundo cérebro.
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AGY_FLAGS, CODEX_EXEC_FLAGS, CLAUDE_FLAGS, probe, probeAgy, type Capabilities } from "../adapters/capabilities.js";
 import { findModel, loadCatalog, modelKey, reportedMatchesRequested, sameBaseModel, sameModelIdentity, type Catalog, type ModelInfo } from "../adapters/catalog.js";
 import { collectCodexEvidence, readRolloutEvidence, sha256File } from "../adapters/codex-rollout.js";
@@ -18,9 +18,10 @@ import { alternateProviders, pickAlternate } from "./alternates.js";
 import { resolveGeminiTargets, writeGateFiles } from "../adapters/gemini-gate.js";
 import { buildProfile, probeSandbox, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { geminiAuthPreflight, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { attemptTmpDir, chainStateDir, claimChainState, createPrivateHome, launcherFor, sweepStaleAttempts } from "../state/gemini-state.js";
+import { agyConfigAbove, attemptTmpDir, chainStateDir, claimChainState, CODEIUM_CONFIG_NAMES, createPrivateHome, launcherFor, sweepStaleAttempts } from "../state/gemini-state.js";
 import { ConfigError, loadConfig, type DuoConfig, type Provider } from "../config.js";
 import { captureState, diffAgainstSnapshot, diffStates, dirtyPaths, git, hashPath, headCommit, linkIntoWorktree, worktreeSnapshot, repoRoot, snapshotFiles, worktreeAdd, worktreePatch, type TreeState } from "../git.js";
+import { duoDir } from "../paths.js";
 import { readEffectiveCodexConfig } from "../permissions/codex-effective-config.js";
 import { computerUseBlockReason } from "../permissions/computer-use.js";
 import { authBlockReason, checkAuth, childEnv, codexConfiguredModel, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
@@ -100,6 +101,14 @@ function appApprovalInstruction(app: string, taskId: string): string {
 
 function exitFor(state: TaskState): number {
   return state === "succeeded" ? EXIT.ok : state === "blocked" ? EXIT.blocked : state === "cancelled" ? EXIT.cancelled : EXIT.failed;
+}
+
+/** Config do agy acima de `worktree`: só o nome e a distância na mensagem, não o caminho. */
+function agyConfigProblem(worktree: string): string | null {
+  const above = agyConfigAbove(worktree);
+  if (!above) return null;
+  const levels = relative(dirname(above), worktree).split(/[\\/]/).filter(Boolean).length;
+  return `config do agy acima da worktree (${basename(above)}, ${levels} níveis acima): remova ou mova o arquivo`;
 }
 
 function blockTask(task: Task, reason: string): void {
@@ -230,6 +239,12 @@ function runGates(
     if (task.model.requested && !/^gemini-/.test(task.model.requested)) return { ok: false, reason: `modelo fora do catálogo gemini-*: ${task.model.requested}` };
     const suffix = /-(low|medium|high|xhigh)$/.exec(task.model.requested ?? "")?.[1];
     if (req.effort && suffix && req.effort !== suffix) return { ok: false, reason: `modelo ${task.model.requested} fixado é incompatível com o esforço pedido (${req.effort}); o esforço do gemini faz parte do id` };
+    // Windows: config do agy na raiz do projeto (que vira a raiz da worktree) ou em qualquer pasta acima de onde a
+    // worktree nasce. Recusa antes do snapshot: depois de remover o arquivo, o --resume tira um snapshot limpo.
+    if (platform === "win32") {
+      const problem = agyConfigProblem(join(duoDir(projectRoot), "worktrees", "_"));
+      if (problem) return { ok: false, reason: problem };
+    }
     // Configuração que a trava do SO não aplica: recusa antes de criar worktree, HOME privado e arquivos do gate.
     const denyProblem = unsupportedDenyGlob(cfg.scope.deny);
     if (denyProblem) return { ok: false, reason: denyProblem };
@@ -912,6 +927,15 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
   let releaseClaim: (() => void) | null = null;
   let gemPrep: { home: string; attempt: ReturnType<typeof attemptTmpDir>; logPath: string; profilePath: string | null } | null = null;
   if (task.executor === "gemini") {
+    // Windows: o agy carrega codeium.yaml e variantes da própria pasta de trabalho e de todas acima, até a raiz do disco
+    // (fatos da Fase 0). Recusa antes do HOME privado e do gate; a mensagem traz só o nome e a distância, não o caminho.
+    // Segunda barreira (os portões já olharam antes do snapshot): pega um arquivo gravado na worktree numa tentativa anterior.
+    if ((ctx.gemini?.platform ?? process.platform) === "win32") {
+      const own = CODEIUM_CONFIG_NAMES.find((n) => existsSync(join(execCwd, n)));
+      if (own) return block(`config do agy na worktree (${own}): remova ou mova o arquivo`);
+      const problem = agyConfigProblem(execCwd);
+      if (problem) return block(problem);
+    }
     // Raiz do estado pela plataforma real (a mesma que o apply usa para remover); a injetada só muda o perfil.
     const chainDir = chainStateDir(projectRoot, ctx.chainId, env);
     task.geminiStateDir = chainDir;

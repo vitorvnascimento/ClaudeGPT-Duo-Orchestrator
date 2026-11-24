@@ -1,6 +1,6 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
@@ -171,6 +171,33 @@ describe("delegação ao gemini", () => {
     assert.match(String(out.summary.outcome), /gate do gemini: .*caractere não suportado/);
     assert.equal(task(s, out.summary.taskId).state, "blocked");
     assert.equal(agyRuns(s).length, 0);
+  });
+
+  it("win32: an agy config file above the worktree blocks before the gate is written; darwin does not check", async () => {
+    const s = setup();
+    writeFileSync(join(s.root, ".duo", ".codeium.yml"), "");
+    const out = await run(s, req(), {}, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: WIN_GATE });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /config do agy acima da worktree \(\.codeium\.yml, 2 níveis acima\): remova ou mova o arquivo/);
+    assert.ok(!String(out.summary.outcome).includes(s.root), "caminho completo não aparece");
+    assert.equal(existsSync(join(s.root, ".duo", "worktrees", String(out.summary.taskId), ".agents", "hooks.json")), false);
+    assert.equal(agyRuns(s).length, 0);
+    const mac = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) });
+    assert.equal(mac.summary.state, "succeeded", JSON.stringify(mac.summary));
+  });
+
+  it("win32: an agy config file in the project root is refused before the snapshot, and resume works once it is removed", async () => {
+    const s = setup();
+    writeFileSync(join(s.root, "codeium.yaml"), "");
+    const out = await run(s, req(), {}, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: WIN_GATE });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(JSON.stringify(out.summary), /config do agy acima da worktree \(codeium\.yaml, 3 níveis acima\)/);
+    assert.equal(agyRuns(s).length, 0);
+    rmSync(join(s.root, "codeium.yaml"));
+    assert.ok(out.summary.taskId, "o bloqueio devolve a tarefa para o --resume");
+    const again = await resume(s, String(out.summary.taskId), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) }, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: WIN_GATE });
+    assert.equal(again.summary.state, "succeeded", JSON.stringify(again.summary));
+    assert.equal(again.summary.taskId, out.summary.taskId);
   });
 
   it("win32: a refused probe profile blocks with its own reason, not as an unverified version", async () => {

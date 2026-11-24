@@ -1,15 +1,16 @@
 // Conferência pós-tarefa do Gemini no Windows: retrato do checkout e das configs reais (só detecta, não contém).
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { hashPathStrict } from "../src/git.js";
-import { compareDrift, takeDriftSnapshot } from "../src/orchestration/drift.js";
+import { batchByLength, compareDrift, takeDriftSnapshot } from "../src/orchestration/drift.js";
 
 let dirs: string[] = [];
-afterEach(() => { for (const d of dirs) { try { chmodSync(d, 0o755); } catch { /* já removido */ } rmSync(d, { recursive: true, force: true }); } dirs = []; });
+afterEach(() => { for (const d of dirs.reverse()) { try { chmodSync(d, 0o755); } catch { /* já removido */ } rmSync(d, { recursive: true, force: true }); } dirs = []; });
 function tmp(prefix: string): string { const d = realpathSync(mkdtempSync(join(tmpdir(), prefix))); dirs.push(d); return d; }
 function g(cwd: string, ...args: string[]): string {
   const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
@@ -25,10 +26,11 @@ function repo(): string {
   g(d, "commit", "-q", "-m", "base");
   return d;
 }
+const asRoot = process.getuid?.() === 0; // root lê arquivo com modo 000
 const snap = (checkouts: string[], configRoots: string[] = []) => takeDriftSnapshot({ checkouts, configRoots });
 
 describe("hashPathStrict", () => {
-  it("separates missing from unreadable", { skip: process.platform === "win32" }, () => {
+  it("separates missing from unreadable", { skip: process.platform === "win32" || asRoot }, () => {
     const d = tmp("duo-hps-");
     writeFileSync(join(d, "f"), "x");
     assert.ok("hash" in hashPathStrict(join(d, "f")));
@@ -113,7 +115,7 @@ describe("drift snapshot", () => {
     assert.deepEqual(compareDrift(before, snap([r], [root]), []).changed, [join(root, "config", "config.json")]);
   });
 
-  it("an unreadable dirty file makes the check incomplete, never clean", { skip: process.platform === "win32" }, () => {
+  it("an unreadable dirty file makes the check incomplete, never clean", { skip: process.platform === "win32" || asRoot }, () => {
     const r = repo();
     writeFileSync(join(r, "a.txt"), "dirty\n");
     const before = snap([r]);
@@ -141,8 +143,101 @@ describe("drift snapshot", () => {
     const r = repo();
     const before = snap([r]);
     writeFileSync(join(r, "a.txt"), "applied\n");
-    const out = compareDrift(before, snap([r]), [{ taskId: "t-sib", files: [join(r, "a.txt")] }]);
+    const out = compareDrift(before, snap([r]), [{ taskId: "t-sib", root: r, files: ["a.txt"] }]);
     assert.deepEqual(out.changed, [join(r, "a.txt")]);
     assert.deepEqual(out.appliedNotes, [{ path: join(r, "a.txt"), taskId: "t-sib" }]);
+  });
+
+  it("a root discovered only in the second snapshot is a change, not skipped", () => {
+    const r = repo();
+    const root = join(tmp("duo-drift-home-"), "Antigravity");
+    const before = snap([r], []);
+    mkdirSync(root);
+    writeFileSync(join(root, "x"), "1");
+    const out = compareDrift(before, snap([r], [root]), []);
+    assert.deepEqual(out.changed, [root]);
+    assert.equal(out.incomplete, false);
+  });
+
+  it("a checkout whose git fails only afterwards is incomplete, not reported as changed", () => {
+    const r = repo();
+    const before = snap([r]);
+    const realGit = join(r, ".git"), saved = join(tmp("duo-drift-saved-"), "git");
+    renameSync(realGit, saved);
+    writeFileSync(realGit, "not a git dir\n"); // git falha; o .git verdadeiro volta depois
+    const after = snap([r]);
+    rmSync(realGit);
+    renameSync(saved, realGit);
+    const out = compareDrift(before, after, []);
+    assert.equal(out.incomplete, true);
+    assert.deepEqual(out.changed, []);
+  });
+
+  it("a directory git status cannot open makes the check incomplete", { skip: process.platform === "win32" || asRoot }, () => {
+    const r = repo();
+    mkdirSync(join(r, "fechado"));
+    writeFileSync(join(r, "fechado", "x"), "x");
+    chmodSync(join(r, "fechado"), 0o000);
+    dirs.push(join(r, "fechado"));
+    const s = snap([r]);
+    assert.ok(s.errors.some((e) => e.includes("fechado")), s.errors.join("|"));
+    assert.equal(compareDrift(s, s, []).incomplete, true);
+  });
+
+  it("a file named __proto__ is tracked like any other", () => {
+    const r = repo();
+    const root = join(tmp("duo-drift-home-"), ".gemini");
+    mkdirSync(root);
+    const before = snap([r], [root]);
+    writeFileSync(join(r, "__proto__"), "x");
+    writeFileSync(join(root, "__proto__"), "x");
+    assert.deepEqual(compareDrift(before, snap([r], [root]), []).changed, [join(r, "__proto__"), join(root, "__proto__")].sort());
+  });
+
+  it("a config file rewritten with the same size and mtime is still a change", () => {
+    const r = repo();
+    const root = join(tmp("duo-drift-home-"), ".gemini");
+    mkdirSync(root);
+    writeFileSync(join(root, "settings.json"), "{\"a\":1}");
+    const t = new Date("2026-01-01T00:00:00Z");
+    utimesSync(join(root, "settings.json"), t, t);
+    const before = snap([r], [root]);
+    writeFileSync(join(root, "settings.json"), "{\"a\":2}");
+    utimesSync(join(root, "settings.json"), t, t);
+    assert.deepEqual(compareDrift(before, snap([r], [root]), []).changed, [join(root, "settings.json")]);
+  });
+
+  it("changes to the repository's hooks and config are reported", () => {
+    const r = repo();
+    const before = snap([r]);
+    writeFileSync(join(r, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
+    g(r, "config", "core.excludesFile", "/tmp/x");
+    const out = compareDrift(before, snap([r]), []);
+    assert.deepEqual(out.changed, [join(r, ".git", "config"), join(r, ".git", "hooks", "pre-commit")]);
+  });
+
+  it("the observer never runs the repository's fsmonitor command", { skip: process.platform === "win32" }, () => {
+    const r = repo();
+    const marker = join(tmp("duo-drift-fsm-"), "ran");
+    const script = join(r, ".git", "fsm.sh");
+    writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    g(r, "config", "core.fsmonitor", script);
+    snap([r]);
+    assert.equal(existsSync(marker), false);
+  });
+
+  it("batches pathspecs under the Windows command-line limit without dropping any", () => {
+    const items = Array.from({ length: 300 }, (_, i) => `${"d".repeat(150)}/${i}`);
+    const batches = batchByLength(items, 24_000);
+    assert.deepEqual(batches.flat(), items);
+    for (const b of batches) assert.ok(b.reduce((n, x) => n + x.length + 3, 0) <= 24_000);
+    assert.ok(batches.length > 1);
+  });
+
+  it("hashes a multi-chunk file the same as its whole content", () => {
+    const d = tmp("duo-hps-big-");
+    const buf = Buffer.alloc(3 * 1024 * 1024 + 7, 7);
+    writeFileSync(join(d, "big"), buf);
+    assert.deepEqual(hashPathStrict(join(d, "big")), { hash: createHash("sha256").update(buf).digest("hex") });
   });
 });

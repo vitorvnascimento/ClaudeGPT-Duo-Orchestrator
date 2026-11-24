@@ -2,7 +2,7 @@
 // ou qualquer comando que descarte alterações do usuário.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
+import { closeSync, constants as fsConstants, copyFileSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, statSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, sep, resolve } from "node:path";
 import { isDenied, normalizeRel } from "./permissions/scope.js";
 import { runQuick } from "./adapters/process.js";
@@ -66,7 +66,12 @@ export function hashPathStrict(abs: string): { hash: string } | { missing: true 
     if (st.isSymbolicLink()) return { hash: `link:${readlinkSync(abs)}` };
     if (st.isDirectory()) return { hash: "dir" };
     if (!st.isFile()) return { hash: "other" };
-    return { hash: createHash("sha256").update(readFileSync(abs)).digest("hex") };
+    // leitura em blocos: um arquivo enorme não vira um buffer do mesmo tamanho
+    const h = createHash("sha256"), buf = Buffer.allocUnsafe(1024 * 1024);
+    const fd = openSync(abs, "r");
+    try { for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) h.update(buf.subarray(0, n)); }
+    finally { closeSync(fd); }
+    return { hash: h.digest("hex") };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") return { missing: true };

@@ -146,9 +146,11 @@ describe("delegação ao gemini", () => {
     const s = setup();
     const envOut = join(s.home, "agy-env.jsonl");
     let probed = 0;
-    const out = await run(s, req(), { LOCALAPPDATA: join(s.home, "AppData", "Local"), FAKE_AGY_ENV_OUT: envOut, FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) },
+    const withAcceptance = req({ acceptance: { criteria: ["src/app.ts exporta a constante nova"], commands: [{ name: "smoke", argv: ["node", "-e", "0"] }] } });
+    const out = await run(s, withAcceptance, { LOCALAPPDATA: join(s.home, "AppData", "Local"), FAKE_AGY_ENV_OUT: envOut, FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) },
       { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", probe: () => { probed++; return { ok: false, reason: "não deveria rodar" }; }, gate: WIN_GATE });
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
+    assert.match(JSON.stringify(out.summary), /"name":"smoke","ran":true,"passed":true/);
     assert.equal(probed, 0);
     const [call] = agyRuns(s);
     assert.ok(call);

@@ -934,13 +934,13 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
         ctx.gemini?.gate ? { nodePath: ctx.gemini.gate.nodePath, platform: ctx.gemini.gate.platform } : { nodePath: process.execPath });
     } catch (e) {
       // Caminho que a linha do hook não aceita (aspas no perfil do Windows, por exemplo): bloqueio registrado e retomável.
-      attempt.cleanup();
+      // A pasta da tentativa sai no finally de quem chamou (ctx.cleanups): uma falha ao remover não esconde o bloqueio.
       return block(`gate do gemini: ${(e as Error).message}`);
     }
     let profilePath: string | null = null;
     if ((ctx.gemini?.platform ?? process.platform) !== "win32" && ctx.gemini?.sandbox !== false) {
       const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path, gateLog: files.logPath });
-      if (!prof.ok) { attempt.cleanup(); return block(`perfil sandbox-exec: ${prof.reason}`); }
+      if (!prof.ok) return block(`perfil sandbox-exec: ${prof.reason}`);
       profilePath = join(home, "duo-gate", "profile.sb");
       writeFileSync(profilePath, prof.profile);
     }

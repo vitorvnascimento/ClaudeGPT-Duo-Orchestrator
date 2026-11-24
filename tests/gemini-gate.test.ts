@@ -232,7 +232,7 @@ describe("arquivos do hook", () => {
       const files = writeGateFiles(wt, home, { worktreeRoot: wt, write: [], deny: DENY, readOnly: true },
         { nodePath: platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : process.execPath, platform });
       const fake = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
-      const r = spawnSync(process.execPath, [fake, "-p=", "--model", "gemini-4-argon-high"], { cwd: wt, input: "{}\n", encoding: "utf8", env: { ...process.env, HOME: home, FAKE_LOG: join(home, "fake.log") } });
+      const r = spawnSync(process.execPath, [fake, "-p=", "--model", "gemini-4-argon-high"], { cwd: wt, input: "{}\n", encoding: "utf8", env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("FAKE_"))), HOME: home, FAKE_LOG: join(home, "fake.log") } });
       assert.equal(r.status, 0, r.stderr);
       assert.match(readFileSync(files.logPath, "utf8"), /"modelName":"gemini-4-argon-high"/, platform);
     }

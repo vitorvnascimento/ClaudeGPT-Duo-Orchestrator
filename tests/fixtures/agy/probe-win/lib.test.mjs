@@ -375,8 +375,9 @@ test("trace: resultado desconhecido ou REPARSE intermediário em pasta proibida 
 // Bateria do duo: cada comando do duo (lançador) cria os seus agy; cada lançamento tem as suas pastas.
 const L = "C:\\Users\\v\\AppData\\Local\\duo\\gemini-state";
 const DUO_LAUNCHES = [
-  { launcher: 60, pid: 100, image: "agy.exe", allowedRoots: [`${L}\\probe\\duo-agy-meta-a`] },
-  { launcher: 61, pid: 101, image: "agy.exe", allowedRoots: [`${L}\\abc\\chain1\\home`, `${L}\\abc\\chain1\\attempts\\t1`, "C:\\proj\\.duo\\worktrees\\t1"] },
+  // Como o duo grava: caminho absoluto do executável (o Process Monitor mostra o nome-base no processo).
+  { launcher: 60, pid: 100, image: "C:\\agy\\AGY.exe", allowedRoots: [`${L}\\probe\\duo-agy-meta-a`] },
+  { launcher: 61, pid: 101, image: "C:\\agy\\agy.exe", allowedRoots: [`${L}\\abc\\chain1\\home`, `${L}\\abc\\chain1\\attempts\\t1`, "C:\\proj\\.duo\\worktrees\\t1"] },
 ];
 const DUO_LAUNCHERS = [{ pid: 60, image: "C:\\Program Files\\nodejs\\node.exe" }, { pid: 61, image: "C:\\Program Files\\nodejs\\node.exe" }];
 const bornBy = (launcher, pid) => row("09:59:59", "node.exe", String(launcher), "Process Create", "C:\\agy\\agy.exe", `PID: ${pid}, Command line: agy`);

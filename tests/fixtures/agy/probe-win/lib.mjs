@@ -156,7 +156,8 @@ export function createTraceAnalyzer({ launchers, probePid, launches, policy }) {
   // Um registro por lançamento, na ordem: o Windows pode repetir o PID entre chamadas seguidas do spawnSync, e a sonda
   // também cria outros filhos (cmdkey, cmd, git). O lançamento só casa com o mesmo PID E o mesmo executável, criado pelo
   // seu lançador.
-  const cover = launches.map((l) => ({ pid: String(l.pid), image: String(l.image).toLowerCase(), launcher: launcherOf(l), created: false, fs: 0, exited: false }));
+  // Nome-base nos dois lados: o duo grava o caminho absoluto; o Process Monitor mostra o caminho ou o nome.
+  const cover = launches.map((l) => ({ pid: String(l.pid), image: imageOf(l.image), launcher: launcherOf(l), created: false, fs: 0, exited: false }));
   const isLauncher = (pid, image) => roots.some((r) => r.pid === pid && (!r.image || !image || r.image === imageOf(image)));
   const live = new Map(); // pid vivo → índice do lançamento de origem
   const hits = [];

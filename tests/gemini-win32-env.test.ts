@@ -120,6 +120,7 @@ import { cliVersions, discover } from "../src/adapters/catalog.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { packageRoot } from "../src/paths.js";
 import { geminiAuthPreflight, geminiLoginProbe } from "../src/permissions/gemini-auth.js";
+import { probeAgy } from "../src/adapters/capabilities.js";
 
 describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
   const FAKE = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
@@ -185,6 +186,26 @@ describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
     assert.ok(c);
     assertPrivate(c, project, REAL);
     assert.match(String(c.cwd), /duo-agy-login-.*work$/);
+  });
+
+  it("rastreio (DUO_TRACE_LOG): sondas de capacidade e checagem de login anotam cada agy com as pastas privadas, inclusive o TEMP", () => {
+    const { base, env, cfg, calls } = setup();
+    const log = join(base, "trace.jsonl");
+    const prev = process.env.DUO_TRACE_LOG;
+    process.env.DUO_TRACE_LOG = log;
+    const resolved = { ok: true as const, command: process.execPath, prefixArgs: [FAKE], source: "config" as const };
+    try {
+      geminiLoginProbe(resolved, env, cfg, "win32");
+      probeAgy(resolved, env, "win32");
+    } finally { if (prev === undefined) delete process.env.DUO_TRACE_LOG; else process.env.DUO_TRACE_LOG = prev; }
+    const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { label: string; pid: number; allowedRoots: string[] });
+    const labels = lines.map((l) => l.label);
+    for (const want of ["auth agy models", "caps agy --version", "caps agy --help"]) assert.ok(labels.includes(want), `${want}: ${JSON.stringify(labels)}`);
+    const login = lines.find((l) => l.label === "auth agy models")!;
+    const c = calls().find((x) => x.argv[0] === "models")!;
+    const inside = (p: string) => login.allowedRoots.some((r) => p === r || p.startsWith(`${r}/`) || p.startsWith(`${r}\\`));
+    for (const k of ["USERPROFILE", "TEMP", "TMP"] as const) assert.ok(inside(String(c[k])), `${k} ${c[k]} fora de ${JSON.stringify(login.allowedRoots)}`);
+    assert.ok(inside(String(c.cwd)));
   });
 
   it("preflight da delegação roda na pasta privada que recebe e recusa config do agy acima dela", () => {

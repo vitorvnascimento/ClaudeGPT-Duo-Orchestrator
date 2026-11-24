@@ -36,8 +36,8 @@ test("formato da bateria do duo (lançadores + pastas por lançamento): OK, PROI
   const state = `${LOCAL}\\duo\\gemini-state`;
   const node = "C:\\Program Files\\nodejs\\node.exe";
   const res = { stateRoot: "%USERPROFILE%\\AppData\\Local\\duo\\gemini-state", launches: [
-    { launcher: { pid: 60, image: node }, pid: 100, image: "agy.exe", label: "doctor", allowedRoots: ["%USERPROFILE%\\AppData\\Local\\duo\\gemini-state\\probe\\m1"] },
-    { launcher: { pid: 61, image: node }, pid: 101, image: "agy.exe", label: "delegate agy", allowedRoots: ["%USERPROFILE%\\AppData\\Local\\duo\\gemini-state\\c\\home", "C:\\proj\\wt"] },
+    { launcher: { pid: 60, image: node }, pid: 100, image: "C:\\agy\\agy.exe", label: "doctor", allowedRoots: ["%USERPROFILE%\\AppData\\Local\\duo\\gemini-state\\probe\\m1"] },
+    { launcher: { pid: 61, image: node }, pid: 101, image: "C:\\agy\\agy.exe", label: "delegate agy", allowedRoots: ["%USERPROFILE%\\AppData\\Local\\duo\\gemini-state\\c\\home", "C:\\proj\\wt"] },
   ] };
   const both = (r100, r101) => [born(60, 100), read(100, r100), died(100), born(61, 101), read(101, r101), died(101)];
   const ok = analyze(both(`${state}\\probe\\m1\\x`, "C:\\proj\\wt\\a.ts"), res);

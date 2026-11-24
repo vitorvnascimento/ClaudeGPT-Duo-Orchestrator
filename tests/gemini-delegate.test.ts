@@ -835,7 +835,7 @@ describe("rastreio de lançamentos (DUO_TRACE_LOG, só testes)", () => {
     const t = task(s, out.summary.taskId);
     const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { launcher: { pid: number; image: string }; pid: number; image: string; label: string; allowedRoots: string[] });
     const labels = lines.map((l) => l.label);
-    assert.ok(labels.includes("auth agy models") && labels.includes("delegate agy"), JSON.stringify(labels));
+    for (const want of ["caps agy --version", "caps agy --help", "auth agy models", "delegate agy"]) assert.ok(labels.includes(want), `${want}: ${JSON.stringify(labels)}`);
     for (const l of lines) {
       assert.deepEqual(l.launcher, { pid: process.pid, image: process.execPath });
       assert.ok(Number.isInteger(l.pid) && l.pid > 0 && typeof l.image === "string" && l.image.length > 0, JSON.stringify(l));

@@ -1,6 +1,7 @@
 // Detecção de recursos a partir do --help da versão instalada.
 // A versão declarada é só informativa: o que vale é o que o --help anuncia.
-import { runQuick } from "./process.js";
+import { dirname } from "node:path";
+import { runQuick, type LaunchTrace } from "./process.js";
 import type { Resolved } from "./resolve.js";
 import { childEnv } from "../permissions/auth.js";
 import { launcherFor, withMetadataProfile } from "../state/gemini-state.js";
@@ -96,12 +97,14 @@ export function capabilitiesFromHelp(help: string, version: string | null, specs
   return { version, rawVersion, flags, missingRequired, divergences };
 }
 
-export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], specs: Record<string, FlagSpec>, env: NodeJS.ProcessEnv, cwd?: string): Capabilities & { error?: string } {
-  const v = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env, cwd });
+/** trace: só a sonda do agy (rastreio da bateria do Windows); rótulo-base e pastas privadas deste perfil de sondagem. */
+export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], specs: Record<string, FlagSpec>, env: NodeJS.ProcessEnv, cwd?: string, trace?: LaunchTrace): Capabilities & { error?: string } {
+  const tr = (what: string) => (trace ? { trace: { ...trace, label: `${trace.label} ${what}` } } : {});
+  const v = runQuick(resolved.command, [...resolved.prefixArgs, "--version"], { env, cwd, ...tr("--version") });
   const version = parseVersion(v.stdout + v.stderr);
   // Mesma regra da bateria: só a saída padrão de um --version bem-sucedido identifica a versão.
   const rawVersion = v.ok ? v.stdout.trim() || null : null;
-  const h = runQuick(resolved.command, [...resolved.prefixArgs, ...helpArgs], { env, cwd });
+  const h = runQuick(resolved.command, [...resolved.prefixArgs, ...helpArgs], { env, cwd, ...tr(helpArgs.join(" ")) });
   if (!h.ok && !h.stdout) {
     return { ...capabilitiesFromHelp("", version, specs, rawVersion), error: h.error ?? (h.stderr.slice(0, 300) || "falha ao ler --help") };
   }
@@ -116,6 +119,6 @@ export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.Proc
   // Mesmo lançador da delegação (script do projeto absoluto) nos dois sistemas.
   const launch = { ...resolved, ...launcherFor(resolved, projectRoot) };
   if (platform !== "win32") return probe(launch, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
-  try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd), "win32"); }
+  try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd, { label: "caps agy", allowedRoots: [dirname(cwd)] }), "win32"); }
   catch (e) { const msg = (e as Error).message; return { ...capabilitiesFromHelp("", null, AGY_FLAGS, null), error: msg, profileError: msg }; }
 }

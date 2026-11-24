@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveExecutable } from "../src/adapters/resolve.js";
 import { packageRoot } from "../src/paths.js";
 import type { AuthPaths } from "../src/permissions/auth.js";
 
@@ -166,7 +167,9 @@ export function fakeAgyCommand(): string[] | null {
   const fake = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
   if (process.platform !== "win32") return [fake];
   if (!fakeAgyBin) {
-    fakeAgyBin = mkdtempSync(join(tmpdir(), "duo-fake-agy-"));
+    const dir = mkdtempSync(join(tmpdir(), "duo-fake-agy-"));
+    fakeAgyBin = dir;
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
     const pkg = join(fakeAgyBin, "node_modules", "fake-agy");
     mkdirSync(pkg, { recursive: true });
     writeFileSync(join(pkg, "agy.mjs"), `await import(${JSON.stringify(pathToFileURL(fake).href)});\n`);
@@ -174,6 +177,15 @@ export function fakeAgyCommand(): string[] | null {
   }
   return null;
 }
+/**
+ * PATH do teste com o shim na frente. Windows: tira toda pasta com agy.exe/agy.com (o resolve prefere .exe a .cmd em
+ * qualquer pasta do PATH) e confere que a resolução escolhe o agy falso antes de qualquer teste lançar o executor.
+ */
 export function withFakeAgyPath(path: string | undefined): string {
-  return fakeAgyBin && process.platform === "win32" ? `${fakeAgyBin};${path ?? ""}` : path ?? "";
+  if (!fakeAgyBin || process.platform !== "win32") return path ?? "";
+  const clean = (path ?? "").split(";").filter((d) => d && !["agy.exe", "agy.com"].some((f) => existsSync(join(d, f))));
+  const out = [fakeAgyBin, ...clean].join(";");
+  const r = resolveExecutable("agy", null, { PATH: out }, "win32");
+  if (!r.ok || r.prefixArgs[0] !== join(fakeAgyBin, "node_modules", "fake-agy", "agy.mjs")) throw new Error(`agy do teste não resolve para o falso: ${JSON.stringify(r)}`);
+  return out;
 }

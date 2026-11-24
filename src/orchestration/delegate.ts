@@ -76,6 +76,8 @@ export type GeminiDelegateOptions = {
   platform?: NodeJS.Platform;
   probe?: () => { ok: true } | { ok: false; reason: string };
   sandbox?: boolean;
+  /** Testes: monta o comando do hook como no Windows (o padrão é o sistema real, onde o hook roda). */
+  gate?: { platform: NodeJS.Platform; nodePath: string };
 };
 
 export type DelegateOutcome = { exitCode: number; summary: Record<string, unknown>; verificationFailed?: boolean; quotaExceeded?: boolean; capacityUntil?: string };
@@ -926,7 +928,15 @@ async function execute(ctx: ExecCtx): Promise<DelegateOutcome> {
     for (const target of t.targets) for (const d of target.missingAncestors) mkdirSync(d, { recursive: true });
     const attempt = attemptTmpDir(chainDir);
     ctx.cleanups?.push(() => attempt.cleanup());
-    const files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) }, { nodePath: process.execPath });
+    let files: ReturnType<typeof writeGateFiles>;
+    try {
+      files = writeGateFiles(execCwd, home, { worktreeRoot: execCwd, write: t.targets.map((x) => ({ rel: x.rel, isDir: x.isDir })), deny: cfg.scope.deny, readOnly: !isWriteKind(task.kind) },
+        ctx.gemini?.gate ? { nodePath: ctx.gemini.gate.nodePath, platform: ctx.gemini.gate.platform } : { nodePath: process.execPath });
+    } catch (e) {
+      // Caminho que a linha do hook não aceita (aspas no perfil do Windows, por exemplo): bloqueio registrado e retomável.
+      attempt.cleanup();
+      return block(`gate do gemini: ${(e as Error).message}`);
+    }
     let profilePath: string | null = null;
     if ((ctx.gemini?.platform ?? process.platform) !== "win32" && ctx.gemini?.sandbox !== false) {
       const prof = buildProfile({ worktreeRoot: execCwd, targets: t.targets, denyGlobs: cfg.scope.deny, privateHome: home, tmpDir: attempt.path, gateLog: files.logPath });

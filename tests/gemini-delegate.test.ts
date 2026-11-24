@@ -19,6 +19,8 @@ function setup(extra: Record<string, unknown> = {}): Sandbox {
   // fakeAgyCommand: no Windows nativo, shim .cmd no PATH (a config do gemini aceita só um caminho).
   sb = makeSandbox({ executors: { gemini: { enabled: true, command: fakeAgyCommand() } }, billing: { acknowledgeUnverifiableExtraUsage: { gemini: true } }, ...extra });
   sb.env.PATH = withFakeAgyPath(`${join(process.execPath, "..")}${delimiter}${sb.env.PATH ?? ""}`);
+  // Estado das cadeias dentro do sandbox: no Windows nativo a raiz vem do LOCALAPPDATA, qualquer que seja a plataforma injetada.
+  sb.env.LOCALAPPDATA = join(sb.home, "AppData", "Local");
   return sb;
 }
 function req(over: Record<string, unknown> = {}) {
@@ -31,6 +33,7 @@ async function run(s: Sandbox, r: Record<string, unknown>, env: Record<string, s
 async function resume(s: Sandbox, taskId: string, env: Record<string, string> = {}, gemini: DelegateOptions["gemini"] = { verified: VERIFIED, sandbox: false }) {
   return delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, ...env }, authPaths: s.authPaths, gemini: { platform: "darwin", ...gemini } });
 }
+const WIN_GATE = { platform: "win32" as const, nodePath: "C:\\Program Files\\nodejs\\node.exe" };
 const agyRuns = (s: Sandbox) => s.log().filter((e) => e.cmd === "agy-run") as { args: string[]; stdin: string; home: string; tmpdir: string; cwd: string }[];
 const task = (s: Sandbox, id: unknown) => new Store(s.root).findTask(String(id))!;
 
@@ -144,15 +147,28 @@ describe("delegação ao gemini", () => {
     const envOut = join(s.home, "agy-env.jsonl");
     let probed = 0;
     const out = await run(s, req(), { LOCALAPPDATA: join(s.home, "AppData", "Local"), FAKE_AGY_ENV_OUT: envOut, FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 2;\n" }) },
-      { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", probe: () => { probed++; return { ok: false, reason: "não deveria rodar" }; } });
+      { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", probe: () => { probed++; return { ok: false, reason: "não deveria rodar" }; }, gate: WIN_GATE });
     assert.equal(out.summary.state, "succeeded", JSON.stringify(out.summary));
     assert.equal(probed, 0);
-    assert.ok(agyRuns(s)[0]);
+    const [call] = agyRuns(s);
+    assert.ok(call);
+    const hook = (JSON.parse(readFileSync(join(call.cwd, ".agents", "hooks.json"), "utf8")) as Record<string, { PreToolUse: { hooks: { command: string }[] }[] }>)["duo-gate"]?.PreToolUse[0]?.hooks[0]?.command ?? "";
+    assert.match(hook, /^set "NODE_OPTIONS=" && set "PATH=C:\\Program Files\\nodejs" && node "[^"]+" "[^"]+" "[^"]+" "\d+"$/, hook);
     const lines = readFileSync(envOut, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; cwd: string });
     const login = lines.filter((l) => l.argv[0] === "models").at(-1);
     assert.ok(login && /attempt-/.test(login.cwd), JSON.stringify(login));
     const inv = readFileSync(join(task(s, out.summary.taskId).artifactsDir, "invocation.json"), "utf8");
     assert.ok(!inv.includes("sandbox-exec"), inv.slice(0, 400));
+    assert.equal(task(s, out.summary.taskId).model.reported, "gemini-4-argon-high");
+  });
+
+  it("win32: a hook path the Windows command line refuses blocks the task (persisted, nothing launched)", async () => {
+    const s = setup();
+    const out = await run(s, req(), {}, { verified: [{ version: "1.5.3", platform: "win32" }], platform: "win32", gate: { platform: "win32", nodePath: "C:\\Users\\O'Neil\\node.exe" } });
+    assert.equal(out.summary.state, "blocked", JSON.stringify(out.summary));
+    assert.match(String(out.summary.outcome), /gate do gemini: .*caractere não suportado/);
+    assert.equal(task(s, out.summary.taskId).state, "blocked");
+    assert.equal(agyRuns(s).length, 0);
   });
 
   it("win32: a refused probe profile blocks with its own reason, not as an unverified version", async () => {

@@ -52,9 +52,13 @@ if (scenario) { process.stdout.write(readFileSync(join(here, "agy", `${scenario}
 const model = valueOf("--model") ?? "gemini-x";
 const conv = valueOf("--conversation") ?? "00000000-0000-4000-8000-000000000001";
 // Simula o hook: registra o modelo em uso no log do gate, como o gate real faria.
-// O log é o desta tentativa: o caminho vem do comando do hook (DUO_GATE_LOG) em .agents/hooks.json da worktree.
+// O log é o desta tentativa: o caminho vem do comando do hook em .agents/hooks.json da worktree.
+// macOS: DUO_GATE_LOG='<log>'; Windows: node "<script>" "<allowlist>" "<log>" "<timeout>".
 let gateLog = null;
-try { gateLog = /DUO_GATE_LOG='([^']+)'/.exec(readFileSync(join(process.cwd(), ".agents", "hooks.json"), "utf8"))?.[1] ?? null; } catch { gateLog = null; }
+try {
+  const cmd = JSON.parse(readFileSync(join(process.cwd(), ".agents", "hooks.json"), "utf8"))["duo-gate"].PreToolUse[0].hooks[0].command;
+  gateLog = /DUO_GATE_LOG='([^']+)'/.exec(cmd)?.[1] ?? / node "[^"]*" "[^"]*" "([^"]*)" "\d+"$/.exec(cmd)?.[1] ?? null;
+} catch { gateLog = null; }
 if (gateLog && existsSync(dirname(gateLog))) appendFileSync(gateLog, `${JSON.stringify({ tool: "write_file", decision: "allow", modelName: process.env.FAKE_AGY_SERVED_MODEL ?? model })}\n`);
 const report = { ...fakeReport(Object.keys(writes)), testsRun: [], ...JSON.parse(process.env.FAKE_REPORT ?? "{}") };
 const emit = (o) => process.stdout.write(`${JSON.stringify(o)}\n`);

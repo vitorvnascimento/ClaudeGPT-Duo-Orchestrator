@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { packageRoot } from "../src/paths.js";
 import { canonicalPath, decideToolCall, gateHookScriptPath, resolveGeminiTargets, writeGateFiles, type GateAllowlist } from "../src/adapters/gemini-gate.js";
 
 let dirs: string[] = [];
@@ -224,6 +225,18 @@ describe("resolveGeminiTargets", () => {
 });
 
 describe("arquivos do hook", () => {
+  it("the fake agy records the served model from either hook format (macOS and Windows)", () => {
+    for (const platform of ["darwin", "win32"] as const) {
+      const wt = tmp("duo-gate-fake-wt-");
+      const home = tmp("duo-gate-fake-home-");
+      const files = writeGateFiles(wt, home, { worktreeRoot: wt, write: [], deny: DENY, readOnly: true },
+        { nodePath: platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : process.execPath, platform });
+      const fake = join(packageRoot(), "tests", "fixtures", "fake-agy.mjs");
+      const r = spawnSync(process.execPath, [fake, "-p=", "--model", "gemini-4-argon-high"], { cwd: wt, input: "{}\n", encoding: "utf8", env: { ...process.env, HOME: home, FAKE_LOG: join(home, "fake.log") } });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(readFileSync(files.logPath, "utf8"), /"modelName":"gemini-4-argon-high"/, platform);
+    }
+  });
   it("writeGateFiles replaces the worktree .agents and keeps the allowlist in the private home", () => {
     const wt = tmp("duo-gate-wt-");
     const home = tmp("duo-gate-home-");

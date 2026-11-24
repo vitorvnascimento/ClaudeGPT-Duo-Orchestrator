@@ -59,6 +59,21 @@ export function hashPath(abs: string): string | null {
   }
 }
 
+/** Como hashPath, mas erro de leitura (arquivo travado, sem permissão) nunca se confunde com ausência. */
+export function hashPathStrict(abs: string): { hash: string } | { missing: true } | { error: string } {
+  try {
+    const st = lstatSync(abs);
+    if (st.isSymbolicLink()) return { hash: `link:${readlinkSync(abs)}` };
+    if (st.isDirectory()) return { hash: "dir" };
+    if (!st.isFile()) return { hash: "other" };
+    return { hash: createHash("sha256").update(readFileSync(abs)).digest("hex") };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { missing: true };
+    return { error: `${abs}: ${code ?? (error as Error).message}` };
+  }
+}
+
 export type TreeState = {
   head: string | null;
   /** rel -> sha256 (null = inexistente) para arquivos do escopo e arquivos sujos. */

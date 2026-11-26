@@ -1,9 +1,9 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { GEMINI_VERIFIED, isVerifiedAgy } from "../src/adapters/gemini.js";
 import { doctor, formatDoctor } from "../src/cli/doctor.js";
@@ -613,6 +613,23 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     const m = startDrift(t, s.root, s.env, "attempt-spell");
     finishDrift(new Store(`${s.root}/`), t, s.env, { executorAlive: false, marker: m });
     assert.deepEqual(task(s, t.taskId).drift?.changed, [], JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  // Windows: C:\repo e c:/repo são a mesma pasta; no macOS (APFS sem caixa) a troca de caixa simula o mesmo caso.
+  it("recovery with the root in another letter case reports no phantom checkout", async (ctx) => {
+    const s = setup();
+    const other = join(dirname(s.root), basename(s.root).toUpperCase());
+    let same = false;
+    try { same = realpathSync.native(other) === realpathSync.native(s.root); } catch { /* volume com caixa: não existe */ }
+    if (!same) { ctx.skip("volume diferencia maiúsculas: a outra caixa não é a mesma pasta"); return; }
+    const t = await clean(s);
+    const m = startDrift(t, s.root, s.env, "attempt-case");
+    finishDrift(new Store(other), t, s.env, { executorAlive: false, marker: m });
+    const d = task(s, t.taskId).drift;
+    assert.equal(d?.attemptId, "attempt-case");
+    assert.equal(d?.status, "complete");
+    assert.equal(d?.incomplete, false);
+    assert.deepEqual(d?.changed, [], JSON.stringify(d));
   });
 
   it("a marker written with another spelling of the root (older bridge) still compares the same checkout", async () => {

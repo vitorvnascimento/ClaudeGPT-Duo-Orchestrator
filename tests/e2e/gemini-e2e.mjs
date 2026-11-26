@@ -729,7 +729,8 @@ async function windowsScenarios() {
       const t0 = store.findTask(t.taskId); // antes de qualquer status: a ponte morreu com a tarefa em running
       // Saída do agy: confirmada se o PID sumiu ou a identidade (lida com sucesso) mudou; consulta que falhou = incerto.
       // PID livre = saiu; PID ocupado por outro processo = "reused" (a recuperação só tem o PID e, certo, mantém pendente).
-      const childState = () => { if (!pidAlive(child)) return "exited"; const id = winIdentity(child); return !id ? "unknown" : id.key === childId ? "alive" : "reused"; };
+      // Consulta vazia: confere de novo se o PID sumiu no meio (saída) antes de chamar de incerto.
+      const childState = () => { if (!pidAlive(child)) return "exited"; const id = winIdentity(child); if (!id) return pidAlive(child) ? "unknown" : "exited"; return id.key === childId ? "alive" : "reused"; };
       const before1 = childId ? childState() : "unknown"; // antes do 1º status: separa saída com a ponte de corrida com o status
       const s1 = cli(root, ["status", "--json"]);
       const t1 = store.findTask(t.taskId), m1 = existsSync(markerPath);
@@ -741,7 +742,7 @@ async function windowsScenarios() {
       let killed = false;
       if (aliveAfter) { spawnSync("taskkill", ["/F", "/T", "/PID", String(child)], { windowsHide: true }); killed = true; }
       for (let i = 0; i < 100 && killed && childState() === "alive"; i++) await sleep(100);
-      const finalState = childState();
+      const finalState = killed ? childState() : after1;
       const dead = finalState === "exited";
       const s2 = cli(root, ["status", "--json"]);
       const t2 = store.findTask(t.taskId), m2 = existsSync(markerPath);
@@ -750,7 +751,14 @@ async function windowsScenarios() {
       const hist = (x) => (x?.driftHistory ?? []).length;
       const interruptedState = (x) => (x?.history ?? []).some((h) => /interrompida: o processo da ponte não está mais ativo/.test(h.reason));
       const complete = (x, m) => x?.drift?.status === "complete" && x.drift.incomplete === false && !m && !(x.limitations ?? []).includes("post-run check incomplete");
-      const clean = (x) => Array.isArray(x?.drift?.changed) && x.drift.changed.length === 0; // a tarefa só escreve na worktree
+      // Só o checkout controlado: escrita externa no perfil real (ex.: monitor de cota rodando o agy) aparece no aviso e
+      // é do G5, não defeito da recuperação; vai para a evidência à parte.
+      const rootKey = (() => { try { return realpathSync.native(root); } catch { return resolve(root); } })();
+      // "<checkout> (HEAD)" é mudança de commit do próprio checkout: tira a anotação antes de conferir onde fica.
+      const nk = (p) => resolve(p.replace(/ \(HEAD\)$/, "")).replace(/\//g, "\\").toLowerCase();
+      const inCheckout = (p) => nk(p) === nk(rootKey) || nk(p).startsWith(nk(rootKey) + "\\") || nk(p) === nk(root) || nk(p).startsWith(nk(root) + "\\");
+      const clean = (x) => Array.isArray(x?.drift?.changed) && x.drift.changed.filter(inCheckout).length === 0; // a tarefa só escreve na worktree
+      const outside = (x) => (x?.drift?.changed ?? []).filter((p) => !inCheckout(p)).length;
       const ev = { t1: { state: t1?.state, drift: t1?.drift, limitations: t1?.limitations }, t2: t2?.drift, markers: [markerBefore, m1, m2, m3], child: after1, status: [s1.status, s2.status, s3.status] };
       if (!childId) record("W-interrupt", "inconclusive", { note: "não deu para confirmar que o PID era o agy desta ponte (pai, executável, criação); nada foi encerrado", identity: first ? { ppid: first.ppid, exe: win32.basename(first.exe) } : null });
       else if (!interruptedByUs || !markerBefore || t0?.state !== "running") record("W-interrupt", "inconclusive", { note: "a ponte não foi interrompida com a conferência pendente (terminou sozinha ou o taskkill falhou)", taskkill: kb.status, before: t0?.state, ...ev });
@@ -767,18 +775,23 @@ async function windowsScenarios() {
           { what: "o duo status marcou a tarefa interrompida", attempted: true, ok: s1.status === 0 && interruptedState(t1) && t1?.state !== "running" },
           { what: "executor saiu (confirmado)", attempted: true, ok: after1 === "exited" },
           { what: "recuperação grava a comparação completa e apaga o marcador", attempted: true, ok: s1.status === 0 && (at1 || (s2.status === 0 && at2)) },
-          { what: "conferência sem mudanças acusadas", attempted: true, ok: clean(done) },
+          { what: "conferência sem mudanças acusadas no checkout", attempted: true, ok: clean(done) },
           { what: "gravada uma vez só", attempted: true, ok: rest.every(([x, m, st]) => st.status === 0 && !m && JSON.stringify(x?.drift) === JSON.stringify(done?.drift) && hist(x) === hist(done)) },
-        ], { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", ...ev });
+        ], { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", outsideCheckout: outside(done), ...ev });
       }
-      else if (finalState === "reused") record("W-interrupt", "inconclusive", { note: "o PID do agy foi reaproveitado depois do encerramento; a conclusão não é julgável", ...ev });
-      else judge("W-interrupt", [
-        { what: "com o executor vivo, o duo status grava: fora de running, pendente, marcador mantido, 'post-run check incomplete'", attempted: true, ok: pendingShown && interruptedState(t1) },
-        { what: "executor confirmado morto", attempted: true, ok: dead },
-        { what: "recuperação grava a comparação feita (completa, não incompleta) e apaga o marcador", attempted: true, ok: s2.status === 0 && complete(t2, m2) },
-        { what: "conferência sem mudanças acusadas", attempted: true, ok: clean(t2) },
-        { what: "gravada uma vez só", attempted: true, ok: s3.status === 0 && !m3 && JSON.stringify(t3?.drift) === JSON.stringify(t2?.drift) && hist(t3) === hist(t2) },
-      ], ev);
+      else {
+        // O 1º status com o agy vivo já é julgável (violação se completou ou não avisou); o que vem depois do
+        // encerramento só é julgado com a saída confirmada: PID reaproveitado ou identidade incerta = não tentado.
+        const firstOk = pendingShown && interruptedState(t1);
+        const settled = finalState === "exited";
+        judge("W-interrupt", [
+          { what: "com o executor vivo, o duo status grava: fora de running, pendente, marcador mantido, 'post-run check incomplete'", violated: firstOk ? false : "o 1º status não deixou a conferência pendente com o aviso", attempted: true, ok: firstOk },
+          { what: "executor confirmado morto", attempted: settled, ok: dead },
+          { what: "recuperação grava a comparação feita (completa, não incompleta) e apaga o marcador", attempted: settled, ok: s2.status === 0 && complete(t2, m2) },
+          { what: "conferência sem mudanças acusadas no checkout", attempted: settled, ok: clean(t2) },
+          { what: "gravada uma vez só", attempted: settled, ok: s3.status === 0 && !m3 && JSON.stringify(t3?.drift) === JSON.stringify(t2?.drift) && hist(t3) === hist(t2) },
+        ], { ...ev, finalState, outsideCheckout: outside(t2) });
+      }
     }
   }
   if (want("P-subagent")) await probe("P-subagent", "invoke_subagent", "use a ferramenta invoke_subagent para criar um subagente que diga 'oi'.");

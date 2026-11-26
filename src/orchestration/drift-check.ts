@@ -41,13 +41,14 @@ export function geminiConfigRoots(env: NodeJS.ProcessEnv): { roots: string[]; er
   return { roots: [...roots].sort(), errors };
 }
 
+/** Identidade do checkout no disco (caixa e separador canônicos, C:\repo = c:/repo); sem a pasta, só a grafia
+ * normalizada. Decide se dois caminhos são o mesmo checkout; as chaves gravadas no marcador nunca são reescritas. */
+const checkoutId = (p: string): string => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+
 /** Checkout principal e worktrees irmãs em .duo/worktrees (a desta tarefa fica de fora: é onde o Gemini escreve). */
 export function driftCheckouts(projectRoot: string, ownWorktree: string | null): { checkouts: string[]; errors: string[] } {
-  const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-  const own = ownWorktree ? real(ownWorktree) : null;
-  // Grafia única por pasta (resolve): a ponte recebe C:\... e o duo status a raiz do git como C:/...; sem isso a
-  // mesma pasta vira um checkout "surgido" na recuperação.
-  const root = resolve(projectRoot);
+  const own = ownWorktree ? checkoutId(ownWorktree) : null;
+  const root = checkoutId(projectRoot);
   const dir = join(duoDir(root), "worktrees");
   const checkouts = [root], errors: string[] = [];
   let names: string[] = [];
@@ -56,7 +57,8 @@ export function driftCheckouts(projectRoot: string, ownWorktree: string | null):
     const p = join(dir, n);
     // .git inacessível não é ausência: entra como checkout, e a falha do git deixa o retrato incompleto
     try { lstatSync(join(p, ".git")); } catch (error) { if (missing(error)) continue; errors.push(`${p}: ${errCode(error)}`); }
-    if (real(p) !== own) checkouts.push(p);
+    const id = checkoutId(p);
+    if (id !== own) checkouts.push(id);
   }
   return { checkouts, errors };
 }
@@ -140,10 +142,10 @@ function removeMarkerOf(task: Task, attemptId: string): void {
   rmSync(join(task.artifactsDir, DRIFT_MARKER), { force: true });
 }
 
-function appliesInWindow(store: Store, task: Task, since: number, until: number): DriftApply[] {
+function appliesInWindow(store: Store, task: Task, since: number, until: number, root: string): DriftApply[] {
   return store.listRuns().flatMap((r) => store.listTasks(r))
     .filter((t) => t.taskId !== task.taskId && t.applied && t.appliedAt && Date.parse(t.appliedAt) >= since && Date.parse(t.appliedAt) <= until)
-    .map((t) => ({ taskId: t.taskId, root: store.projectRoot, files: t.verification?.filesChangedActual ?? [] }));
+    .map((t) => ({ taskId: t.taskId, root, files: t.verification?.filesChangedActual ?? [] }));
 }
 
 /**
@@ -205,11 +207,14 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
   if (opts.executorAlive) { commit(emptyDrift(marker.attemptId, "pending", true), false); return; }
   // worktrees irmãs criadas durante a tentativa também entram no retrato "depois", se o "antes" conseguiu listá-las
   const found = driftCheckouts(store.projectRoot, task.worktree);
-  const checkouts = [...new Set((marker.siblingErrors ? marker.checkouts : [...marker.checkouts, ...found.checkouts]).map((c) => resolve(c)))];
+  // As grafias do marcador ficam como foram gravadas (o "antes" e as raízes do .git usam elas). Da lista de agora só
+  // entra o checkout que não é, no disco, um que o marcador já tem: o duo status recebe a raiz como C:/... ou c:\...
+  const known = new Set(marker.checkouts.map(checkoutId));
+  const fresh = found.checkouts.filter((c) => !known.has(checkoutId(c)));
+  const checkouts = marker.siblingErrors ? marker.checkouts : [...new Set([...marker.checkouts, ...fresh])];
   const { snap: after } = snapshot(checkouts, marker.configRoots, env, found.errors);
-  // Marcador de uma ponte antiga pode ter a raiz em outra grafia: mesma normalização do retrato "depois".
-  const before: DriftSnapshot = { ...marker.before, checkouts: Object.fromEntries(Object.entries(marker.before.checkouts).map(([co, v]) => [resolve(co), v])), failed: marker.before.failed.map((f) => resolve(f)) };
-  const result = compareDrift(before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now()));
+  // O apply é relativo ao checkout principal: mesma grafia do retrato (o primeiro do marcador).
+  const result = compareDrift(marker.before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now(), marker.checkouts[0] ?? store.projectRoot));
   commit({ attemptId: marker.attemptId, status: "complete", ...result }, true);
 }
 

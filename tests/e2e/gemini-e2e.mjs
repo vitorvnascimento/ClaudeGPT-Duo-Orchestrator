@@ -87,7 +87,8 @@ if (agyId() !== AGY_ID) { console.error(`recusado: o agy foi regravado durante o
 const SCHEDULE_VERIFIED = ["1.5.14", "1.5.17"];
 // Versões em que o -p comprovadamente espera timers pendentes antes de sair (a checagem de efeito do P-schedule depende
 // disso); separada da semântica acima e ainda não conferida na 1.5.17.
-const SCHEDULE_WAIT_VERIFIED = ["1.5.14"];
+// Por par versão + plataforma: a bateria de 1.5.14 que conferiu a espera rodou no macOS.
+const SCHEDULE_WAIT_VERIFIED = [{ version: "1.5.14", platform: "darwin" }];
 const SCHEDULE_OK = argv.includes("--allow-schedule-probe") || SCHEDULE_VERIFIED.includes(VERIFIED[0].version);
 
 // Pasta nova por execução: nunca apaga nada que já exista em --base.
@@ -495,7 +496,7 @@ if (want("P-schedule")) {
   else await probe("P-schedule", "schedule", `use a ferramenta schedule para agendar UMA vez, daqui a 30 dias, a tarefa '${SCHEDULE_MARKER}'.`, (r) => {
     // Na 1.5.14 o -p espera timers agendados terminarem antes de sair; um timer de 30 dias pendente faria a tarefa estourar o
     // tempo. Saída própria com result e task concluída = nenhum trabalho agendado ficou pendente.
-    if (!SCHEDULE_WAIT_VERIFIED.includes(VERIFIED[0].version)) return `agy ${VERIFIED[0].version}: espera do -p por timers pendentes não verificada; a saída limpa não prova o agendador vazio`;
+    if (!SCHEDULE_WAIT_VERIFIED.some((p) => p.version === VERIFIED[0].version && p.platform === process.platform)) return `agy ${VERIFIED[0].version} em ${process.platform}: espera do -p por timers pendentes não verificada; a saída limpa não prova o agendador vazio`;
     const exitedClean = r.steps.complete && r.out.summary.state === "succeeded" && !/timeout/i.test(String(r.out.summary.outcome));
     return exitedClean ? null : "sem evidência de que nenhum timer ficou pendente (o agy não saiu sozinho)";
   });
@@ -727,7 +728,9 @@ async function windowsScenarios() {
       const markerBefore = existsSync(markerPath);
       const t0 = store.findTask(t.taskId); // antes de qualquer status: a ponte morreu com a tarefa em running
       // Saída do agy: confirmada se o PID sumiu ou a identidade (lida com sucesso) mudou; consulta que falhou = incerto.
-      const childState = () => { if (!pidAlive(child)) return "exited"; const id = winIdentity(child); return !id ? "unknown" : id.key === childId ? "alive" : "exited"; };
+      // PID livre = saiu; PID ocupado por outro processo = "reused" (a recuperação só tem o PID e, certo, mantém pendente).
+      const childState = () => { if (!pidAlive(child)) return "exited"; const id = winIdentity(child); return !id ? "unknown" : id.key === childId ? "alive" : "reused"; };
+      const before1 = childId ? childState() : "unknown"; // antes do 1º status: separa saída com a ponte de corrida com o status
       const s1 = cli(root, ["status", "--json"]);
       const t1 = store.findTask(t.taskId), m1 = existsSync(markerPath);
       const after1 = childId ? childState() : "unknown";
@@ -738,7 +741,8 @@ async function windowsScenarios() {
       let killed = false;
       if (aliveAfter) { spawnSync("taskkill", ["/F", "/T", "/PID", String(child)], { windowsHide: true }); killed = true; }
       for (let i = 0; i < 100 && killed && childState() === "alive"; i++) await sleep(100);
-      const dead = childState() === "exited";
+      const finalState = childState();
+      const dead = finalState === "exited";
       const s2 = cli(root, ["status", "--json"]);
       const t2 = store.findTask(t.taskId), m2 = existsSync(markerPath);
       const s3 = cli(root, ["status", "--json"]);
@@ -750,12 +754,14 @@ async function windowsScenarios() {
       const ev = { t1: { state: t1?.state, drift: t1?.drift, limitations: t1?.limitations }, t2: t2?.drift, markers: [markerBefore, m1, m2, m3], child: after1, status: [s1.status, s2.status, s3.status] };
       if (!childId) record("W-interrupt", "inconclusive", { note: "não deu para confirmar que o PID era o agy desta ponte (pai, executável, criação); nada foi encerrado", identity: first ? { ppid: first.ppid, exe: win32.basename(first.exe) } : null });
       else if (!interruptedByUs || !markerBefore || t0?.state !== "running") record("W-interrupt", "inconclusive", { note: "a ponte não foi interrompida com a conferência pendente (terminou sozinha ou o taskkill falhou)", taskkill: kb.status, before: t0?.state, ...ev });
-      else if (after1 === "unknown") record("W-interrupt", "inconclusive", { note: "identidade do agy incerta depois do status; nada foi encerrado", ...ev });
+      else if (after1 === "unknown" || before1 === "unknown") record("W-interrupt", "inconclusive", { note: "identidade do agy incerta em volta do status; nada foi encerrado", before1, ...ev });
+      else if ([before1, after1].includes("reused")) record("W-interrupt", "inconclusive", { note: "o PID do agy foi reaproveitado por outro processo; a recuperação deve manter pendente e a conclusão não é julgável", before1, ...ev });
       else if (!aliveAfter) {
         // No Windows o agy não roda destacado e sai com a ponte: a fase "executor vivo" (coberta pelos testes de
         // refreshInterrupted) pode não acontecer. Julga a recuperação: completa no 1º status, ou pendente no 1º (agy
         // ainda vivo naquele instante) e completa no 2º; depois, gravada uma vez só.
-        const at1 = complete(t1, m1), at2 = !at1 && pendingShown && complete(t2, m2);
+        // Já saído antes do 1º status: tem de completar nele. Pendente->completa só para saída que correu com o status.
+        const at1 = complete(t1, m1), at2 = !at1 && before1 === "alive" && pendingShown && complete(t2, m2);
         const done = at1 ? t1 : t2, rest = at1 ? [[t2, m2, s2], [t3, m3, s3]] : [[t3, m3, s3]];
         judge("W-interrupt", [
           { what: "o duo status marcou a tarefa interrompida", attempted: true, ok: s1.status === 0 && interruptedState(t1) && t1?.state !== "running" },
@@ -765,6 +771,7 @@ async function windowsScenarios() {
           { what: "gravada uma vez só", attempted: true, ok: rest.every(([x, m, st]) => st.status === 0 && !m && JSON.stringify(x?.drift) === JSON.stringify(done?.drift) && hist(x) === hist(done)) },
         ], { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", ...ev });
       }
+      else if (finalState === "reused") record("W-interrupt", "inconclusive", { note: "o PID do agy foi reaproveitado depois do encerramento; a conclusão não é julgável", ...ev });
       else judge("W-interrupt", [
         { what: "com o executor vivo, o duo status grava: fora de running, pendente, marcador mantido, 'post-run check incomplete'", attempted: true, ok: pendingShown && interruptedState(t1) },
         { what: "executor confirmado morto", attempted: true, ok: dead },

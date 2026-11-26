@@ -372,8 +372,10 @@ if (want("G9")) {
   if (IS_WIN && !apA.ok && /--ack-drift/.test(apA.message) && b.task?.worktree) {
     const n = (p) => resolve(p).replace(/\//g, "\\").toLowerCase();
     const wt = n(b.task.worktree);
-    const changed = new Store(root).findTask(a.task.taskId)?.drift?.changed ?? [];
-    parallelDrift = { paths: changed.length, onlySibling: changed.length > 0 && changed.every((c) => n(c) === wt || n(c).startsWith(wt + "\\")) };
+    // Mesma evidência que o apply cobra (todas as conferências sem resolução): incompleta nunca é absolvida.
+    const out = driftOutstanding(new Store(root).findTask(a.task.taskId));
+    const changed = out?.changed ?? [];
+    parallelDrift = { paths: changed.length, incomplete: !!out?.incomplete, onlySibling: !!out && !out.incomplete && changed.length > 0 && changed.every((c) => n(c) === wt || n(c).startsWith(wt + "\\")) };
     if (parallelDrift.onlySibling) apA = applyTask(root, a.task.taskId, process.env, { ackDrift: true });
   }
   const apB = b.out.summary.state === "succeeded" ? applyTask(root, b.task.taskId) : { ok: false, message: String(b.out.summary.outcome) };
@@ -790,13 +792,18 @@ if (want("G5")) {
     const norm = (p) => (IS_WIN ? p.replace(/\//g, "\\").toLowerCase() : p);
     const tail2 = (p) => norm(resolve(p)).split(/[\\/]/).slice(-2).join(IS_WIN ? "\\" : "/");
     const marks = [BASE, geminiStateRoot(process.env)].flatMap((r) => [norm(resolve(r)), tail2(r)]).concat("duo-agy-");
-    const logs = diff.filter((k) => /[\\/]log[\\/]cli-[^\\/]+\.log$/.test(k) && after[k]?.startsWith("file:")).map((k) => {
+    // Só logs criados durante a rodada atribuem um lançamento (um log antigo tocado traria workspaceDirs velhos).
+    const isLog = (k) => /[\\/]log[\\/]cli-[^\\/]+\.log$/.test(k);
+    const logs = diff.filter((k) => isLog(k) && ownerBefore[k] === undefined && after[k]?.startsWith("file:")).map((k) => {
       let text = ""; try { text = readFileSync(k, "utf8"); } catch { /* sumiu: sem atribuição */ }
       const workspaces = [...new Set([...text.matchAll(/workspaceDirs=\[([^\]]*)\]/g)].map((m) => m[1].trim()).filter(Boolean))];
       // Só a classificação vai para a evidência: as pastas de outro programa podem ser projetos de terceiros.
       return { log: win32.basename(k), workspaces: workspaces.length, ours: workspaces.some((w) => marks.some((m) => norm(w).includes(m))) };
     });
-    const external = logs.length > 0 && logs.every((l) => l.workspaces > 0 && !l.ours);
+    // Externo só quando TODA mudança é do tipo que um lançamento do agy deixa (logs, cli.log, cache); qualquer outra
+    // escrita no perfil fica sem explicação e reprova.
+    const runTrace = (k) => /[\\/]\.gemini[\\/]antigravity-cli[\\/](log([\\/]|$)|cli\.log$|cache([\\/]|$))/.test(k);
+    const external = logs.length > 0 && logs.every((l) => l.workspaces > 0 && !l.ours) && diff.every(runTrace);
     if (diff.length === 0) record("G5", "pass", { runs: geminiRuns, entries: keys.size });
     else if (external) record("G5", "inconclusive", { note: "outro programa rodou o agy no perfil real durante a rodada; feche-o e rode de novo", runs: geminiRuns, changed: diff.slice(0, 10), logs });
     else record("G5", "fail", { runs: geminiRuns, entries: keys.size, changed: diff.slice(0, 10), logs });

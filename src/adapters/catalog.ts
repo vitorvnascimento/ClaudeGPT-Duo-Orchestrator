@@ -22,7 +22,7 @@ import { extraUsage, tierOf } from "./tiers.js";
 import { runQuick } from "./process.js";
 import { classifyErrorText } from "./types.js";
 import { resolveExecutable, type Resolved } from "./resolve.js";
-import { agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir, withMetadataProfile } from "../state/gemini-state.js";
+import { AGY_NO_AUTO_UPDATE, agyConfigAbove, chainStateDir, claimChainState, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir, withMetadataProfile } from "../state/gemini-state.js";
 
 /** Capacidades que uma subtarefa pode exigir. "code" = qualquer modelo de texto/código. */
 export type Capability = "code" | "image_generation" | "computer_use";
@@ -468,7 +468,7 @@ async function discoverGemini(cfg: DuoConfig, cwd: string, baseEnv: NodeJS.Proce
         const launch = launcherFor(resolved, cwd);
         r = runQuick(launch.command, [...launch.prefixArgs, "models"], { env: privateProfileEnv(baseEnv, { home, tmpDir: tmp }, platform).env, cwd: work, timeoutMs: 30_000, trace: { label: "catalog agy models", allowedRoots: [dir, work] } });
       } finally { removeProbeDir(work); }
-    } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home }, cwd, timeoutMs: 30_000 });
+    } else r = runQuick(resolved.command, [...resolved.prefixArgs, "models"], { env: { ...env, HOME: home, ...AGY_NO_AUTO_UPDATE }, cwd, timeoutMs: 30_000 });
   } catch (e) {
     const error = `HOME privado do catálogo indisponível (${(e as NodeJS.ErrnoException).code ?? "erro"})`;
     return { ok: false, source: "agy models", sourceKind: "none", error, attempts: [error], tools: [], models: [] };
@@ -519,7 +519,7 @@ export function cliVersions(cfg: DuoConfig, baseEnv: NodeJS.ProcessEnv, platform
       try {
         r = platform === "win32"
           ? withMetadataProfile(baseEnv, (e, cwd) => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd, trace: { label: "cliVersions agy --version", allowedRoots: [dirname(cwd)] } }); }, "win32")
-          : (() => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env }); })();
+          : (() => { const l = launcherFor(resolved, projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: { ...env, ...AGY_NO_AUTO_UPDATE } }); })();
       } catch { r = { ok: false, code: null, stdout: "", stderr: "" }; } // perfil de sondagem indisponível: versão desconhecida
       // Versão simples fica legível; qualquer outra saída (banner, conta) vira só um digest no models.json.
       const out = r.ok ? r.stdout.trim() : "";

@@ -18,7 +18,7 @@ import { executorEligible } from "./alternates.js";
 import { isVerifiedAgy, agyVersionLabel, type VerifiedAgy } from "../adapters/gemini.js";
 import { runQuick } from "../adapters/process.js";
 import { geminiLoginProbe, geminiParentEnvProblem } from "../permissions/gemini-auth.js";
-import { launcherFor, withMetadataProfile } from "../state/gemini-state.js";
+import { AGY_NO_AUTO_UPDATE, launcherFor, withMetadataProfile } from "../state/gemini-state.js";
 import { probeSandbox, SANDBOX_EXEC, unsupportedDenyGlob } from "../adapters/sandbox-profile.js";
 import { listFiles } from "../git.js";
 import { authBlockReason, checkAuth, childEnv, defaultAuthPaths, type AuthPaths } from "../permissions/auth.js";
@@ -219,7 +219,7 @@ export async function liveAvailability(store: Store, cfg: DuoConfig, env: NodeJS
       try {
         r = platform === "win32"
           ? withMetadataProfile(env, (e, cwd) => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: e, cwd, trace: { label: "router agy --version", allowedRoots: [dirname(cwd)] } }); }, "win32")
-          : (() => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: childEnv(env).env }); })();
+          : (() => { const l = launcherFor(resolved, store.projectRoot); return runQuick(l.command, [...l.prefixArgs, "--version"], { env: childEnv(env, AGY_NO_AUTO_UPDATE).env }); })();
       } catch (e) { profileError = (e as Error).message.replace(/\s+/g, " ").slice(0, 300); r = { ok: false, code: null, stdout: "", stderr: "" }; }
       const v = r.ok ? r.stdout.trim() || null : null;
       if (profileError) gReasons.push(`sonda do agy: ${profileError}`);

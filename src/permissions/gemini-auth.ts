@@ -4,7 +4,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { agyConfigAbove, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir } from "../state/gemini-state.js";
+import { AGY_NO_AUTO_UPDATE, agyConfigAbove, createPrivateHome, launcherFor, newProbeDir, privateProfileEnv, removeProbeDir } from "../state/gemini-state.js";
 import type { DuoConfig } from "../config.js";
 import { runQuick } from "../adapters/process.js";
 import type { Resolved } from "../adapters/resolve.js";
@@ -117,7 +117,7 @@ export function geminiLoginProbe(resolved: Resolved, env: NodeJS.ProcessEnv, cfg
       mkdirSync(work, { recursive: true });
       mkdirSync(tmp, { recursive: true });
       a = geminiAuthPreflight(resolved, privateProfileEnv(env, { home, tmpDir: tmp }, platform).env, cfg, null, { cwd: work, platform, privateRoots: [home, work, tmp], ...(projectRoot ? { projectRoot } : {}) });
-    } else a = geminiAuthPreflight(resolved, { ...env, HOME: home }, cfg, null, projectRoot ? { projectRoot } : {});
+    } else a = geminiAuthPreflight(resolved, { ...env, HOME: home, ...AGY_NO_AUTO_UPDATE }, cfg, null, projectRoot ? { projectRoot } : {});
     return { ok: a.method === "subscription", method: a.method, detail: a.detail, conflict: (a as { conflict?: boolean }).conflict === true };
   } catch (e) {
     return { ok: false, method: "unknown", detail: `não foi possível verificar o login do agy (${(e as NodeJS.ErrnoException).code ?? "erro"})`, conflict: false };

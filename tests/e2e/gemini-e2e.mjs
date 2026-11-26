@@ -10,7 +10,7 @@
 // automações da conta; no HOME privado descartável, o pior caso é um timer numa conversa que o duo apaga. Roda sempre.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -48,7 +48,7 @@ const { delegate } = await load("dist/src/orchestration/delegate.js");
 const { applyTask } = await load("dist/src/orchestration/control.js");
 const { Store } = await load("dist/src/state/store.js");
 const { buildProfile } = await load("dist/src/adapters/sandbox-profile.js");
-const { createPrivateHome, geminiStateRoot, withMetadataProfile } = await load("dist/src/state/gemini-state.js");
+const { AGY_NO_AUTO_UPDATE, createPrivateHome, geminiStateRoot, withMetadataProfile } = await load("dist/src/state/gemini-state.js");
 const { geminiAuthPreflight, geminiParentEnvProblem } = await load("dist/src/permissions/gemini-auth.js");
 const { childEnv } = await load("dist/src/permissions/auth.js");
 const { pathDigest, writeGateFiles } = await load("dist/src/adapters/gemini-gate.js");
@@ -70,7 +70,18 @@ if (DRY) {
 // Comando completo resolvido (no Windows o agy pode ser node + script): o mesmo que a ponte lança. No Windows o
 // --version roda no perfil de sondagem privado do duo, antes do manifesto do G5: nada dele cai no perfil real.
 const versionOf = (env, cwd) => execFileSync(AGY.command, [...AGY.prefixArgs, "--version"], { encoding: "utf8", env, ...(cwd ? { cwd } : {}) }).trim();
-const VERIFIED = [{ version: IS_WIN ? withMetadataProfile(process.env, versionOf, "win32") : versionOf(process.env), platform: process.platform }];
+// Identidade do agy que a ponte lançaria agora: o lançador resolvido de novo pelo PATH (a config gerada não fixa o
+// comando) e alvo real, tamanho e mtime de cada arquivo dele. Se outro processo atualizar ou trocar o agy no meio da
+// rodada, os cenários seguintes rodariam noutra versão (e o duo os recusaria). Para na hora, sem gastar cota.
+const agyId = () => {
+  const r = resolveExecutable("agy", null, process.env);
+  if (!r.ok) return "irresolvível";
+  const files = [r.command, ...r.prefixArgs.slice(0, 1)].map((f) => { try { const real = realpathSync(f); const st = statSync(real); return `${real}:${st.size}:${st.mtimeMs}`; } catch { return `${f}:ausente`; } });
+  return [JSON.stringify([r.command, ...r.prefixArgs]), ...files].join("|");
+};
+const AGY_ID = agyId();
+const VERIFIED = [{ version: IS_WIN ? withMetadataProfile(process.env, versionOf, "win32") : versionOf({ ...process.env, ...AGY_NO_AUTO_UPDATE }), platform: process.platform }];
+if (agyId() !== AGY_ID) { console.error(`recusado: o agy foi regravado durante o agy --version (antes: ${AGY_ID}; agora: ${agyId()}); rode de novo`); process.exit(2); }
 const SCHEDULE_OK = argv.includes("--allow-schedule-probe") || ["1.5.14"].includes(VERIFIED[0].version);
 
 // Pasta nova por execução: nunca apaga nada que já exista em --base.
@@ -79,7 +90,21 @@ const BASE = join(realpathSync(BASE_ARG), `run-${new Date().toISOString().replac
 mkdirSync(BASE);
 const results = [];
 // n/a: cenário que não existe nesta plataforma; manual: depende de um passo do dono (rastreio F5 com analyze-trace).
-const record = (id, status, evidence) => { results.push({ id, status, pass: status === "pass", evidence }); console.log(`${status.toUpperCase()} ${id}: ${JSON.stringify(evidence).slice(0, 400)}`); };
+// Conferida antes de cada lançamento que gasta cota (sem rodar na versão trocada) e ao registrar (troca durante o
+// cenário invalida o resultado dele).
+const assertAgySame = (id, pending = null) => {
+  if (agyId() !== AGY_ID) {
+    results.push({ id, status: "inconclusive", pass: false, evidence: { note: pending ? "o agy mudou durante este cenário" : "o agy mudou antes deste lançamento; nada foi lançado", ...(pending ? { original: pending } : {}) } });
+    const outFile = join(BASE, "gemini-results.json");
+    writeFileSync(outFile, JSON.stringify({ at: new Date().toISOString(), agy: VERIFIED[0], model: MODEL, aborted: "agy atualizado no meio da rodada", results }, null, 2));
+    console.error(`\nPARADA: o agy foi regravado no meio da rodada (antes: ${AGY_ID}; agora: ${agyId()}). Rodada inválida a partir de ${id}.\nConfira a versão com agy --version e rode a bateria de novo; o duo recusa versão não verificada.\nresultados: ${outFile}`);
+    process.exit(1);
+  }
+};
+const record = (id, status, evidence) => {
+  assertAgySame(id, { status, evidence });
+  results.push({ id, status, pass: status === "pass", evidence }); console.log(`${status.toUpperCase()} ${id}: ${JSON.stringify(evidence).slice(0, 400)}`);
+};
 const want = (id) => !ONLY || ONLY.includes(id);
 let geminiRuns = 0; // só execuções nativas observadas (evento init do agy)
 
@@ -171,6 +196,7 @@ function initTools(ndjson) {
 }
 
 async function run(root, over = {}, gemini = { verified: VERIFIED }, extra = {}) {
+  assertAgySame("delegação");
   return inspect(root, await delegate({ cwd: root, requestPath: request(root, over), env: process.env, gemini, ...extra }));
 }
 function inspect(root, out) {
@@ -247,8 +273,9 @@ else if (want("G2")) {
     { rel: "docs", abs: join(root, "docs"), isDir: true, missingAncestors: [] },
   ], denyGlobs: ["**/*.key"], privateHome: home, tmpDir: join(home, "tmp") });
   const pf = join(BASE, "g2.sb"); writeFileSync(pf, prof.profile);
-  const env = childEnv(process.env, { HOME: home, TMPDIR: join(home, "tmp") }).env;
+  const env = childEnv(process.env, { HOME: home, TMPDIR: join(home, "tmp"), ...AGY_NO_AUTO_UPDATE }).env;
   const cfg = structuredClone(DEFAULT_CONFIG); cfg.billing.acknowledgeUnverifiableExtraUsage.gemini = true;
+  assertAgySame("G2");
   const auth = geminiAuthPreflight(AGY, env, cfg, pf);
   if (!auth.ok) record("G2", "fail", { auth: { method: auth.method, detail: auth.detail } });
   else {
@@ -386,8 +413,9 @@ else if (want("P-mcp")) {
   // Perfil só leitura (nenhum alvo): escrita só no HOME privado e no TMPDIR, como numa revisão do duo.
   const prof = buildProfile({ worktreeRoot: root, targets: [], denyGlobs: [], privateHome: home, tmpDir: join(home, "tmp"), gateLog: files.logPath });
   const pf = join(BASE, "p-mcp.sb"); writeFileSync(pf, prof.profile);
-  const env = childEnv(process.env, { HOME: home, TMPDIR: join(home, "tmp") }).env;
+  const env = childEnv(process.env, { HOME: home, TMPDIR: join(home, "tmp"), ...AGY_NO_AUTO_UPDATE }).env;
   const cfgAuth = structuredClone(DEFAULT_CONFIG); cfgAuth.billing.acknowledgeUnverifiableExtraUsage.gemini = true;
+  assertAgySame("P-mcp");
   const auth = geminiAuthPreflight(AGY, env, cfgAuth, pf);
   if (!auth.ok) { record("P-mcp", "fail", { auth: { method: auth.method, detail: auth.detail } }); }
   else {
@@ -534,7 +562,7 @@ function candidate() {
   CANDIDATE = join(dir, "dist", "src", "cli", "main.js");
   return CANDIDATE;
 }
-const cli = (root, args, env = process.env, timeout = 600_000) => spawnSync(process.execPath, [candidate(), ...args], { cwd: root, env, encoding: "utf8", timeout, windowsHide: true });
+const cli = (root, args, env = process.env, timeout = 600_000) => (assertAgySame(`duo ${args[0]}`), spawnSync(process.execPath, [candidate(), ...args], { cwd: root, env, encoding: "utf8", timeout, windowsHide: true }));
 
 async function windowsScenarios() {
   // --- caminhos (tarefa de escrita com src autorizado) ---
@@ -648,6 +676,7 @@ async function windowsScenarios() {
     const store = new Store(root);
     const req = request(root, { objective: "Leia src/app.ts, depois src/util.ts, depois src/app.ts de novo, cada um com read_file, e só então troque o conteúdo de src/app.ts por 'export const app = 13;'." });
     const bridgeStartedMs = Date.now();
+    assertAgySame("W-interrupt");
     const bridge = spawn(process.execPath, [candidate(), "delegate", "--request", req], { cwd: root, env: process.env, stdio: "ignore", windowsHide: true });
     let t = null;
     for (let i = 0; i < 1200 && !t; i++) { await sleep(100); t = allTasks(store).find((x) => x.drift?.status === "pending" && pidAlive(x.pids?.child)) ?? null; }

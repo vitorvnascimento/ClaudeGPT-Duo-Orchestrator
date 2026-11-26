@@ -82,13 +82,25 @@ describe("perfil privado no Windows", () => {
     assert.equal(env.HOMEDRIVE, "C:");
     assert.equal(env.HOMEPATH, "\\S\\home");
     assert.equal(env.NoDefaultCurrentDirectoryInExePath, "1"); // cmd.exe do hook não procura node na worktree
+    assert.equal(env.AGY_CLI_DISABLE_AUTO_UPDATE, "true"); // o updater troca o binário compartilhado no meio do uso
     assert.equal("userprofile" in env, false);
     assert.equal(env.Path, "p");
   });
 
   it("no macOS o ambiente é o de hoje (HOME e TMPDIR)", () => {
     const base = { PATH: "p", GEMINI_API_KEY: "k" };
-    assert.deepEqual(privateProfileEnv(base, { home: "/h", tmpDir: "/t" }, "darwin"), childEnv(base, { HOME: "/h", TMPDIR: "/t" }, "darwin"));
+    assert.deepEqual(privateProfileEnv(base, { home: "/h", tmpDir: "/t" }, "darwin"), childEnv(base, { HOME: "/h", TMPDIR: "/t", AGY_CLI_DISABLE_AUTO_UPDATE: "true" }, "darwin"));
+  });
+
+  it("no macOS a sonda --help do agy também roda com o updater desligado", () => {
+    const d = mkdtempSync(join(tmpdir(), "duo-agy-noupd-"));
+    const out = join(d, "env.txt");
+    const script = join(d, "agy.mjs");
+    writeFileSync(script, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(out)}, String(process.env.AGY_CLI_DISABLE_AUTO_UPDATE)); console.log("usage");`);
+    try {
+      probeAgy({ ok: true, command: process.execPath, prefixArgs: [script] } as Parameters<typeof probeAgy>[0], { PATH: process.env.PATH ?? "" }, "darwin", d);
+      assert.equal(readFileSync(out, "utf8"), "true");
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
   it("sonda de metadados roda com HOME e pasta de trabalho privados, apagados depois", () => {
@@ -166,6 +178,16 @@ describe("toda chamada do agy no Windows usa perfil e pasta privados", () => {
     assertPrivate(c, project, REAL);
     assert.match(String(c.cwd), /duo-agy-meta-.*work$/);
     assert.equal(existsSync(String(c.cwd)), false);
+  });
+
+  // Força o caminho do macOS, que cria o link do Keychain no disco real: no Windows sem privilégio de symlink daria EPERM.
+  it("macOS: catálogo (agy models e --version) roda com o updater do agy desligado", { skip: process.platform === "win32" }, async () => {
+    const { project, env, cfg, calls } = setup();
+    mkdirSync(join(env.HOME, "Library", "Keychains"), { recursive: true });
+    await discover(cfg, project, env, null, { platform: "darwin" });
+    const seen = calls().map((c) => `${c.argv[0]}=${c.AGY_CLI_DISABLE_AUTO_UPDATE}`);
+    for (const arg of ["models", "--version"]) assert.ok(seen.some((x) => x.startsWith(`${arg}=`)), `${arg} não rodou: ${seen.join(", ")}`);
+    assert.deepEqual(seen.filter((x) => !x.endsWith("=true")), []);
   });
 
   it("discover: agy models com o HOME do catálogo e pasta de trabalho privada", async () => {

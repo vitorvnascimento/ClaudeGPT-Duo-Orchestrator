@@ -88,11 +88,15 @@ function seedConfig(home: string): void {
   if (!existsSync(cfg)) writeOnce(cfg, `${JSON.stringify({ plugins: { swarm: { enabled: false } } }, null, 2)}\n`);
 }
 
+/** O updater embutido do agy regrava o binário compartilhado no meio do uso (e a versão nova fica recusada até a
+ * bateria rodar nela): nenhuma chamada do duo dispara a atualização. Só o valor exato "true" é aceito pelo agy. */
+export const AGY_NO_AUTO_UPDATE = { AGY_CLI_DISABLE_AUTO_UPDATE: "true" } as const;
+
 /** Ambiente de toda chamada do agy. macOS: HOME e TMPDIR privados (como sempre). Windows: o perfil inteiro, porque lá
  * o agy acha config e estado por USERPROFILE/APPDATA/LOCALAPPDATA e grava temporários em TEMP/TMP. */
 export function privateProfileEnv(base: NodeJS.ProcessEnv, profile: { home: string; tmpDir: string }, platform: NodeJS.Platform = process.platform): { env: NodeJS.ProcessEnv; removed: string[] } {
   const { home, tmpDir } = profile;
-  if (platform !== "win32") return childEnv(base, { HOME: home, TMPDIR: tmpDir }, platform);
+  if (platform !== "win32") return childEnv(base, { HOME: home, TMPDIR: tmpDir, ...AGY_NO_AUTO_UPDATE }, platform);
   // Caminhos no estilo do próprio home (C:\... no Windows; POSIX na simulação dos testes): sempre absolutos e reais.
   const drive = /^[A-Za-z]:/.test(home) ? win32.parse(home).root.replace(/\\$/, "") : "";
   return childEnv(base, {
@@ -106,6 +110,7 @@ export function privateProfileEnv(base: NodeJS.ProcessEnv, profile: { home: stri
     ...(drive ? { HOMEDRIVE: drive, HOMEPATH: home.slice(drive.length) } : {}),
     // O cmd.exe que roda o hook não procura executável na pasta atual (a worktree): o `node` vem só do PATH.
     NoDefaultCurrentDirectoryInExePath: "1",
+    ...AGY_NO_AUTO_UPDATE,
   }, "win32");
 }
 

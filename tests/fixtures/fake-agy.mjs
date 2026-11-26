@@ -15,7 +15,7 @@ const valueOf = (f) => (args.indexOf(f) >= 0 ? args[args.indexOf(f) + 1] : undef
 if (process.env.FAKE_AGY_ENV_OUT) {
   const e = process.env;
   const dirs = Object.fromEntries(["APPDATA", "LOCALAPPDATA", "TEMP"].map((k) => [`${k}_exists`, Boolean(e[k] && existsSync(e[k]))]));
-  appendFileSync(e.FAKE_AGY_ENV_OUT, `${JSON.stringify({ argv: args.slice(0, 1), cwd: process.cwd(), HOME: e.HOME, USERPROFILE: e.USERPROFILE ?? null, APPDATA: e.APPDATA ?? null, LOCALAPPDATA: e.LOCALAPPDATA ?? null, TEMP: e.TEMP ?? null, TMP: e.TMP ?? null, ...dirs })}\n`);
+  appendFileSync(e.FAKE_AGY_ENV_OUT, `${JSON.stringify({ argv: args.slice(0, 1), cwd: process.cwd(), HOME: e.HOME, USERPROFILE: e.USERPROFILE ?? null, APPDATA: e.APPDATA ?? null, LOCALAPPDATA: e.LOCALAPPDATA ?? null, TEMP: e.TEMP ?? null, TMP: e.TMP ?? null, AGY_CLI_DISABLE_AUTO_UPDATE: e.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, ...dirs })}\n`);
 }
 
 if (has("--version")) { process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.3"}\n`); process.exit(Number(process.env.FAKE_AGY_VERSION_EXIT ?? 0)); }

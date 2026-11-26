@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { runQuick, type LaunchTrace } from "./process.js";
 import type { Resolved } from "./resolve.js";
 import { childEnv } from "../permissions/auth.js";
-import { launcherFor, withMetadataProfile } from "../state/gemini-state.js";
+import { AGY_NO_AUTO_UPDATE, launcherFor, withMetadataProfile } from "../state/gemini-state.js";
 
 export type Capabilities = {
   version: string | null;
@@ -118,7 +118,7 @@ export function probe(resolved: Resolved & { ok: true }, helpArgs: string[], spe
 export function probeAgy(resolved: Resolved & { ok: true }, baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform, projectRoot: string = process.cwd()): Capabilities & { error?: string; profileError?: string } {
   // Mesmo lançador da delegação (script do projeto absoluto) nos dois sistemas.
   const launch = { ...resolved, ...launcherFor(resolved, projectRoot) };
-  if (platform !== "win32") return probe(launch, ["--help"], AGY_FLAGS, childEnv(baseEnv).env);
+  if (platform !== "win32") return probe(launch, ["--help"], AGY_FLAGS, childEnv(baseEnv, AGY_NO_AUTO_UPDATE).env);
   try { return withMetadataProfile(baseEnv, (e, cwd) => probe(launch, ["--help"], AGY_FLAGS, e, cwd, { label: "caps agy", allowedRoots: [dirname(cwd)] }), "win32"); }
   catch (e) { const msg = (e as Error).message; return { ...capabilitiesFromHelp("", null, AGY_FLAGS, null), error: msg, profileError: msg }; }
 }

@@ -53,7 +53,8 @@ describe("tentativas", () => {
     assert.equal(existsSync(a.path), false);
   });
 
-  it("removal that keeps failing (Windows EPERM on a held file) does not throw; the dir is left for the sweep", () => {
+  // chmod só trava a remoção em POSIX sem root; no Windows a falha real (handle preso) fica para a bateria.
+  it("removal that keeps failing (Windows EPERM on a held file) does not throw; the dir is left for the sweep", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
     const env = fakeEnv();
     const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
     createPrivateHome(dir, env);
@@ -69,7 +70,7 @@ describe("tentativas", () => {
       let removed: string[] = [];
       assert.doesNotThrow(() => { removed = sweepStaleAttempts(dir); });
       assert.deepEqual(removed, []);
-    } finally { fs.chmodSync(locked, 0o700); }
+    } finally { if (existsSync(locked)) fs.chmodSync(locked, 0o700); }
     assert.deepEqual(sweepStaleAttempts(dir), [a.path]);
   });
 

@@ -198,8 +198,16 @@ function checkedProbeRoot(env: NodeJS.ProcessEnv, _platform: NodeJS.Platform, cr
 
 /** Remoção com novas tentativas (no Windows um arquivo ainda aberto dá EBUSY/EPERM por um instante). Falha que
  * persiste não troca o resultado da sonda: a pasta fica para a limpeza dos abandonados. */
+const RM_RETRY = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+
+/** Remoção que tenta de novo e nunca lança: o que sobrar fica para sweepStaleAttempts. */
+function removeQuietly(dir: string): boolean {
+  try { rmSync(dir, RM_RETRY); } catch { /* handle ainda preso (Windows EPERM/EBUSY) */ }
+  return !existsSync(dir);
+}
+
 export function removeProbeDir(dir: string): boolean {
-  const opts = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+  const opts = RM_RETRY;
   try {
     // Pasta trocada por link/junction desde a criação: não lista nem apaga nada no destino.
     const st = lstatSync(dir);
@@ -292,7 +300,7 @@ export function attemptTmpDir(chainDir: string): { path: string; setChildPid(pid
   const meta = join(path, "attempt.json");
   const write = (childPid: number | null) => writeFileSync(meta, JSON.stringify({ bridgePid: process.pid, childPid }));
   write(null);
-  return { path, setChildPid: (pid) => write(pid), cleanup: () => rmSync(path, { recursive: true, force: true }) };
+  return { path, setChildPid: (pid) => write(pid), cleanup: () => { removeQuietly(path); } };
 }
 
 function attemptAlive(dir: string): boolean {
@@ -310,8 +318,7 @@ export function sweepStaleAttempts(chainDir: string): string[] {
   for (const name of readdirSync(base)) {
     const dir = join(base, name);
     if (!name.startsWith("attempt-") || attemptAlive(dir)) continue;
-    rmSync(dir, { recursive: true, force: true });
-    removed.push(dir);
+    if (removeQuietly(dir)) removed.push(dir);
   }
   return removed;
 }

@@ -53,6 +53,26 @@ describe("tentativas", () => {
     assert.equal(existsSync(a.path), false);
   });
 
+  it("removal that keeps failing (Windows EPERM on a held file) does not throw; the dir is left for the sweep", () => {
+    const env = fakeEnv();
+    const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);
+    createPrivateHome(dir, env);
+    const a = attemptTmpDir(dir);
+    const locked = join(a.path, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "x"), "1");
+    fs.chmodSync(locked, 0o500); // arquivo que não sai: mesmo efeito do handle preso no Windows
+    try {
+      assert.doesNotThrow(() => a.cleanup());
+      assert.equal(existsSync(a.path), true);
+      writeFileSync(join(a.path, "attempt.json"), JSON.stringify({ bridgePid: 999999999, childPid: null }));
+      let removed: string[] = [];
+      assert.doesNotThrow(() => { removed = sweepStaleAttempts(dir); });
+      assert.deepEqual(removed, []);
+    } finally { fs.chmodSync(locked, 0o700); }
+    assert.deepEqual(sweepStaleAttempts(dir), [a.path]);
+  });
+
   it("stale attempt dirs swept after SIGKILL; resumable conversation state stays", async () => {
     const env = fakeEnv();
     const dir = chainStateDir(tmp("duo-gs-proj-"), "c", env);

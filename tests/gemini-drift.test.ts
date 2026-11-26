@@ -212,7 +212,7 @@ describe("drift snapshot", () => {
     g(r, "config", "core.hooksPath", ".git/hooks"); // isola de um core.hooksPath global
     const before = snap([r]);
     writeFileSync(join(r, ".git", "hooks", "pre-commit"), "#!/bin/sh\n");
-    g(r, "config", "core.excludesFile", "/tmp/x");
+    g(r, "config", "core.excludesFile", join(tmp("duo-drift-x-"), "ausente")); // caminho fixo (/tmp/x) quebra se outro processo criar uma pasta lá
     const out = compareDrift(before, snap([r]), []);
     assert.deepEqual(out.changed, [join(r, ".git", "config"), join(r, ".git", "hooks", "pre-commit")]);
   });
@@ -254,7 +254,7 @@ describe("drift snapshot", () => {
     const wt = join(tmp("duo-drift-wt-"), "sib");
     g(r, "worktree", "add", "-q", "--detach", wt);
     const before = snap([r, wt]);
-    g(r, "config", "core.excludesFile", "/tmp/x");
+    g(r, "config", "core.excludesFile", join(tmp("duo-drift-x-"), "ausente")); // caminho fixo (/tmp/x) quebra se outro processo criar uma pasta lá
     writeFileSync(join(wt, ".git"), "not a git dir\n");
     const out = compareDrift(before, snap([r, wt]), []);
     assert.deepEqual(out.changed, [join(r, ".git", "config")]);

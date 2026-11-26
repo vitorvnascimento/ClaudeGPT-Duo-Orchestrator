@@ -1,7 +1,7 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -315,6 +315,19 @@ describe("delegação ao gemini", () => {
     assert.ok(r.ok, r.message);
     assert.equal(existsSync(t.geminiStateDir), false);
     assert.equal(s.read("src/app.ts"), "export const app = 3;\n");
+  });
+
+  // MSIX no Windows (AppData\Local virtualizado) e /var no macOS: a mesma pasta por outro caminho.
+  it("chain state is removed after apply even when the project is reached by a non-canonical path", { skip: process.platform === "win32" }, async () => {
+    const s = setup();
+    const out = await run(s, req(), { FAKE_AGY_WRITES: JSON.stringify({ "src/app.ts": "export const app = 4;\n" }) });
+    const t = task(s, out.summary.taskId);
+    assert.ok(t.geminiStateDir && existsSync(t.geminiStateDir));
+    const alias = join(s.tmp, "alias-proj");
+    symlinkSync(s.root, alias);
+    const r = applyTask(alias, t.taskId, s.env);
+    assert.ok(r.ok, r.message);
+    assert.equal(existsSync(t.geminiStateDir), false);
   });
 
   it("with the real sandbox on, the run still succeeds", { skip: process.platform !== "darwin" }, async () => {

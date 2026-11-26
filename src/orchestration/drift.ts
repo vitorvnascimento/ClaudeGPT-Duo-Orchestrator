@@ -109,7 +109,9 @@ function snapCheckout(co: string, out: DriftSnapshot, checkouts: Checkouts): voi
   // de hooks que o git usa de fato (core.hooksPath) entram como raízes
   const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks", "--git-path", "info/sparse-checkout"]);
   if (!dirs.ok) { err("rev-parse --git-dir", dirs); out.blind = true; return; }
-  const [gitDir, common, hooks, sparse] = dirs.stdout.trim().split(/\r?\n/).map((d) => (isAbsolute(d) ? d : resolve(co, d)));
+  // resolve também normaliza o absoluto: no Windows o git devolve C:/... numa worktree irmã e ".git/hooks" no checkout
+  // principal; sem normalizar, a mesma pasta vira duas raízes e a segunda aparece como criada.
+  const [gitDir, common, hooks, sparse] = dirs.stdout.trim().split(/\r?\n/).map((d) => resolve(co, d));
   // Pasta de hooks inteira (scripts auxiliares que um hook carrega) quando o caminho real fica no .git ou fora do
   // checkout. Dentro do checkout (ex.: core.hooksPath=., ou link/junção para ele) só os pontos de entrada: os
   // rastreados passam pelo status e os ignorados ficam fora da conferência (spec). Pasta que não resolve: só entradas.

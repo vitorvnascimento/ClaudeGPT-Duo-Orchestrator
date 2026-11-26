@@ -364,12 +364,24 @@ if (want("G9")) {
     run(root, { objective: "Troque o conteúdo de src/app.ts por 'export const app = 9;'.", isolation: "worktree" }),
     run(root, { executor: "codex", model: undefined, isolation: "worktree", objective: "Troque o conteúdo de src/util.ts por 'export const util = 9;'.", scope: { allowedPaths: ["src/util.ts"] } }),
   ]);
-  const apA = a.out.summary.state === "succeeded" ? applyTask(root, a.task.taskId) : { ok: false, message: String(a.out.summary.outcome) };
+  let apA = a.out.summary.state === "succeeded" ? applyTask(root, a.task.taskId) : { ok: false, message: String(a.out.summary.outcome) };
+  // Windows: a conferência pós-tarefa não exclui nada (spec), então a worktree que a tarefa paralela do Codex criou
+  // durante a tentativa do Gemini aparece como aviso e o apply pede --ack-drift. Esperado só se TODO caminho acusado
+  // estiver dentro da worktree da outra tarefa; aí o "revisor" confirma e aplica.
+  let parallelDrift = null;
+  if (IS_WIN && !apA.ok && /--ack-drift/.test(apA.message) && b.task?.worktree) {
+    const n = (p) => resolve(p).replace(/\//g, "\\").toLowerCase();
+    const wt = n(b.task.worktree);
+    const changed = new Store(root).findTask(a.task.taskId)?.drift?.changed ?? [];
+    parallelDrift = { paths: changed.length, onlySibling: changed.length > 0 && changed.every((c) => n(c) === wt || n(c).startsWith(wt + "\\")) };
+    if (parallelDrift.onlySibling) apA = applyTask(root, a.task.taskId, process.env, { ackDrift: true });
+  }
   const apB = b.out.summary.state === "succeeded" ? applyTask(root, b.task.taskId) : { ok: false, message: String(b.out.summary.outcome) };
   judge("G9", [
     { what: "gemini e codex concluídos", attempted: true, ok: a.out.summary.state === "succeeded" && b.out.summary.state === "succeeded" },
+    ...(parallelDrift ? [{ what: "aviso de drift só na worktree da tarefa paralela", attempted: true, ok: parallelDrift.onlySibling }] : []),
     { what: "patches aplicados em ordem", attempted: true, ok: apA.ok && apB.ok && readFileSync(join(root, "src/app.ts"), "utf8").includes("app = 9") && readFileSync(join(root, "src/util.ts"), "utf8").includes("util = 9") },
-  ], { apA, apB });
+  ], { apA, apB, parallelDrift });
 }
 
 /** Sonda: o nome exato tentado e TODA chamada negada pelo hook (alguma concluída reprova), ou ausente do init.tools. */
@@ -770,7 +782,24 @@ if (want("G5")) {
   else {
     const keys = new Set([...Object.keys(ownerBefore), ...Object.keys(after)]);
     const diff = [...keys].filter((k) => ownerBefore[k] !== after[k]);
-    record("G5", diff.length === 0 ? "pass" : "fail", { runs: geminiRuns, entries: keys.size, changed: diff.slice(0, 10) });
+    // Outro programa da máquina (ex.: monitor de cota rodando "agy -p /usage") também escreve no perfil real. Cada
+    // lançamento completo do agy grava um log com workspaceDirs: lançamento do duo teria a pasta da bateria ou do
+    // estado privado ali. Log sem workspaceDirs, ou com pasta nossa, é falha; todos de fora = rodada inconclusiva.
+    // Comparação por trecho, não por item: o log separa as pastas por espaço e uma pasta pode ter espaço no nome. Os
+    // finais (duo-bateria\run-..., duo\gemini-state) cobrem o mesmo lugar visto por outro caminho (ex.: MSIX).
+    const norm = (p) => (IS_WIN ? p.replace(/\//g, "\\").toLowerCase() : p);
+    const tail2 = (p) => norm(resolve(p)).split(/[\\/]/).slice(-2).join(IS_WIN ? "\\" : "/");
+    const marks = [BASE, geminiStateRoot(process.env)].flatMap((r) => [norm(resolve(r)), tail2(r)]).concat("duo-agy-");
+    const logs = diff.filter((k) => /[\\/]log[\\/]cli-[^\\/]+\.log$/.test(k) && after[k]?.startsWith("file:")).map((k) => {
+      let text = ""; try { text = readFileSync(k, "utf8"); } catch { /* sumiu: sem atribuição */ }
+      const workspaces = [...new Set([...text.matchAll(/workspaceDirs=\[([^\]]*)\]/g)].map((m) => m[1].trim()).filter(Boolean))];
+      // Só a classificação vai para a evidência: as pastas de outro programa podem ser projetos de terceiros.
+      return { log: win32.basename(k), workspaces: workspaces.length, ours: workspaces.some((w) => marks.some((m) => norm(w).includes(m))) };
+    });
+    const external = logs.length > 0 && logs.every((l) => l.workspaces > 0 && !l.ours);
+    if (diff.length === 0) record("G5", "pass", { runs: geminiRuns, entries: keys.size });
+    else if (external) record("G5", "inconclusive", { note: "outro programa rodou o agy no perfil real durante a rodada; feche-o e rode de novo", runs: geminiRuns, changed: diff.slice(0, 10), logs });
+    else record("G5", "fail", { runs: geminiRuns, entries: keys.size, changed: diff.slice(0, 10), logs });
   }
 }
 

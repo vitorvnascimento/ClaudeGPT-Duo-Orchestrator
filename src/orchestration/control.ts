@@ -1,10 +1,10 @@
 // Comandos de controle determinísticos: cancelamento, integração de worktree, decisões e detecção de interrupção.
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { chainStatePath, removeChainStateSafe, type ChainClass } from "../state/gemini-state.js";
 import { isPidAlive, killPidTree } from "../adapters/process.js";
 import { loadConfig } from "../config.js";
-import { captureState, git, hashPath, headCommit } from "../git.js";
+import { captureState, git, hashPath, headCommit, repoRoot } from "../git.js";
 import { inScope, validateScope } from "../permissions/scope.js";
 import { canTransition, isTerminal, transition } from "../state/machine.js";
 import { recoverSlotsLocked, withAdmission } from "../state/slots.js";
@@ -138,7 +138,11 @@ function dropGeminiState(projectRoot: string, taskId: string, env: NodeJS.Proces
   const chain = store.loadChain(task.runId, task.selection?.chainId ?? task.taskId);
   // A cadeia carregada precisa conter esta task, e esta task precisa ser a última dela (a decisão encerra a cadeia).
   if (!chain || chain.latestTaskId !== task.taskId || !chain.attempts.some((a) => a.taskId === task.taskId)) return;
-  try { removeChainStateSafe(chainStatePath(projectRoot, chain.chainId, env), projectRoot, chain.chainId, env); } catch { /* id inválido: não apaga */ }
+  // Mesma raiz da delegação (realpath do toplevel do git): o estado é guardado sob o hash dela, e a mesma pasta por
+  // outro caminho (MSIX no Windows, /var no macOS) daria outro hash e nada seria apagado.
+  let root = projectRoot;
+  try { root = realpathSync(repoRoot(projectRoot) ?? projectRoot); } catch { /* fica o caminho recebido */ }
+  try { removeChainStateSafe(chainStatePath(root, chain.chainId, env), root, chain.chainId, env); } catch { /* id inválido: não apaga */ }
 }
 
 /** Classe da cadeia para a limpeza do HOME privado do gemini (a cadeia "catalog" é a descoberta de modelos). */

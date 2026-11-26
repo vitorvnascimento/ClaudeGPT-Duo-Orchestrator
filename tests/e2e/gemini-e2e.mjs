@@ -370,12 +370,15 @@ if (want("G9")) {
   // estiver dentro da worktree da outra tarefa; aí o "revisor" confirma e aplica.
   let parallelDrift = null;
   if (IS_WIN && !apA.ok && /--ack-drift/.test(apA.message) && b.task?.worktree) {
-    const n = (p) => resolve(p).replace(/\//g, "\\").toLowerCase();
+    // Só a worktree do Codex surgida inteira, ou a única escrita que ele podia fazer (src/util.ts) se ela já existia
+    // no retrato "antes". Sem baixar a caixa: no Windows uma pasta pode diferenciar maiúsculas.
+    const n = (p) => resolve(p).replace(/\//g, "\\");
     const wt = n(b.task.worktree);
+    const expected = new Set([wt, n(join(b.task.worktree, "src", "util.ts"))]);
     // Mesma evidência que o apply cobra (todas as conferências sem resolução): incompleta nunca é absolvida.
     const out = driftOutstanding(new Store(root).findTask(a.task.taskId));
     const changed = out?.changed ?? [];
-    parallelDrift = { paths: changed.length, incomplete: !!out?.incomplete, onlySibling: !!out && !out.incomplete && changed.length > 0 && changed.every((c) => n(c) === wt || n(c).startsWith(wt + "\\")) };
+    parallelDrift = { paths: changed.length, incomplete: !!out?.incomplete, onlySibling: !!out && !out.incomplete && changed.length > 0 && changed.every((c) => expected.has(n(c))) };
     if (parallelDrift.onlySibling) apA = applyTask(root, a.task.taskId, process.env, { ackDrift: true });
   }
   const apB = b.out.summary.state === "succeeded" ? applyTask(root, b.task.taskId) : { ok: false, message: String(b.out.summary.outcome) };
@@ -796,14 +799,21 @@ if (want("G5")) {
     const isLog = (k) => /[\\/]log[\\/]cli-[^\\/]+\.log$/.test(k);
     const logs = diff.filter((k) => isLog(k) && ownerBefore[k] === undefined && after[k]?.startsWith("file:")).map((k) => {
       let text = ""; try { text = readFileSync(k, "utf8"); } catch { /* sumiu: sem atribuição */ }
-      const workspaces = [...new Set([...text.matchAll(/workspaceDirs=\[([^\]]*)\]/g)].map((m) => m[1].trim()).filter(Boolean))];
+      // A pasta pode ter "]" no nome: o campo vai até "] appDataDir=" na mesma linha; a linha inteira conta para "nossa",
+      // e linha sem esse fim é ambígua (nunca vira externa).
+      const lines = text.split(/\r?\n/).filter((l) => l.includes("workspaceDirs=["));
+      const fields = lines.map((l) => /workspaceDirs=\[(.*)\] appDataDir=/.exec(l)?.[1]?.trim() ?? null);
       // Só a classificação vai para a evidência: as pastas de outro programa podem ser projetos de terceiros.
-      return { log: win32.basename(k), workspaces: workspaces.length, ours: workspaces.some((w) => marks.some((m) => norm(w).includes(m))) };
+      return { log: win32.basename(k), workspaces: fields.filter(Boolean).length, ambiguous: fields.some((f) => !f), ours: lines.some((l) => marks.some((m) => norm(l).includes(m))) };
     });
     // Externo só quando TODA mudança é do tipo que um lançamento do agy deixa (logs, cli.log, cache); qualquer outra
     // escrita no perfil fica sem explicação e reprova.
-    const runTrace = (k) => /[\\/]\.gemini[\\/]antigravity-cli[\\/](log([\\/]|$)|cli\.log$|cache([\\/]|$))/.test(k);
-    const external = logs.length > 0 && logs.every((l) => l.workspaces > 0 && !l.ours) && diff.every(runTrace);
+    // Primeiro lançamento do agy na máquina: o próprio .gemini (sentinela "absent") e o antigravity-cli surgem; só esses
+    // dois pais exatos, nenhum descendente além dos rastros acima.
+    const gemRoot = join(homedir(), ".gemini");
+    const firstLaunch = (k) => (k === gemRoot && ownerBefore[k] === "absent") || (k === join(gemRoot, "antigravity-cli") && ownerBefore[k] === undefined && after[k] === "dir");
+    const runTrace = (k) => firstLaunch(k) || /[\\/]\.gemini[\\/]antigravity-cli[\\/](log([\\/]|$)|cli\.log$|cache([\\/]|$))/.test(k);
+    const external = logs.length > 0 && logs.every((l) => l.workspaces > 0 && !l.ambiguous && !l.ours) && diff.every(runTrace);
     if (diff.length === 0) record("G5", "pass", { runs: geminiRuns, entries: keys.size });
     else if (external) record("G5", "inconclusive", { note: "outro programa rodou o agy no perfil real durante a rodada; feche-o e rode de novo", runs: geminiRuns, changed: diff.slice(0, 10), logs });
     else record("G5", "fail", { runs: geminiRuns, entries: keys.size, changed: diff.slice(0, 10), logs });

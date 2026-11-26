@@ -8,7 +8,8 @@ import { hashPathStrict } from "../git.js";
 
 type Dict = Record<string, string>;
 /** indexGaps: caminhos sujos cujo lote do `ls-files -s` falhou (índice não observado, não comparado) */
-export type CheckoutSnap = { head: string | null; files: Dict; index: Dict; indexGaps: string[]; hidden: string[] };
+/** target: pasta real atrás do caminho (junção/link redirecionado para outra worktree no mesmo commit também muda). */
+export type CheckoutSnap = { head: string | null; files: Dict; index: Dict; indexGaps: string[]; hidden: string[]; target?: string };
 export type DriftSnapshot = {
   checkouts: Record<string, CheckoutSnap>;
   roots: Record<string, Dict | "absent">;
@@ -106,7 +107,10 @@ function snapCheckout(co: string, out: DriftSnapshot, checkouts: Checkouts): voi
   if (!tags.ok) err("ls-files -v", tags);
   // minúscula = assume-unchanged; S = skip-worktree: o status omite esses caminhos
   else hidden = tags.stdout.split("\0").filter((e) => e.length > 2 && (e[0] === "S" || e[0] !== e[0]!.toUpperCase())).map((e) => e.slice(2));
-  out.checkouts[co] = { head: head.ok ? head.stdout.trim() : null, files, index, indexGaps, hidden };
+  let target: string | undefined;
+  // Sem alvo legível a identidade da junção não foi conferida: retrato incompleto (o apply pede --ack-drift).
+  try { target = realpathSync.native(co); } catch (e) { out.errors.push(`${co}: alvo: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`); }
+  out.checkouts[co] = { head: head.ok ? head.stdout.trim() : null, files, index, indexGaps, hidden, ...(target ? { target } : {}) };
   // .git fica fora do status: config, config.worktree (também do checkout principal), info/exclude e o diretório
   // de hooks que o git usa de fato (core.hooksPath) entram como raízes
   const dirs = observe(co, ["rev-parse", "--git-dir", "--git-common-dir", "--git-path", "hooks", "--git-path", "info/sparse-checkout"]);
@@ -191,7 +195,17 @@ export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: stri
   for (const co of opts.checkouts) { try { checkouts.reals.push(realpathSync(co)); checkouts.ids.add(fileId(co)); } catch { /* o snapCheckout registra a falha */ } }
   for (const co of opts.checkouts) snapCheckout(co, out, checkouts);
   for (const root of opts.configRoots) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out);
-  for (const root of opts.recheck ?? []) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out, { skipIds: checkouts.ids, budget: HOOKS_DIR_BUDGET });
+  // Só raiz de arquivo é observada de novo (config, config.worktree, sparse-checkout, ponto de entrada de hook). Pasta
+  // que a regra de escopo de agora não percorreu (ex.: hooks dentro do checkout) fica sem comparação, nunca percorrida.
+  for (const root of opts.recheck ?? []) {
+    if (root in out.roots || out.failed.includes(root)) continue;
+    // Tipo do alvo (statSync segue junção/link): pasta não é percorrida. O snapRoot ainda leva teto e exclusões, para o
+    // caso de a entrada virar pasta entre a checagem e a leitura.
+    let dir = false;
+    try { dir = statSync(root).isDirectory(); } catch { /* ausente: snapRoot registra */ }
+    if (dir) out.failed.push(root);
+    else snapRoot(root, out, { skipIds: checkouts.ids, budget: HOOKS_DIR_BUDGET });
+  }
   return out;
 }
 
@@ -219,6 +233,7 @@ export function compareDrift(before: DriftSnapshot, after: DriftSnapshot, applie
     const a = before.checkouts[co], b = after.checkouts[co];
     if (!a || !b) { changed.add(co); continue; } // checkout surgiu ou sumiu
     if (a.head !== b.head) changed.add(`${co} (HEAD)`);
+    if (a.target && b.target && a.target !== b.target) changed.add(`${co} (alvo)`);
     // ausente de um lado = igual ao HEAD daquele retrato; aparecer, sumir ou mudar de hash conta
     const gaps = new Set([...a.indexGaps, ...b.indexGaps]); // índice não observado num lado: só o hash do arquivo conta
     for (const rel of [...diffMaps(a.files, b.files), ...diffMaps(a.index, b.index).filter((rel) => !gaps.has(rel))]) changed.add(join(co, rel));

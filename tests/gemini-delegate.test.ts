@@ -37,6 +37,8 @@ async function run(s: Sandbox, r: Record<string, unknown>, env: Record<string, s
 async function resume(s: Sandbox, taskId: string, env: Record<string, string> = {}, gemini: DelegateOptions["gemini"] = { verified: VERIFIED, sandbox: false }) {
   return delegate({ cwd: s.root, resumeTaskId: taskId, env: { ...s.env, ...env }, authPaths: s.authPaths, gemini: { platform: "darwin", ...gemini } });
 }
+// Windows: junção de pasta (sem privilégio de symlink); POSIX: link de pasta. Mesmas asserções nos dois.
+const JUNCTION = process.platform === "win32" ? "junction" as const : undefined;
 const WIN_GATE = { platform: "win32" as const, nodePath: "C:\\Program Files\\nodejs\\node.exe" };
 const agyRuns = (s: Sandbox) => s.log().filter((e) => e.cmd === "agy-run") as { args: string[]; stdin: string; home: string; tmpdir: string; cwd: string }[];
 const task = (s: Sandbox, id: unknown) => new Store(s.root).findTask(String(id))!;
@@ -595,7 +597,7 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
 
   // Junção no Windows (link no macOS) em .duo/worktrees: se ela some e o destino continua legível, o caminho sumido
   // tem de aparecer; o retrato não pode seguir o destino como se fosse a irmã.
-  it("a sibling link that disappears during the attempt is reported even if its target survives", { skip: process.platform === "win32" }, async () => {
+  it("a sibling link that disappears during the attempt is reported even if its target survives", async () => {
     const s = setup();
     const store = new Store(s.root);
     const t = await clean(s);
@@ -603,7 +605,7 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     const r = spawnSync("git", ["worktree", "add", "-q", "--detach", target], { cwd: s.root, encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
     const link = join(s.root, ".duo", "worktrees", "irma-link");
-    symlinkSync(target, link);
+    symlinkSync(target, link, JUNCTION);
     // metadado da worktree que já existia e não muda: não pode aparecer só porque o link sumiu
     writeFileSync(join(s.root, ".git", "worktrees", "alvo-irma", "config.worktree"), "[core]\n");
     const m = startDrift(t, s.root, s.env, "attempt-link");
@@ -612,7 +614,22 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     assert.deepEqual(task(s, t.taskId).drift?.changed, [link], JSON.stringify(task(s, t.taskId).drift));
   });
 
-  it("a new sibling link to an already watched sibling is reported", { skip: process.platform === "win32" }, async () => {
+  it("a sibling link redirected to another clean worktree at the same commit is reported", async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const [a, b] = [join(s.tmp, "alvo-a"), join(s.tmp, "alvo-b")];
+    for (const d of [a, b]) assert.equal(spawnSync("git", ["worktree", "add", "-q", "--detach", d], { cwd: s.root, encoding: "utf8" }).status, 0);
+    const link = join(s.root, ".duo", "worktrees", "irma-redir");
+    symlinkSync(a, link, JUNCTION);
+    const m = startDrift(t, s.root, s.env, "attempt-redir");
+    rmSync(link);
+    symlinkSync(b, link, JUNCTION);
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.startsWith(link)), JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  it("a new sibling link to an already watched sibling is reported", async () => {
     const s = setup();
     const store = new Store(s.root);
     const t = await clean(s);
@@ -621,7 +638,7 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     assert.equal(r.status, 0, r.stderr);
     const m = startDrift(t, s.root, s.env, "attempt-alias");
     const alias = join(s.root, ".duo", "worktrees", "irma-alias");
-    symlinkSync(irma, alias);
+    symlinkSync(irma, alias, JUNCTION);
     finishDrift(store, t, s.env, { executorAlive: false, marker: m });
     assert.ok(task(s, t.taskId).drift?.changed.includes(alias), JSON.stringify(task(s, t.taskId).drift));
   });

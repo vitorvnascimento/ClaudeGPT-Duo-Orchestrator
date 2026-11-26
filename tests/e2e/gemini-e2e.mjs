@@ -761,8 +761,11 @@ async function windowsScenarios() {
       const g5Owned = (p) => !inCheckout(p) && (nk(p) === g5Root || nk(p).startsWith(g5Root + "\\"));
       const clean = (x) => Array.isArray(x?.drift?.changed) && x.drift.changed.filter((p) => !g5Owned(p)).length === 0; // a tarefa só escreve na worktree
       const outside = (x) => (x?.drift?.changed ?? []).filter(g5Owned).length;
-      // Mudança no ~/.gemini só fica de fora se o G5 a julga nesta mesma rodada; sozinho (--only W-interrupt), sem julgar.
-      const profileJudged = (x) => outside(x) === 0 || want("G5");
+      // Mudança no ~/.gemini nunca é descontada: o G5 não prova que julgou esses caminhos (a ponte interrompida não conta
+      // como execução dele, e uma mudança desfeita antes do manifesto final some). Sem ela, julgável; com ela, sem julgar.
+      const profileJudged = (x) => outside(x) === 0;
+      // Falha observada da recuperação vale mais que a incerteza do perfil: vira violação antes do judge.
+      const proven = (checks) => checks.map((c) => (c.attempted !== false && c.ok === false && !c.violated ? { ...c, violated: "falhou" } : c));
       const ev = { t1: { state: t1?.state, drift: t1?.drift, limitations: t1?.limitations }, t2: t2?.drift, markers: [markerBefore, m1, m2, m3], child: after1, status: [s1.status, s2.status, s3.status] };
       if (!childId) record("W-interrupt", "inconclusive", { note: "não deu para confirmar que o PID era o agy desta ponte (pai, executável, criação); nada foi encerrado", identity: first ? { ppid: first.ppid, exe: win32.basename(first.exe) } : null });
       else if (!interruptedByUs || !markerBefore || t0?.state !== "running") record("W-interrupt", "inconclusive", { note: "a ponte não foi interrompida com a conferência pendente (terminou sozinha ou o taskkill falhou)", taskkill: kb.status, before: t0?.state, ...ev });
@@ -775,28 +778,29 @@ async function windowsScenarios() {
         // Já saído antes do 1º status: tem de completar nele. Pendente->completa só para saída que correu com o status.
         const at1 = complete(t1, m1), at2 = !at1 && before1 === "alive" && pendingShown && complete(t2, m2);
         const done = at1 ? t1 : t2, rest = at1 ? [[t2, m2, s2], [t3, m3, s3]] : [[t3, m3, s3]];
-        judge("W-interrupt", [
+        judge("W-interrupt", proven([
           { what: "o duo status marcou a tarefa interrompida", attempted: true, ok: s1.status === 0 && interruptedState(t1) && t1?.state !== "running" },
           { what: "executor saiu (confirmado)", attempted: true, ok: after1 === "exited" },
           { what: "recuperação grava a comparação completa e apaga o marcador", attempted: true, ok: s1.status === 0 && (at1 || (s2.status === 0 && at2)) },
-          { what: "conferência sem mudanças acusadas (fora o ~/.gemini do G5)", attempted: true, ok: clean(done) },
-          { what: "mudança no ~/.gemini julgada pelo G5 nesta rodada", attempted: profileJudged(done), ok: true },
+          // Mudança fora do ~/.gemini é violação: a incerteza do perfil não a rebaixa para inconclusivo.
+          { what: "conferência sem mudanças acusadas fora do ~/.gemini", violated: clean(done) ? false : "mudança acusada no checkout ou em outra raiz", attempted: true, ok: clean(done) },
+          { what: "nenhuma mudança no ~/.gemini durante a recuperação", attempted: profileJudged(done), ok: true },
           { what: "gravada uma vez só", attempted: true, ok: rest.every(([x, m, st]) => st.status === 0 && !m && JSON.stringify(x?.drift) === JSON.stringify(done?.drift) && hist(x) === hist(done)) },
-        ], { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", outsideCheckout: outside(done), ...ev });
+        ]), { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", outsideCheckout: outside(done), ...ev });
       }
       else {
         // O 1º status com o agy vivo já é julgável (violação se completou ou não avisou); o que vem depois do
         // encerramento só é julgado com a saída confirmada: PID reaproveitado ou identidade incerta = não tentado.
         const firstOk = pendingShown && interruptedState(t1);
         const settled = finalState === "exited";
-        judge("W-interrupt", [
+        judge("W-interrupt", proven([
           { what: "com o executor vivo, o duo status grava: fora de running, pendente, marcador mantido, 'post-run check incomplete'", violated: firstOk ? false : "o 1º status não deixou a conferência pendente com o aviso", attempted: true, ok: firstOk },
           { what: "executor confirmado morto", attempted: settled, ok: dead },
           { what: "recuperação grava a comparação feita (completa, não incompleta) e apaga o marcador", attempted: settled, ok: s2.status === 0 && complete(t2, m2) },
-          { what: "conferência sem mudanças acusadas (fora o ~/.gemini do G5)", attempted: settled, ok: clean(t2) },
-          { what: "mudança no ~/.gemini julgada pelo G5 nesta rodada", attempted: !settled || profileJudged(t2), ok: true },
+          { what: "conferência sem mudanças acusadas fora do ~/.gemini", violated: settled && !clean(t2) ? "mudança acusada no checkout ou em outra raiz" : false, attempted: settled, ok: clean(t2) },
+          { what: "nenhuma mudança no ~/.gemini durante a recuperação", attempted: !settled || profileJudged(t2), ok: true },
           { what: "gravada uma vez só", attempted: settled, ok: s3.status === 0 && !m3 && JSON.stringify(t3?.drift) === JSON.stringify(t2?.drift) && hist(t3) === hist(t2) },
-        ], { ...ev, finalState, outsideCheckout: outside(t2) });
+        ]), { ...ev, finalState, outsideCheckout: outside(t2) });
       }
     }
   }

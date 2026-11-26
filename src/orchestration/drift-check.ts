@@ -2,7 +2,7 @@
 // Decisão do dono (2026-11-23, "Só avisa"): reporta, não falha a tarefa, não reverte nada; o apply pede --ack-drift.
 // Falha fechado: task.drift nasce "pending" antes do spawn e só vira "complete" com o fim do executor confirmado.
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { isPidAlive } from "../adapters/process.js";
 import { duoDir } from "../paths.js";
 import { withFileLock, writeJsonAtomic, type Store } from "../state/store.js";
@@ -45,8 +45,11 @@ export function geminiConfigRoots(env: NodeJS.ProcessEnv): { roots: string[]; er
 export function driftCheckouts(projectRoot: string, ownWorktree: string | null): { checkouts: string[]; errors: string[] } {
   const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
   const own = ownWorktree ? real(ownWorktree) : null;
-  const dir = join(duoDir(projectRoot), "worktrees");
-  const checkouts = [projectRoot], errors: string[] = [];
+  // Grafia única por pasta (resolve): a ponte recebe C:\... e o duo status a raiz do git como C:/...; sem isso a
+  // mesma pasta vira um checkout "surgido" na recuperação.
+  const root = resolve(projectRoot);
+  const dir = join(duoDir(root), "worktrees");
+  const checkouts = [root], errors: string[] = [];
   let names: string[] = [];
   try { names = readdirSync(dir); } catch (error) { if (!missing(error)) errors.push(`${dir}: ${errCode(error)}`); }
   for (const n of names) {
@@ -202,9 +205,11 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
   if (opts.executorAlive) { commit(emptyDrift(marker.attemptId, "pending", true), false); return; }
   // worktrees irmãs criadas durante a tentativa também entram no retrato "depois", se o "antes" conseguiu listá-las
   const found = driftCheckouts(store.projectRoot, task.worktree);
-  const checkouts = marker.siblingErrors ? marker.checkouts : [...new Set([...marker.checkouts, ...found.checkouts])];
+  const checkouts = [...new Set((marker.siblingErrors ? marker.checkouts : [...marker.checkouts, ...found.checkouts]).map((c) => resolve(c)))];
   const { snap: after } = snapshot(checkouts, marker.configRoots, env, found.errors);
-  const result = compareDrift(marker.before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now()));
+  // Marcador de uma ponte antiga pode ter a raiz em outra grafia: mesma normalização do retrato "depois".
+  const before: DriftSnapshot = { ...marker.before, checkouts: Object.fromEntries(Object.entries(marker.before.checkouts).map(([co, v]) => [resolve(co), v])), failed: marker.before.failed.map((f) => resolve(f)) };
+  const result = compareDrift(before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now()));
   commit({ attemptId: marker.attemptId, status: "complete", ...result }, true);
 }
 

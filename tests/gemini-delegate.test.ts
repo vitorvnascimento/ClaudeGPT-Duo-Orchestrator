@@ -605,6 +605,28 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.endsWith("nova")), JSON.stringify(task(s, t.taskId).drift));
   });
 
+  // Windows: a ponte grava o "antes" com C:\... e a recuperação pelo duo status recebe a raiz do git como C:/...;
+  // a mesma pasta em outra grafia não pode virar "checkout surgido".
+  it("recovery reached through another spelling of the project root reports no phantom checkout", async () => {
+    const s = setup();
+    const t = await clean(s);
+    const m = startDrift(t, s.root, s.env, "attempt-spell");
+    finishDrift(new Store(`${s.root}/`), t, s.env, { executorAlive: false, marker: m });
+    assert.deepEqual(task(s, t.taskId).drift?.changed, [], JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  it("a marker written with another spelling of the root (older bridge) still compares the same checkout", async () => {
+    const s = setup();
+    const t = await clean(s);
+    const m = startDrift(t, s.root, s.env, "attempt-old");
+    const key = Object.keys(m.before.checkouts).find((k) => k === s.root)!;
+    m.before.checkouts = { [`${s.root}/`]: m.before.checkouts[key]! };
+    m.checkouts = m.checkouts.map((c) => (c === s.root ? `${s.root}/` : c));
+    writeFileSync(join(s.root, "src", "app.ts"), "export const app = 99;\n"); // mudança real ainda tem de aparecer
+    finishDrift(new Store(s.root), t, s.env, { executorAlive: false, marker: m });
+    assert.deepEqual(task(s, t.taskId).drift?.changed, [join(s.root, "src", "app.ts")], JSON.stringify(task(s, t.taskId).drift));
+  });
+
   it("siblings that cannot be listed make the check incomplete", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
     const s = setup();
     const store = new Store(s.root);

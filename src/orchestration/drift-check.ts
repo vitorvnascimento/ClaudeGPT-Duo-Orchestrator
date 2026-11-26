@@ -57,16 +57,16 @@ export function driftCheckouts(projectRoot: string, ownWorktree: string | null):
     const p = join(dir, n);
     // .git inacessível não é ausência: entra como checkout, e a falha do git deixa o retrato incompleto
     try { lstatSync(join(p, ".git")); } catch (error) { if (missing(error)) continue; errors.push(`${p}: ${errCode(error)}`); }
-    const id = checkoutId(p);
-    if (id !== own) checkouts.push(id);
+    // Chave = o caminho da irmã (se uma junção some e o destino fica, o sumiço aparece); identidade só para comparar.
+    if (checkoutId(p) !== own) checkouts.push(p);
   }
   return { checkouts, errors };
 }
 
-function snapshot(checkouts: string[], configRoots: string[], env: NodeJS.ProcessEnv, extraErrors: string[] = []): { snap: DriftSnapshot; roots: string[] } {
+function snapshot(checkouts: string[], configRoots: string[], env: NodeJS.ProcessEnv, extraErrors: string[] = [], recheck: string[] = []): { snap: DriftSnapshot; roots: string[] } {
   const found = geminiConfigRoots(env);
   const roots = [...new Set([...configRoots, ...found.roots])].sort();
-  const snap = takeDriftSnapshot({ checkouts, configRoots: roots });
+  const snap = takeDriftSnapshot({ checkouts, configRoots: roots, recheck });
   snap.errors.push(...extraErrors);
   // descoberta de raízes que falhou: as que faltarem neste retrato não contam como criadas nem removidas
   if (found.errors.length) { snap.errors.push(...found.errors); snap.blind = true; }
@@ -207,12 +207,15 @@ export function finishDrift(store: Store, task: Task, env: NodeJS.ProcessEnv, op
   if (opts.executorAlive) { commit(emptyDrift(marker.attemptId, "pending", true), false); return; }
   // worktrees irmãs criadas durante a tentativa também entram no retrato "depois", se o "antes" conseguiu listá-las
   const found = driftCheckouts(store.projectRoot, task.worktree);
-  // As grafias do marcador ficam como foram gravadas (o "antes" e as raízes do .git usam elas). Da lista de agora só
-  // entra o checkout que não é, no disco, um que o marcador já tem: o duo status recebe a raiz como C:/... ou c:\...
-  const known = new Set(marker.checkouts.map(checkoutId));
-  const fresh = found.checkouts.filter((c) => !known.has(checkoutId(c)));
+  // As grafias do marcador ficam como foram gravadas (o "antes" e as raízes do .git usam elas). A raiz de agora é
+  // reconhecida pela identidade no disco (o duo status a recebe como C:/... ou c:\...); irmãs, pelo caminho da entrada
+  // em .duo/worktrees: uma junção nova para uma irmã já vigiada é uma entrada nova e tem de aparecer.
+  const [foundRoot, ...foundSiblings] = found.checkouts;
+  const sameRoot = !!foundRoot && !!marker.checkouts[0] && checkoutId(foundRoot) === checkoutId(marker.checkouts[0]);
+  const known = new Set(marker.checkouts.map((c) => resolve(c)));
+  const fresh = [...(sameRoot || !foundRoot ? [] : [foundRoot]), ...foundSiblings.filter((c) => !known.has(resolve(c)))];
   const checkouts = marker.siblingErrors ? marker.checkouts : [...new Set([...marker.checkouts, ...fresh])];
-  const { snap: after } = snapshot(checkouts, marker.configRoots, env, found.errors);
+  const { snap: after } = snapshot(checkouts, marker.configRoots, env, found.errors, Object.keys(marker.before.roots));
   // O apply é relativo ao checkout principal: mesma grafia do retrato (o primeiro do marcador).
   const result = compareDrift(marker.before, after, appliesInWindow(store, task, Date.parse(marker.startedAt), Date.now(), marker.checkouts[0] ?? store.projectRoot));
   commit({ attemptId: marker.attemptId, status: "complete", ...result }, true);

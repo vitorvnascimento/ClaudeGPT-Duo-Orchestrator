@@ -65,6 +65,8 @@ const HOOKS_DIR_BUDGET = 2000;
 function snapCheckout(co: string, out: DriftSnapshot, checkouts: Checkouts): void {
   const err = (what: string, r: { stderr: string; error?: string }) => out.errors.push(`${co}: git ${what}: ${(r.error ?? r.stderr).trim() || "falhou"}`);
   const fail = (what: string, r: { stderr: string; error?: string }) => { err(what, r); out.failed.push(co); out.blind = true; };
+  // Caminho que não existe mais (irmã apagada, junção removida): ausente, não falha; o compareDrift acusa o sumiço.
+  try { lstatSync(co); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return; }
   const head = observe(co, ["rev-parse", "--verify", "--quiet", "HEAD"]);
   // código 1 sem stderr = repositório sem commits; qualquer outra falha é erro
   if (!head.ok && !(head.code === 1 && !head.stderr.trim() && !head.error)) return fail("rev-parse", head);
@@ -181,12 +183,15 @@ function snapRoot(root: string, out: DriftSnapshot, opts: { skipIds?: Set<string
   out.roots[root] = manifest;
 }
 
-export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: string[] }): DriftSnapshot {
+/** recheck: raízes já vistas num retrato anterior (ex.: o .git de uma irmã cuja junção sumiu) observadas de novo
+ * mesmo sem o checkout que as revelou; sem isso, ausentes no "depois" contariam como apagadas. */
+export function takeDriftSnapshot(opts: { checkouts: string[]; configRoots: string[]; recheck?: string[] }): DriftSnapshot {
   const out: DriftSnapshot = { checkouts: Object.create(null), roots: Object.create(null), failed: [], blind: false, errors: [] };
   const checkouts: Checkouts = { reals: [], ids: new Set() };
   for (const co of opts.checkouts) { try { checkouts.reals.push(realpathSync(co)); checkouts.ids.add(fileId(co)); } catch { /* o snapCheckout registra a falha */ } }
   for (const co of opts.checkouts) snapCheckout(co, out, checkouts);
   for (const root of opts.configRoots) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out);
+  for (const root of opts.recheck ?? []) if (!(root in out.roots) && !out.failed.includes(root)) snapRoot(root, out, { skipIds: checkouts.ids, budget: HOOKS_DIR_BUDGET });
   return out;
 }
 

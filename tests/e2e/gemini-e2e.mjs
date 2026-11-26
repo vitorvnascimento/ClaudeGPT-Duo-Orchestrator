@@ -751,14 +751,18 @@ async function windowsScenarios() {
       const hist = (x) => (x?.driftHistory ?? []).length;
       const interruptedState = (x) => (x?.history ?? []).some((h) => /interrompida: o processo da ponte não está mais ativo/.test(h.reason));
       const complete = (x, m) => x?.drift?.status === "complete" && x.drift.incomplete === false && !m && !(x.limitations ?? []).includes("post-run check incomplete");
-      // Só o checkout controlado: escrita externa no perfil real (ex.: monitor de cota rodando o agy) aparece no aviso e
-      // é do G5, não defeito da recuperação; vai para a evidência à parte.
+      // Só ~/.gemini fica de fora (é o que o G5 vigia; ex.: monitor de cota rodando o agy): vai para a evidência à parte.
+      // Qualquer outra mudança, no checkout ou em outra raiz de config (ex.: %APPDATA%\Antigravity), reprova.
       const rootKey = (() => { try { return realpathSync.native(root); } catch { return resolve(root); } })();
       // "<checkout> (HEAD)" é mudança de commit do próprio checkout: tira a anotação antes de conferir onde fica.
       const nk = (p) => resolve(p.replace(/ \(HEAD\)$/, "")).replace(/\//g, "\\").toLowerCase();
       const inCheckout = (p) => nk(p) === nk(rootKey) || nk(p).startsWith(nk(rootKey) + "\\") || nk(p) === nk(root) || nk(p).startsWith(nk(root) + "\\");
-      const clean = (x) => Array.isArray(x?.drift?.changed) && x.drift.changed.filter(inCheckout).length === 0; // a tarefa só escreve na worktree
-      const outside = (x) => (x?.drift?.changed ?? []).filter((p) => !inCheckout(p)).length;
+      const g5Root = nk(join(homedir(), ".gemini"));
+      const g5Owned = (p) => !inCheckout(p) && (nk(p) === g5Root || nk(p).startsWith(g5Root + "\\"));
+      const clean = (x) => Array.isArray(x?.drift?.changed) && x.drift.changed.filter((p) => !g5Owned(p)).length === 0; // a tarefa só escreve na worktree
+      const outside = (x) => (x?.drift?.changed ?? []).filter(g5Owned).length;
+      // Mudança no ~/.gemini só fica de fora se o G5 a julga nesta mesma rodada; sozinho (--only W-interrupt), sem julgar.
+      const profileJudged = (x) => outside(x) === 0 || want("G5");
       const ev = { t1: { state: t1?.state, drift: t1?.drift, limitations: t1?.limitations }, t2: t2?.drift, markers: [markerBefore, m1, m2, m3], child: after1, status: [s1.status, s2.status, s3.status] };
       if (!childId) record("W-interrupt", "inconclusive", { note: "não deu para confirmar que o PID era o agy desta ponte (pai, executável, criação); nada foi encerrado", identity: first ? { ppid: first.ppid, exe: win32.basename(first.exe) } : null });
       else if (!interruptedByUs || !markerBefore || t0?.state !== "running") record("W-interrupt", "inconclusive", { note: "a ponte não foi interrompida com a conferência pendente (terminou sozinha ou o taskkill falhou)", taskkill: kb.status, before: t0?.state, ...ev });
@@ -775,7 +779,8 @@ async function windowsScenarios() {
           { what: "o duo status marcou a tarefa interrompida", attempted: true, ok: s1.status === 0 && interruptedState(t1) && t1?.state !== "running" },
           { what: "executor saiu (confirmado)", attempted: true, ok: after1 === "exited" },
           { what: "recuperação grava a comparação completa e apaga o marcador", attempted: true, ok: s1.status === 0 && (at1 || (s2.status === 0 && at2)) },
-          { what: "conferência sem mudanças acusadas no checkout", attempted: true, ok: clean(done) },
+          { what: "conferência sem mudanças acusadas (fora o ~/.gemini do G5)", attempted: true, ok: clean(done) },
+          { what: "mudança no ~/.gemini julgada pelo G5 nesta rodada", attempted: profileJudged(done), ok: true },
           { what: "gravada uma vez só", attempted: true, ok: rest.every(([x, m, st]) => st.status === 0 && !m && JSON.stringify(x?.drift) === JSON.stringify(done?.drift) && hist(x) === hist(done)) },
         ], { note: "agy saiu com a ponte; fase com executor vivo não ocorre no Windows", outsideCheckout: outside(done), ...ev });
       }
@@ -788,7 +793,8 @@ async function windowsScenarios() {
           { what: "com o executor vivo, o duo status grava: fora de running, pendente, marcador mantido, 'post-run check incomplete'", violated: firstOk ? false : "o 1º status não deixou a conferência pendente com o aviso", attempted: true, ok: firstOk },
           { what: "executor confirmado morto", attempted: settled, ok: dead },
           { what: "recuperação grava a comparação feita (completa, não incompleta) e apaga o marcador", attempted: settled, ok: s2.status === 0 && complete(t2, m2) },
-          { what: "conferência sem mudanças acusadas no checkout", attempted: settled, ok: clean(t2) },
+          { what: "conferência sem mudanças acusadas (fora o ~/.gemini do G5)", attempted: settled, ok: clean(t2) },
+          { what: "mudança no ~/.gemini julgada pelo G5 nesta rodada", attempted: !settled || profileJudged(t2), ok: true },
           { what: "gravada uma vez só", attempted: settled, ok: s3.status === 0 && !m3 && JSON.stringify(t3?.drift) === JSON.stringify(t2?.drift) && hist(t3) === hist(t2) },
         ], { ...ev, finalState, outsideCheckout: outside(t2) });
       }

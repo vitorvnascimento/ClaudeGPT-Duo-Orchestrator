@@ -1,7 +1,7 @@
 // Delegação ao executor Gemini de ponta a ponta com o agy falso (sem rede, sem cota).
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -593,6 +593,39 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
     assert.ok(task(s, t.taskId).drift?.changed.some((p) => p.endsWith("escondido.txt")), JSON.stringify(task(s, t.taskId).drift));
   });
 
+  // Junção no Windows (link no macOS) em .duo/worktrees: se ela some e o destino continua legível, o caminho sumido
+  // tem de aparecer; o retrato não pode seguir o destino como se fosse a irmã.
+  it("a sibling link that disappears during the attempt is reported even if its target survives", { skip: process.platform === "win32" }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const target = join(s.tmp, "alvo-irma");
+    const r = spawnSync("git", ["worktree", "add", "-q", "--detach", target], { cwd: s.root, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const link = join(s.root, ".duo", "worktrees", "irma-link");
+    symlinkSync(target, link);
+    // metadado da worktree que já existia e não muda: não pode aparecer só porque o link sumiu
+    writeFileSync(join(s.root, ".git", "worktrees", "alvo-irma", "config.worktree"), "[core]\n");
+    const m = startDrift(t, s.root, s.env, "attempt-link");
+    rmSync(link);
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    assert.deepEqual(task(s, t.taskId).drift?.changed, [link], JSON.stringify(task(s, t.taskId).drift));
+  });
+
+  it("a new sibling link to an already watched sibling is reported", { skip: process.platform === "win32" }, async () => {
+    const s = setup();
+    const store = new Store(s.root);
+    const t = await clean(s);
+    const irma = join(s.root, ".duo", "worktrees", "irma-real");
+    const r = spawnSync("git", ["worktree", "add", "-q", "--detach", irma], { cwd: s.root, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const m = startDrift(t, s.root, s.env, "attempt-alias");
+    const alias = join(s.root, ".duo", "worktrees", "irma-alias");
+    symlinkSync(irma, alias);
+    finishDrift(store, t, s.env, { executorAlive: false, marker: m });
+    assert.ok(task(s, t.taskId).drift?.changed.includes(alias), JSON.stringify(task(s, t.taskId).drift));
+  });
+
   it("a sibling worktree created after the baseline is seen in the final snapshot", async () => {
     const s = setup();
     const store = new Store(s.root);
@@ -619,8 +652,9 @@ describe("conferência pós-tarefa: falha fechado (revisão)", () => {
   it("recovery with the root in another letter case reports no phantom checkout", async (ctx) => {
     const s = setup();
     const other = join(dirname(s.root), basename(s.root).toUpperCase());
+    // Pré-requisito pela identidade no disco (dispositivo + inode), independente do realpath que o código usa.
     let same = false;
-    try { same = realpathSync.native(other) === realpathSync.native(s.root); } catch { /* volume com caixa: não existe */ }
+    try { const a = statSync(other, { bigint: true }), b = statSync(s.root, { bigint: true }); same = a.dev === b.dev && a.ino === b.ino; } catch { /* volume com caixa: não existe */ }
     if (!same) { ctx.skip("volume diferencia maiúsculas: a outra caixa não é a mesma pasta"); return; }
     const t = await clean(s);
     const m = startDrift(t, s.root, s.env, "attempt-case");
